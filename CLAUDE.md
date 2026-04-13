@@ -20,10 +20,10 @@ a remote doctor reviews asynchronously.
 
 ```
 cdst/
-├── agents/
-│   ├── history_agent.py        # Two-call pipeline, no RAG
-│   ├── diagnosis_agent.py      # Three-call pipeline, no RAG
-│   └── management_agent.py     # Four-call pipeline, RAG in Call 2
+├── history_agent.py            # Two-call pipeline, no RAG
+├── diagnosis_agent.py          # Three-call pipeline, no RAG
+├── management_agent.py         # Four-call pipeline, RAG in Call 2
+├── orchestrator.py             # WebSocket session orchestrator — central component
 ├── data/
 │   ├── epi_prior_wb.json       # All 23 WB districts, 4 seasonal buckets
 │   ├── bedside_tools.json      # Constraint list for nurse-available tools
@@ -32,9 +32,12 @@ cdst/
 │   └── schema.sql              # Postgres schema: sessions, stg_chunks,
 │                               # patient_records, confirmed_encounters
 ├── scripts/
-│   └── ingest_stg.py           # TO BE WRITTEN — STG embedding pipeline
+│   └── ingest_stg.py           # STG embedding pipeline (chunk → embed → pgvector)
 └── CLAUDE.md                   # This file
 ```
+
+Note: all Python files are at the repo root (not in subdirectories). The tree above
+shows logical grouping only.
 
 ---
 
@@ -80,28 +83,111 @@ nurse) with a 90-day retention policy.
 
 ---
 
-## Session orchestrator — what it must do
+## Session orchestrator (orchestrator.py)
 
-This is the most important remaining component. It must:
+**Built.** The central component — a FastAPI WebSocket server that owns the full
+session lifecycle. All agent functions are called directly from the orchestrator
+(not via HTTP); the orchestrator imports from history_agent, diagnosis_agent, and
+management_agent.
 
-1. Open the WebSocket connection when the nurse starts a session
-2. Look up the patient in `patient_records` by patient ID and load their record
-   into the Vault under `vault_context["patient_record"]` (empty dict for new patients)
-3. Initialise the Vault session document in Postgres with demographics, GPS,
-   timestamp, and the loaded patient record
-4. Stream audio chunks to Deepgram; receive rolling transcript; accumulate it in
-   the Vault under `transcript_full`
-5. Maintain a local ring buffer for reconnection — if the WebSocket drops, buffer
-   audio chunks with session-relative timestamps and flush on reconnect
-6. On marker A event: slice transcript at marker A timestamp, fire History Agent,
-   stream questionnaire back to mobile client
-7. On marker B event: slice transcript from marker A to marker B, fire Diagnosis
-   Agent, stream differential back to mobile client
-8. On marker C event: slice transcript from marker B to marker C, fire Management
-   Agent, stream triage output back to mobile client
-9. After Management Agent + rule engine complete: write final risk tier and
-   doctor_auth_status to Vault; trigger doctor notification
-10. On session end: trigger async audio upload to S3; write session_ended_at to Vault
+### WebSocket protocol
+
+**Client → Server:**
+```
+{ "type": "init",      "patient_id": "P-00123", "nurse_id": "N-001",
+  "gps": { "district": "Murshidabad", "district_code": "WB_MSD",
+           "lat": 24.18, "lng": 88.27 } }
+
+{ "type": "reconnect", "session_id": "sess_abc123" }
+
+{ "type": "audio",     "data": "<base64 opus chunk>", "t": 12.4 }
+
+{ "type": "marker",    "marker": "history_complete|diagnosis_complete|management_complete",
+  "t": 94.3 }
+
+{ "type": "session_end",    "t": 742.0 }
+
+{ "type": "audio_uploaded", "url": "s3://...", "codec": "opus",
+  "duration_seconds": 742, "size_bytes": 1893422 }
+```
+
+**Server → Client:**
+```
+{ "type": "session_ready",   "session_id": "sess_abc123", "is_new_patient": true }
+{ "type": "transcript",      "text": "...", "is_final": true }
+{ "type": "agent_token",     "agent": "history|diagnosis", "token": "..." }
+{ "type": "agent_complete",  "agent": "history|diagnosis|management", "data": {...} }
+{ "type": "session_closed",  "risk_tier": "low|high" }
+{ "type": "audio_confirmed" }
+{ "type": "error",           "code": "AUTH_FAILED|SESSION_NOT_FOUND|...", "message": "..." }
+```
+
+### Authentication
+
+JWT Bearer token in the Authorization header at WebSocket upgrade time.
+Expected claims: `{ "nurse_id": "N-001", "role": "nurse", "clinic_id": "C-042" }`.
+`JWT_SECRET` and `JWT_ALGORITHM` are environment variables.
+
+### Session lifecycle
+
+1. **Init** — client sends `init` with patient_id, nurse_id, GPS.
+   Orchestrator loads patient record from `patient_records` (empty dict for new
+   patients). Calls `vault_init()` to create the Vault document. Returns
+   `session_ready` with a generated session_id.
+
+2. **Audio stream** — client sends base64 opus chunks continuously. Orchestrator
+   decodes and forwards bytes to Deepgram. Each chunk is appended to a server-side
+   ring buffer (last ~60s, 600-element deque) for reconnect replay.
+
+3. **Deepgram transcripts** — `DeepgramConnection` class receives final and interim
+   transcript events. Final transcripts are appended to `state.transcript_full` in
+   memory and flushed to `sessions.data.transcript_full` in Postgres via
+   `vault_append_transcript()` (uses `jsonb_set` + string concat, not a full rewrite).
+
+4. **Marker A (history_complete)** — orchestrator snapshots `transcript_full` as
+   `phase_1_end`. Writes `marker_a_at` and `transcript_segments.phase_1` to Vault.
+   Fires two concurrent asyncio tasks:
+   - `stream_questionnaire()` — tokens streamed to client as `agent_token` messages
+   - `generate_questionnaire()` + `validate_questionnaire()` — structured JSON written
+     to Vault; `patient_record_stub` also written for Diagnosis Agent to use
+   First token reaches nurse within ~800ms of button press.
+
+5. **Marker B (diagnosis_complete)** — slices phase 2 transcript (marker A → B).
+   Writes to Vault. Fires two concurrent tasks:
+   - `stream_differential()` — tokens to client
+   - `generate_differential()` + `validate_differential()` — structured DDx to Vault
+   Then runs `generate_clarifying_questions()` sequentially (needs the validated DDx).
+   All three writes go to Vault before `agent_complete` is sent.
+
+6. **Marker C (management_complete)** — slices phase 3 transcript (marker B → C).
+   Calls `run_management_agent()` which handles all four LLM calls, RAG, the rule
+   engine, and Vault writes internally. On completion, the risk tier is written to
+   Vault and HIGH risk cases trigger `_notify_doctor()` (stub — replace with FCM/SMS).
+
+7. **Reconnect** — client sends `{ "type": "reconnect", "session_id": "..." }`.
+   Orchestrator checks the in-memory `_active` registry; if the server restarted,
+   rebuilds `SessionState` from the Vault via `SessionState.from_vault()`. Client
+   then flushes its ring buffer of audio chunks which are forwarded to a fresh
+   Deepgram connection.
+
+8. **Session end** — writes `session_ended_at`, `session_duration_seconds`, and
+   final `transcript_segments` to Vault. Closes Deepgram. Audio upload is the
+   device's responsibility; when it calls `audio_uploaded`, the Vault receives
+   the S3 URL and a `retain_until` date (90 days from upload).
+
+### REST endpoints on the orchestrator
+
+- `GET  /session/{id}/status` — returns agent completion status and risk tier
+  (used by the doctor review queue)
+- `POST /session/{id}/doctor-auth` — doctor records approve / modify / reject
+  with optional notes and modified prescription
+- `GET  /health` — liveness check
+
+### Deepgram stub mode
+
+If `DEEPGRAM_API_KEY` is not set, `DeepgramConnection` runs as a no-op stub.
+Audio is received from the client and buffered, but nothing is transcribed.
+This allows local development and testing without a live Deepgram account.
 
 ---
 
@@ -321,6 +407,70 @@ Reconnection: device maintains a ring buffer of recent chunks with
 session-relative timestamps. On reconnect, flushes buffered chunks to server
 in order with accurate timestamps before resuming live stream.
 
+The server-side `DeepgramConnection` opens a fresh Deepgram WebSocket on reconnect.
+The orchestrator's `SessionState` persists in the `_active` registry for the server
+process lifetime; if the server restarted, it rebuilds state from the Vault.
+
+---
+
+## STG ingest pipeline (scripts/ingest_stg.py)
+
+**Built.** A CLI tool that chunks STG documents, embeds them with MiniLM-L6-v2,
+and inserts into the `stg_chunks` pgvector table. Run once per new document set;
+safe to re-run (exact duplicates are skipped by content fingerprint).
+
+### Supported input formats
+- `.txt` — plain text
+- `.pdf` — extracted via pdfplumber (page by page)
+- `.docx` — extracted via python-docx (paragraph by paragraph)
+
+### Chunking strategy
+Target: ~350 tokens per chunk with 50-token overlap. Section headings are detected
+by pattern (ALL CAPS, numbered headings `1.2 Treatment of...`, short lines ending
+with `:`). Chunks respect section boundaries; sections shorter than one chunk are
+kept whole. Trivially short chunks (<10 words) are dropped.
+
+Each chunk is tagged with:
+- `source` — document identifier, e.g. `NHM_STG_2023_MALARIA`
+- `disease` — primary disease tag for filtered retrieval, e.g. `malaria`
+- `section` — detected section heading, e.g. `Treatment of Uncomplicated Malaria`
+
+### Usage
+
+```bash
+# Single document:
+python scripts/ingest_stg.py --file docs/nhm_stg_malaria.pdf --disease malaria
+
+# Whole directory with a disease map JSON:
+python scripts/ingest_stg.py --dir docs/stg/ --disease-map scripts/disease_map.json
+
+# Dry run — prints chunks without touching the DB:
+python scripts/ingest_stg.py --file docs/nhm_stg_malaria.pdf --disease malaria --dry-run
+```
+
+`disease_map.json` maps filename stem → disease tag:
+```json
+{ "nhm_stg_malaria": "malaria", "nvbdcp_kala_azar": "kala-azar", "rntcp_tb": "tuberculosis" }
+```
+
+### Documents to ingest (in priority order)
+1. NHM Standard Treatment Guidelines — all volumes
+2. NVBDCP malaria treatment protocol (ACT dosing by weight band) — CRITICAL for Rx
+3. NHM kala-azar operational guidelines
+4. RNTCP/NTP TB treatment guidelines
+5. West Bengal state protocol addenda (if any)
+
+**Do not ingest `formulary_wb.json`** — the formulary is a small JSON file injected
+directly into Management Agent Call 2 prompts. It does not go in the vector store.
+
+### After ingestion
+Verify with a direct Postgres query:
+```sql
+SELECT disease, count(*) FROM stg_chunks GROUP BY disease ORDER BY count DESC;
+```
+The Management Agent uses similarity threshold 0.55 and retrieves top-8 chunks per
+diagnosis (max 2 diagnoses = 16 chunks per Call 2 prompt).
+
 ---
 
 ## Outstanding questions — answer before building these components
@@ -352,29 +502,34 @@ the entire authorization flow design.
 ## What still needs building
 
 ### Backend — core pipeline
-- [ ] Session orchestrator (WebSocket, STT integration, marker routing, Vault init)
-- [ ] STT integration (Deepgram WebSocket client, rolling transcript accumulation)
-- [ ] Patient records service (load at session start, write on confirmation)
-- [ ] Confirmation pipeline (monitor RDT results, treatment response, doctor auth)
-- [ ] Audio post-session upload service (background, S3, retry logic)
+- [x] Session orchestrator (orchestrator.py — WebSocket, STT integration, marker routing, Vault init)
+- [x] STT integration (DeepgramConnection class inside orchestrator.py)
+- [ ] Patient records service — write confirmed encounters back to `patient_records`
+      after the three confirmation gates pass (currently only read is implemented)
+- [ ] Confirmation pipeline (monitor RDT results, treatment response, doctor auth;
+      write to `confirmed_encounters` and update `patient_records`)
+- [ ] Audio post-session upload — device uploads directly to S3; orchestrator records
+      the URL when the device sends `audio_uploaded`. Retry logic is on the device.
 
 ### Backend — safety and data
-- [ ] Doctor authorization API (review queue, approve/modify/reject endpoints)
-- [ ] Audit log (append-only, every agent call with inputs/outputs/Vault snapshot)
-- [ ] STG ingestion pipeline (scripts/ingest_stg.py — chunk, embed, insert)
+- [x] Doctor authorization API (POST /session/{id}/doctor-auth — approve/modify/reject)
+- [ ] Audit log (append-only record of every agent call with inputs, outputs, Vault snapshot)
+- [x] STG ingestion pipeline (scripts/ingest_stg.py — chunk, embed, insert into pgvector)
 - [ ] Formulary service (admin update UI, per-clinic JSON management)
 - [ ] Layer 3 epi prior query (aggregate confirmed_encounters by district/season)
+- [ ] Doctor notification service (replace _notify_doctor() stub in orchestrator.py
+      with real FCM / SMS gateway integration)
 
 ### Mobile (React Native)
 - [ ] WebSocket audio client (continuous stream, marker events, ring buffer)
 - [ ] Session registration flow (patient lookup / create, demographics capture)
 - [ ] Streaming display — questionnaire, differential, triage output
-- [ ] Post-session audio upload (background service, retry on failure)
+- [ ] Post-session audio upload (background service, retry on failure, calls audio_uploaded)
 - [ ] Nurse UI: triage decision screen, patient instruction sheet
 
 ### Doctor-facing
-- [ ] Doctor review app / interface
-- [ ] Push notifications for HIGH risk cases
+- [ ] Doctor review app / interface (reads GET /session/{id}/status, calls POST doctor-auth)
+- [ ] Push notifications for HIGH risk cases (implement _notify_doctor in orchestrator.py)
 - [ ] Async review queue with urgency sorting
 
 ---
@@ -418,9 +573,11 @@ explicit discussion:
 
 | File | Status | Notes |
 |---|---|---|
-| agents/history_agent.py | Complete | Two-call, no RAG, gap-aware |
-| agents/diagnosis_agent.py | Complete | Three-call, no RAG, validated schema |
-| agents/management_agent.py | Complete | Four-call, RAG, rule engine |
+| history_agent.py | Complete | Two-call, no RAG, gap-aware; imports from here into orchestrator |
+| diagnosis_agent.py | Complete | Three-call, no RAG, validated schema; imports from here into orchestrator |
+| management_agent.py | Complete | Four-call, RAG, rule engine; called via run_management_agent() |
+| orchestrator.py | Complete | WebSocket session lifecycle, Deepgram STT, all marker handlers, doctor-auth REST API |
+| scripts/ingest_stg.py | Complete | CLI to chunk/embed/insert STG docs; run before first session |
 | db/schema.sql | Complete | sessions, stg_chunks, patient_records, confirmed_encounters |
 | data/epi_prior_wb.json | Complete | All 23 WB districts, 4 seasons, sourced from IDSP/NVBDCP |
 | data/bedside_tools.json | Complete | Nurse-available tools constraint list |
