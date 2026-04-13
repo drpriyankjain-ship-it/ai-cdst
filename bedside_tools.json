@@ -1,0 +1,29 @@
+{
+  "_comment": "Tools and tests available to a community health nurse in a rural West Bengal setting. The Diagnosis Agent is constrained to suggest only these when generating bedside observations.",
+  "physical_examination": [
+    { "tool": "hands", "actions": ["palpation of abdomen", "lymph node assessment", "skin examination", "capillary refill", "oedema assessment", "fontanelle assessment (infants)"] },
+    { "tool": "eyes", "actions": ["pallor assessment (conjunctival)", "jaundice (scleral icterus)", "pupil reactivity", "rash inspection"] },
+    { "tool": "ears", "actions": ["aural inspection (otoscope if available)"] }
+  ],
+  "basic_instruments": [
+    { "tool": "thermometer", "measures": "body temperature (axillary or oral)" },
+    { "tool": "blood pressure cuff (manual)", "measures": "systolic and diastolic BP" },
+    { "tool": "pulse oximeter", "measures": "SpO2 and pulse rate" },
+    { "tool": "weighing scale", "measures": "body weight (kg)" },
+    { "tool": "measuring tape", "measures": "MUAC (mid-upper arm circumference), head circumference" },
+    { "tool": "torch / pen light", "measures": "throat inspection, pupil reactivity" },
+    { "tool": "stethoscope", "measures": "breath sounds, heart sounds, bowel sounds" }
+  ],
+  "rapid_diagnostic_tests": [
+    { "tool": "malaria RDT (HRP2 + pLDH)", "detects": "P. falciparum and P. vivax", "turnaround": "15-20 minutes" },
+    { "tool": "urine dipstick", "detects": "protein, glucose, nitrites, blood, ketones", "turnaround": "2 minutes" },
+    { "tool": "urine pregnancy test (hCG)", "detects": "pregnancy", "turnaround": "3 minutes" },
+    { "tool": "glucometer", "detects": "blood glucose (fasting or random)", "turnaround": "1 minute" },
+    { "tool": "Haemoglobin (HemoCue or similar)", "detects": "Hb g/dL", "turnaround": "1 minute" }
+  ],
+  "not_available": [
+    "ECG", "chest X-ray", "blood cultures", "CBC / full blood count", "liver function tests",
+    "renal function tests", "sputum microscopy", "ultrasound", "CT scan",
+    "lumbar puncture", "IV access (unless trained ASHA worker)"
+  ]
+}

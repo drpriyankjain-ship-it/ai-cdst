@@ -1,0 +1,649 @@
+"""
+CDST Diagnosis Agent
+====================
+Three-call pipeline — no RAG (moved to Management Agent):
+
+  Call 1: transcript segment → extracted medical concepts       (~900ms)
+  Call 2: concepts + epi prior → ranked differential (DDx)     (~3.2s, streaming)
+  Call 3: DDx + bedside tools → gap analysis + clarifying Qs   (~1.4s, streaming)
+
+Design rationale:
+  - LLM native clinical reasoning handles differential generation and gap
+    analysis correctly without retrieval support.
+  - RAG is reserved for the Management Agent where retrieved STG protocol
+    text directly governs dosing, contraindications, and referral decisions.
+  - Epi prior (Layer 1 baseline + Layer 2 IDSP district/season lookup) is
+    injected directly into Call 2 as structured context — no vector search.
+
+Dependencies:
+    pip install anthropic asyncpg fastapi pydantic
+"""
+
+import json
+from datetime import datetime
+from typing import AsyncIterator
+
+import anthropic
+import asyncpg
+from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+CLAUDE_MODEL       = "claude-sonnet-4-20250514"
+EPI_PRIOR_PATH     = "data/epi_prior_wb.json"
+BEDSIDE_TOOLS_PATH = "data/bedside_tools.json"
+
+client = anthropic.Anthropic()   # API key from environment
+
+
+# ---------------------------------------------------------------------------
+# Vault — Postgres session store
+# ---------------------------------------------------------------------------
+
+class Vault:
+    """
+    Thin wrapper around the Postgres session JSONB document.
+    Each session is one row keyed on session_id.
+    Agents read from and write to it incrementally.
+    """
+
+    def __init__(self, conn: asyncpg.Connection, session_id: str):
+        self.conn = conn
+        self.session_id = session_id
+
+    async def read(self) -> dict:
+        row = await self.conn.fetchrow(
+            "SELECT data FROM sessions WHERE session_id = $1",
+            self.session_id
+        )
+        if not row:
+            raise ValueError(f"Session {self.session_id} not found")
+        return json.loads(row["data"])
+
+    async def update(self, patch: dict) -> None:
+        """Merge patch fields into the existing session document."""
+        await self.conn.execute(
+            """
+            UPDATE sessions
+            SET data = data || $2::jsonb,
+                updated_at = now()
+            WHERE session_id = $1
+            """,
+            self.session_id,
+            json.dumps(patch)
+        )
+
+
+# ---------------------------------------------------------------------------
+# Epidemiological prior — Layer 1 + Layer 2
+# ---------------------------------------------------------------------------
+
+MONTH_TO_SEASON = {
+    1: "winter",        2: "winter",        3: "pre_monsoon",
+    4: "pre_monsoon",   5: "pre_monsoon",   6: "monsoon",
+    7: "monsoon",       8: "monsoon",       9: "monsoon",
+    10: "post_monsoon", 11: "post_monsoon", 12: "winter",
+}
+
+
+def load_baseline_diseases() -> str:
+    """
+    Layer 1 — common primary care presentations in rural West Bengal.
+    Hardcoded string injected directly into Call 2 prompt.
+    Not retrieved, not embedded — stable across all sessions.
+    """
+    return (
+        "LAYER 1 — BASELINE DISEASE BURDEN (rural West Bengal primary care):\n"
+        "Always consider these regardless of location or season:\n"
+        "  Respiratory : acute RTI, pneumonia, pulmonary TB, COPD exacerbation, asthma\n"
+        "  Fever       : typhoid, malaria, dengue, UTI, viral syndrome, scrub typhus\n"
+        "  GI          : acute gastroenteritis, peptic ulcer disease, cholera, hepatitis A/E\n"
+        "  Cardiac     : hypertension, heart failure, ischaemic heart disease\n"
+        "  Metabolic   : type 2 diabetes, iron-deficiency anaemia, malnutrition, B12 deficiency\n"
+        "  Neurological: stroke, GBS, peripheral neuropathy, epilepsy, cord compression\n"
+        "  Obstetric   : pre-eclampsia, anaemia in pregnancy, post-partum sepsis\n"
+        "  Trauma      : snake envenomation, fractures, burns\n"
+        "These anchor the differential. Layer 2 elevates endemic infectious diseases "
+        "where locally relevant — it does not replace this baseline."
+    )
+
+
+def load_epi_prior(district_code: str, month: int) -> str:
+    """
+    Layer 2 — IDSP/NVBDCP district + season endemic disease weights.
+    Returns a formatted string for prompt injection, or empty string
+    if the district is unknown (logged as a data gap warning).
+    """
+    with open(EPI_PRIOR_PATH) as f:
+        prior = json.load(f)
+
+    season        = MONTH_TO_SEASON.get(month, "monsoon")
+    district_data = prior.get("districts", {}).get(district_code)
+
+    if not district_data:
+        print(
+            f"[EPI PRIOR WARNING] District '{district_code}' not in "
+            f"epi_prior_wb.json. Layer 2 modifier absent. Add district to resolve."
+        )
+        return ""
+
+    season_diseases = district_data.get("seasons", {}).get(season, [])
+    if not season_diseases:
+        return ""
+
+    district_name = district_data.get("name", district_code)
+    lines = "\n".join(
+        "  - {disease}: weight {weight:.2f}{note}".format(
+            disease=d["disease"],
+            weight=d["weight"],
+            note=f" — {d['note']}" if d.get("note") else ""
+        )
+        for d in sorted(season_diseases, key=lambda x: x["weight"], reverse=True)
+    )
+    return (
+        f"LAYER 2 — DISTRICT/SEASON MODIFIER "
+        f"({district_name}, {season} season, IDSP/NVBDCP data):\n"
+        "The following endemic diseases have elevated local prevalence right now.\n"
+        "Weight appropriately — they modify but do not replace Layer 1 above.\n"
+        f"{lines}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Differential schema validation
+# ---------------------------------------------------------------------------
+
+DIFFERENTIAL_FIELDS = {
+    "rank":                 int,
+    "disease":              str,
+    "icd10_code":           str,
+    "probability":          str,
+    "supporting_features":  list,
+    "against":              list,
+    "must_not_miss":        bool,
+    "regionally_specific":  bool,
+    "reasoning":            str,
+    "discriminating_tests": list,
+    "referral_required":    bool,
+}
+
+VALID_PROBABILITY = {"high", "moderate", "low"}
+
+FIELD_DEFAULTS = {
+    "rank":                 0,
+    "disease":              "Unknown",
+    "icd10_code":           "R69",
+    "probability":          "low",
+    "supporting_features":  [],
+    "against":              [],
+    "must_not_miss":        False,
+    "regionally_specific":  False,
+    "reasoning":            "No reasoning provided",
+    "discriminating_tests": [],
+    "referral_required":    False,
+}
+
+
+def validate_differential(ddx: list[dict]) -> list[dict]:
+    """
+    Enforce the canonical 11-field schema on every DDx entry.
+
+    - Missing fields     → safe default + logged warning
+    - Invalid probability → normalised to "moderate" + logged warning
+    - Output re-sorted by rank
+
+    Downstream consumers (Management Agent, rule engine, doctor UI)
+    depend on this structure being predictable on every call.
+    """
+    validated = []
+    for i, entry in enumerate(ddx):
+        label = entry.get("disease", f"entry {i}")
+        clean = {}
+        for field in DIFFERENTIAL_FIELDS:
+            val = entry.get(field)
+            if val is None:
+                print(f"[DDX SCHEMA] '{label}' missing '{field}' — using default")
+                clean[field] = FIELD_DEFAULTS[field]
+            elif field == "probability" and val not in VALID_PROBABILITY:
+                print(f"[DDX SCHEMA] '{label}' invalid probability '{val}' — normalising to 'moderate'")
+                clean[field] = "moderate"
+            else:
+                clean[field] = val
+        validated.append(clean)
+
+    validated.sort(key=lambda x: x["rank"])
+    return validated
+
+
+def parse_llm_json(raw: str) -> list[dict]:
+    """Strip markdown fences and parse JSON. Raises on invalid JSON."""
+    raw = raw.strip()
+    if raw.startswith("```"):
+        parts = raw.split("```")
+        raw = parts[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    return json.loads(raw.strip())
+
+
+# ---------------------------------------------------------------------------
+# Call 1 — Concept extraction
+# ---------------------------------------------------------------------------
+
+async def extract_medical_concepts(
+    transcript_segment: str,
+    vault_context: dict,
+) -> dict:
+    """
+    Extract structured medical concepts from the phase 2 transcript.
+
+    Input : raw transcript text (from marker A to marker B)
+    Output: structured JSON — chief complaint, symptoms, negatives,
+            relevant history, risk factors, vitals if mentioned
+
+    No epi prior. No retrieval. Pure extraction grounded by demographics
+    and prior encounter history from the Vault.
+    """
+    demographics     = vault_context.get("demographics", {})
+    prior_encounters = vault_context.get("prior_encounters", [])
+
+    output_schema = json.dumps({
+        "chief_complaint": "single sentence summary",
+        "symptoms": [{
+            "name":      "symptom name",
+            "duration":  "e.g. 2 weeks",
+            "severity":  "mild|moderate|severe",
+            "character": "descriptive qualifier if stated"
+        }],
+        "negatives":        ["symptom explicitly denied"],
+        "relevant_history": ["pertinent positives from history"],
+        "risk_factors":     ["risk factors mentioned"],
+        "vitals_reported": {
+            "temperature": "value if mentioned, else null",
+            "pulse":       "value if mentioned, else null",
+            "bp":          "value if mentioned, else null",
+            "spo2":        "value if mentioned, else null"
+        }
+    }, indent=2)
+
+    prior_text = (
+        json.dumps(prior_encounters[-3:], indent=2)
+        if prior_encounters else "No prior encounters recorded."
+    )
+
+    prompt = "\n\n".join([
+        "Extract structured medical concepts from this nurse-patient interview transcript.",
+        f"PATIENT DEMOGRAPHICS:\n{json.dumps(demographics, indent=2)}",
+        f"PRIOR ENCOUNTER SUMMARY (last 3 visits):\n{prior_text}",
+        f"TRANSCRIPT (phase 2 interview):\n{transcript_segment}",
+        (
+            "INSTRUCTIONS:\n"
+            "- Extract only what is explicitly stated or clearly implied\n"
+            "- Negatives are as important as positives — list all denied symptoms\n"
+            "- Do not infer or assume anything not present in the transcript\n"
+            "- vitals_reported values should be null if not mentioned\n\n"
+            f"Return ONLY valid JSON matching this schema:\n{output_schema}\n\n"
+            "JSON only. No explanation. No markdown."
+        ),
+    ])
+
+    response = client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=1000,
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    raw = response.content[0].text.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    return json.loads(raw.strip())
+
+
+# ---------------------------------------------------------------------------
+# Call 2 — Differential diagnosis
+# ---------------------------------------------------------------------------
+
+async def generate_differential(
+    concepts: dict,
+    vault_context: dict,
+    baseline_layer: str,
+    epi_layer: str,
+) -> list[dict]:
+    """
+    Generate a ranked differential of 4-6 conditions.
+
+    Inputs:
+      - Extracted concepts (Call 1 output)
+      - Layer 1 baseline disease burden  (hardcoded string)
+      - Layer 2 IDSP epi prior           (district + season lookup)
+      - LLM native clinical reasoning    (no RAG)
+
+    The epi prior modifies where clinically relevant but never overrides
+    the presenting complaint. A neurological presentation in a
+    malaria-endemic district correctly leads with neurological diagnoses.
+
+    Output validated against the 11-field canonical schema.
+    """
+    demographics = vault_context.get("demographics", {})
+
+    schema_example = json.dumps([{
+        "rank":                 1,
+        "disease":              "Full clinical disease name",
+        "icd10_code":           "e.g. G61.0",
+        "probability":          "high|moderate|low",
+        "supporting_features":  ["feature supporting this diagnosis"],
+        "against":              ["feature arguing against this diagnosis"],
+        "must_not_miss":        True,
+        "regionally_specific":  False,
+        "reasoning":            "One sentence clinical rationale",
+        "discriminating_tests": ["tone assessment both legs", "deep tendon reflexes"],
+        "referral_required":    True,
+    }], indent=2)
+
+    instructions = (
+        "INSTRUCTIONS:\n"
+        "- Generate 4-6 differential diagnoses ranked by probability\n"
+        "- Layer 1 baseline diseases always anchor the differential\n"
+        "- Layer 2 epi prior elevates endemic diseases where the presentation is compatible\n"
+        "  — it never overrides the presenting complaint\n"
+        "- must_not_miss=true regardless of probability for: GBS, cord compression,\n"
+        "  meningitis, ectopic pregnancy, severe malaria, eclampsia, stroke, AFP\n"
+        "- regionally_specific=true for diseases with elevated West Bengal prevalence\n"
+        "- referral_required=true for any diagnosis needing hospital-level care\n"
+        "- discriminating_tests: bedside only — hands, stethoscope, BP cuff,\n"
+        "  pulse oximeter, malaria RDT, glucometer, urine dipstick,\n"
+        "  urine pregnancy test, HemoCue. Never suggest labs, imaging, or LP\n"
+        "- icd10_code: most specific applicable ICD-10 code\n"
+        "- Base reasoning ONLY on features present — never assume unstated findings\n\n"
+        f"Return ONLY a JSON array. Every entry must contain all 11 fields:\n"
+        f"{schema_example}\n\n"
+        "No explanation. No markdown. JSON array only."
+    )
+
+    prompt = "\n\n".join([
+        "You are a clinical decision support system assisting a nurse in rural West Bengal, India.\n"
+        "Generate a differential diagnosis for the patient below.",
+        f"PATIENT:\n{json.dumps(demographics, indent=2)}",
+        f"EXTRACTED CLINICAL CONCEPTS:\n{json.dumps(concepts, indent=2)}",
+        baseline_layer,
+        epi_layer if epi_layer else "(No Layer 2 modifier — district not found in epi prior)",
+        instructions,
+    ])
+
+    response = client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=2000,
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    ddx = parse_llm_json(response.content[0].text)
+    return validate_differential(ddx)
+
+
+# ---------------------------------------------------------------------------
+# Call 2 — streaming variant (for real-time nurse UX)
+# ---------------------------------------------------------------------------
+
+async def stream_differential(
+    concepts: dict,
+    vault_context: dict,
+    baseline_layer: str,
+    epi_layer: str,
+) -> AsyncIterator[str]:
+    """
+    Streaming version of generate_differential.
+
+    Yields token chunks as they arrive so the differential paints
+    on screen in real time. The nurse sees the top diagnosis within
+    ~600ms of the LLM call starting.
+
+    The non-streaming generate_differential() is called separately
+    afterward to get the validated structured output for the Vault.
+    This function is for display only.
+    """
+    demographics = vault_context.get("demographics", {})
+
+    prompt = "\n\n".join([
+        "You are a clinical decision support system for a nurse in rural West Bengal.\n"
+        "Generate a ranked differential diagnosis. Write it as a readable numbered list "
+        "with brief reasoning for each entry. Be concise — the nurse is with a patient.",
+        f"Patient: {json.dumps(demographics)}",
+        f"Clinical features: {json.dumps(concepts)}",
+        baseline_layer,
+        epi_layer if epi_layer else "",
+    ])
+
+    with client.messages.stream(
+        model=CLAUDE_MODEL,
+        max_tokens=1500,
+        messages=[{"role": "user", "content": prompt}]
+    ) as stream:
+        for text in stream.text_stream:
+            yield text
+
+
+# ---------------------------------------------------------------------------
+# Call 3 — Gap analysis and clarifying questions
+# ---------------------------------------------------------------------------
+
+async def generate_clarifying_questions(
+    ddx: list[dict],
+    concepts: dict,
+    vault_context: dict,
+) -> dict:
+    """
+    Given the ranked differential, identify:
+      1. Clarifying questions the nurse should ask the patient
+      2. Bedside observations the nurse can make with available tools
+
+    Both are ranked by discriminating power — the finding that would
+    most change the probability ranking comes first.
+
+    Constrained to tools in bedside_tools.json. Never suggests
+    investigations unavailable at a rural clinic.
+
+    Output schema:
+    {
+      "clinical_summary": "one sentence — what we know so far",
+      "key_uncertainty": "the single most important unresolved question",
+      "clarifying_questions": [
+        {
+          "question":              "exact wording to ask the patient",
+          "discriminates_between": ["disease A", "disease B"],
+          "if_yes_favours":        "disease name or pattern",
+          "if_no_favours":         "disease name or pattern",
+          "priority":              1
+        }
+      ],
+      "bedside_observations": [
+        {
+          "observation":           "specific action for the nurse",
+          "tool_required":         "tool name from available list",
+          "discriminates_between": ["disease A", "disease B"],
+          "finding_and_meaning":   "if X then Y; if Z then W",
+          "priority":              1
+        }
+      ]
+    }
+    """
+    with open(BEDSIDE_TOOLS_PATH) as f:
+        available_tools = json.load(f)
+
+    top_diagnoses  = [d["disease"] for d in ddx[:3]]
+    must_not_miss  = [d["disease"] for d in ddx if d.get("must_not_miss")]
+    needs_referral = [d["disease"] for d in ddx if d.get("referral_required")]
+
+    output_schema = json.dumps({
+        "clinical_summary": "one sentence of what is known",
+        "key_uncertainty":  "the most important unresolved diagnostic question",
+        "clarifying_questions": [{
+            "question":              "exact question text",
+            "discriminates_between": ["disease A", "disease B"],
+            "if_yes_favours":        "disease or pattern",
+            "if_no_favours":         "disease or pattern",
+            "priority":              1
+        }],
+        "bedside_observations": [{
+            "observation":           "specific nurse action",
+            "tool_required":         "tool from available list",
+            "discriminates_between": ["disease A", "disease B"],
+            "finding_and_meaning":   "if finding X → suggests Y; if finding Z → suggests W",
+            "priority":              1
+        }]
+    }, indent=2)
+
+    instructions = (
+        "INSTRUCTIONS:\n"
+        "- Generate 3-5 clarifying questions ranked by discriminating power\n"
+        "- Generate 2-4 bedside observations ranked by discriminating power\n"
+        "- Priority 1 = the single finding that would most change the ranking\n"
+        "- Must-not-miss diagnoses must be screened for even if probability is low\n"
+        "- Questions must be phrased simply enough for any patient to understand\n"
+        "- Observations must use ONLY tools from the available list below\n"
+        "- Never suggest labs, imaging, LP, ECG, or any hospital-level investigation\n\n"
+        f"AVAILABLE BEDSIDE TOOLS:\n{json.dumps(available_tools, indent=2)}\n\n"
+        f"Return ONLY valid JSON matching this schema:\n{output_schema}\n\n"
+        "JSON only. No explanation. No markdown."
+    )
+
+    prompt = "\n\n".join([
+        "You are designing a targeted clinical assessment for a nurse in a remote "
+        "rural clinic in West Bengal. The nurse has 1-2 minutes to gather additional "
+        "information before the management agent runs.",
+        f"CURRENT DIFFERENTIAL (ranked):\n{json.dumps(ddx, indent=2)}",
+        f"TOP DIAGNOSES TO DISCRIMINATE: {json.dumps(top_diagnoses)}",
+        f"MUST-NOT-MISS (screen regardless of probability): {json.dumps(must_not_miss)}",
+        f"REFERRAL-REQUIRED DIAGNOSES: {json.dumps(needs_referral)}",
+        f"CLINICAL FEATURES ALREADY KNOWN:\n{json.dumps(concepts, indent=2)}",
+        instructions,
+    ])
+
+    response = client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=1500,
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    raw = response.content[0].text.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    return json.loads(raw.strip())
+
+
+# ---------------------------------------------------------------------------
+# Main pipeline — orchestrates all three calls
+# ---------------------------------------------------------------------------
+
+async def run_diagnosis_agent(
+    session_id: str,
+    transcript_segment: str,
+    db_conn: asyncpg.Connection,
+) -> dict:
+    """
+    Full Diagnosis Agent pipeline. Called by the session orchestrator
+    when the nurse presses the marker B button.
+
+    Flow:
+      1. Load Vault context + epi prior (no network calls)
+      2. Call 1 — concept extraction                  (~900ms)
+      3. Call 2 — differential generation             (~3.2s)
+      4. Call 3 — gap analysis + clarifying questions (~1.4s)
+      5. Write all outputs to Vault
+
+    Total: ~5.5s. Nurse sees differential streaming from ~1.5s onward.
+    """
+    vault         = Vault(db_conn, session_id)
+    vault_context = await vault.read()
+
+    gps           = vault_context.get("gps", {})
+    district_code = gps.get("district_code", "WB_UNKNOWN")
+    current_month = datetime.now().month
+
+    baseline_layer = load_baseline_diseases()
+    epi_layer      = load_epi_prior(district_code, current_month)
+
+    # Call 1 — concept extraction
+    print(f"[{session_id}] Call 1: extracting medical concepts")
+    concepts = await extract_medical_concepts(transcript_segment, vault_context)
+    await vault.update({"extracted_concepts": concepts})
+
+    # Call 2 — differential generation
+    print(f"[{session_id}] Call 2: generating differential")
+    ddx = await generate_differential(concepts, vault_context, baseline_layer, epi_layer)
+    await vault.update({"differential_table": ddx})
+
+    # Call 3 — gap analysis + clarifying questions
+    print(f"[{session_id}] Call 3: generating clarifying questions")
+    clarifying = await generate_clarifying_questions(ddx, concepts, vault_context)
+    await vault.update({
+        "clarifying_questions":          clarifying,
+        "diagnosis_agent_status":        "complete",
+        "diagnosis_agent_completed_at":  datetime.now().isoformat(),
+    })
+
+    print(f"[{session_id}] Diagnosis agent complete")
+    return {
+        "session_id": session_id,
+        "concepts":   concepts,
+        "ddx":        ddx,
+        "clarifying": clarifying,
+    }
+
+
+# ---------------------------------------------------------------------------
+# FastAPI endpoints
+# ---------------------------------------------------------------------------
+
+app = FastAPI()
+
+
+class DiagnosisRequest(BaseModel):
+    session_id:          str
+    transcript_segment:  str
+
+
+@app.post("/agent/diagnosis")
+async def diagnosis_endpoint(req: DiagnosisRequest):
+    """
+    Non-streaming endpoint. Returns full structured result when complete.
+    Use when the nurse has natural downtime (she does — she's conducting
+    the consultation while the agent runs in the background).
+    """
+    conn = await asyncpg.connect(dsn="postgresql://localhost/cdst")
+    try:
+        return await run_diagnosis_agent(req.session_id, req.transcript_segment, conn)
+    finally:
+        await conn.close()
+
+
+@app.post("/agent/diagnosis/stream")
+async def diagnosis_stream_endpoint(req: DiagnosisRequest):
+    """
+    Streaming endpoint for the differential display step only.
+
+    Yields the readable differential as tokens arrive so the nurse
+    sees results painting in real time. The structured JSON output
+    is written to the Vault by run_diagnosis_agent() separately.
+    """
+    conn          = await asyncpg.connect(dsn="postgresql://localhost/cdst")
+    vault_context = await Vault(conn, req.session_id).read()
+    gps           = vault_context.get("gps", {})
+    concepts      = await extract_medical_concepts(req.transcript_segment, vault_context)
+    baseline      = load_baseline_diseases()
+    epi           = load_epi_prior(gps.get("district_code", "WB_UNKNOWN"), datetime.now().month)
+
+    async def token_stream():
+        async for chunk in stream_differential(concepts, vault_context, baseline, epi):
+            yield chunk
+        await conn.close()
+
+    return StreamingResponse(token_stream(), media_type="text/plain")
