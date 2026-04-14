@@ -46,6 +46,7 @@ CLAUDE_MODEL       = "claude-sonnet-4-20250514"
 EPI_PRIOR_PATH     = "data/epi_prior_wb.json"
 BEDSIDE_TOOLS_PATH = "data/bedside_tools.json"
 FORMULARY_PATH     = "data/formulary_wb.json"
+ESCALATION_RULES_PATH = "escalation_rules.json"
 RAG_TOP_K          = 8    # STG chunks per diagnosis for treatment retrieval
 
 client   = anthropic.Anthropic()
@@ -200,12 +201,15 @@ async def extract_clarifying_findings(
         ],
         "new_symptoms":  ["any symptom mentioned in phase 3 not in phase 2"],
         "vitals_found": {
-            "temperature": "value or null",
-            "pulse":       "value or null",
-            "bp":          "value or null",
-            "spo2":        "value or null",
-            "weight_kg":   "value or null",
-            "rdt_result":  "positive_pf | positive_pv | negative | not_done"
+            "temperature_c":    "numeric °C only e.g. 38.5 — null if not measured",
+            "pulse_bpm":        "numeric bpm only e.g. 112 — null if not measured",
+            "systolic_bp_mmhg": "numeric systolic mmHg only e.g. 85 — null if not measured",
+            "spo2_pct":         "numeric SpO2 percent only e.g. 94 — null if not measured",
+            "rr_per_min":       "numeric breaths/min only e.g. 28 — null if not measured",
+            "bgl_mmol":         "blood glucose numeric mmol/L e.g. 11.2 — null if not measured",
+            "gcs":              "numeric Glasgow Coma Scale 3-15 — null if not assessed",
+            "weight_kg":        "numeric kg only e.g. 42.5 — null if not measured",
+            "rdt_result":       "positive_pf | positive_pv | negative | not_done"
         },
         "updated_clinical_summary": "one sentence integrating all phases"
     }, indent=2)
@@ -223,7 +227,10 @@ async def extract_clarifying_findings(
             "- Record all bedside examination findings the nurse performed\n"
             "- Note implications for the differential — which diagnoses are "
             "supported or ruled out by each finding\n"
-            "- Only extract what is explicitly in the transcript\n\n"
+            "- Only extract what is explicitly in the transcript\n"
+            "- vitals_found: return NUMERIC JSON numbers only — strip all units.\n"
+            "  e.g. temperature 38.5°C → 38.5; SpO2 94% → 94; BP 90/60 → 90 (systolic only).\n"
+            "  Null for any vital not measured in this phase.\n\n"
             f"Return ONLY valid JSON matching this schema:\n{output_schema}\n\n"
             "JSON only. No explanation. No markdown."
         ),
@@ -694,6 +701,20 @@ async def generate_triage_and_handoff(
 
 
 # ---------------------------------------------------------------------------
+# Rule engine helpers
+# ---------------------------------------------------------------------------
+
+def _to_float(val) -> float | None:
+    """Safely coerce a vital sign value to float. Returns None on any failure."""
+    if val is None:
+        return None
+    try:
+        return float(str(val).strip().replace(",", "."))
+    except (ValueError, TypeError):
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Rule engine — deterministic gate after Call 4
 # ---------------------------------------------------------------------------
 
@@ -702,6 +723,8 @@ def run_rule_engine(
     risk_assessment: dict,
     triage_output:   dict,
     demographics:    dict,
+    vitals:          dict | None = None,
+    red_flags:       list | None = None,
 ) -> dict:
     """
     Deterministic rule engine. Runs after all LLM calls.
@@ -710,6 +733,15 @@ def run_rule_engine(
 
     Rules are explicit and auditable. They catch cases the LLM risk assessment
     might underweight. The rule engine overrides the LLM tier — it never downgrades.
+
+    Rule categories (applied in order):
+      1. Vital sign derangements      — objective, threshold-based
+      2. Red flag symptoms            — alarming symptoms explicitly reported
+      3. Diagnosis hard stops         — conditions requiring hospital-level care
+      4. Drug hard stops              — injectables requiring supervised admin
+      5. Patient profile              — age, pregnancy, low weight
+      6. Allergy conflicts            — prescribed drug vs documented allergy
+      7. Diagnostic confidence        — low LLM confidence in provisional Dx
 
     Returns:
     {
@@ -728,26 +760,92 @@ def run_rule_engine(
     pregnancy = demographics.get("pregnancy_status", "").lower()
     weight_kg = demographics.get("weight_kg")
 
-    # --- Diagnosis-level hard stops ---
-    HIGH_RISK_DIAGNOSES = [
-        "meningitis", "encephalitis", "sepsis", "septic shock",
-        "eclampsia", "pre-eclampsia", "ectopic pregnancy",
-        "severe malaria", "cerebral malaria",
-        "acute myocardial infarction", "stroke",
-        "cord compression", "guillain-barré",
-        "acute flaccid paralysis", "diabetic ketoacidosis",
-        "acute abdomen", "bowel obstruction",
-        "anaphylaxis", "respiratory failure",
-        "acute pulmonary oedema", "status epilepticus",
-    ]
+    with open(ESCALATION_RULES_PATH, "r") as f:
+        escalation_rules = json.load(f)
+
+    # --- 1. Vital sign derangements ---
+    if vitals:
+        v_thresh = escalation_rules.get("vital_thresholds", {})
+        temp = _to_float(vitals.get("temperature_c"))
+        hr   = _to_float(vitals.get("pulse_bpm"))
+        sbp  = _to_float(vitals.get("systolic_bp_mmhg"))
+        spo2 = _to_float(vitals.get("spo2_pct"))
+        rr   = _to_float(vitals.get("rr_per_min"))
+        bgl  = _to_float(vitals.get("bgl_mmol"))
+        gcs  = _to_float(vitals.get("gcs"))
+
+        if spo2 is not None and spo2 < v_thresh.get("spo2_critical_pct", 92):
+            triggers.append(
+                f"HYPOXIA: SpO2 {spo2:.0f}% < {v_thresh.get('spo2_critical_pct', 92)}% — respiratory support required, cannot be managed at PHC"
+            )
+        if sbp is not None and sbp < v_thresh.get("systolic_bp_shock_mmhg", 90):
+            triggers.append(
+                f"SHOCK: Systolic BP {sbp:.0f} mmHg < {v_thresh.get('systolic_bp_shock_mmhg', 90)} — haemodynamic instability, IV resuscitation required"
+            )
+        if sbp is not None and sbp >= v_thresh.get("systolic_bp_hypertensive_emergency_mmhg", 180):
+            triggers.append(
+                f"HYPERTENSIVE EMERGENCY: Systolic BP {sbp:.0f} mmHg ≥ {v_thresh.get('systolic_bp_hypertensive_emergency_mmhg', 180)} — immediate treatment and monitoring"
+            )
+        if hr is not None and hr > v_thresh.get("hr_tachycardia_bpm", 120):
+            triggers.append(
+                f"TACHYCARDIA: HR {hr:.0f} bpm > {v_thresh.get('hr_tachycardia_bpm', 120)} — arrhythmia or shock state"
+            )
+        if hr is not None and hr < v_thresh.get("hr_bradycardia_bpm", 50):
+            triggers.append(
+                f"BRADYCARDIA: HR {hr:.0f} bpm < {v_thresh.get('hr_bradycardia_bpm', 50)} — conduction block or shock"
+            )
+        if rr is not None and rr > v_thresh.get("rr_distress_per_min", 30):
+            triggers.append(
+                f"RESPIRATORY DISTRESS: RR {rr:.0f}/min > {v_thresh.get('rr_distress_per_min', 30)} — respiratory failure threshold"
+            )
+        if rr is not None and rr < v_thresh.get("rr_depression_per_min", 10):
+            triggers.append(
+                f"RESPIRATORY DEPRESSION: RR {rr:.0f}/min < {v_thresh.get('rr_depression_per_min', 10)} — impending respiratory arrest"
+            )
+        if temp is not None and temp > v_thresh.get("temperature_hyperpyrexia_c", 40.0):
+            triggers.append(
+                f"HYPERPYREXIA: Temperature {temp:.1f}°C > {v_thresh.get('temperature_hyperpyrexia_c', 40.0)} — cerebral malaria or meningitis risk"
+            )
+        if temp is not None and temp < v_thresh.get("temperature_hypothermia_c", 35.0):
+            triggers.append(
+                f"HYPOTHERMIA: Temperature {temp:.1f}°C < {v_thresh.get('temperature_hypothermia_c', 35.0)} — shock or severe exposure"
+            )
+        if gcs is not None and gcs < v_thresh.get("gcs_altered_consciousness", 15):
+            triggers.append(
+                f"ALTERED CONSCIOUSNESS: GCS {gcs:.0f}/15 — urgent neurological assessment required"
+            )
+        if bgl is not None and bgl < v_thresh.get("bgl_hypoglycaemia_mmol", 3.0):
+            triggers.append(
+                f"SEVERE HYPOGLYCAEMIA: BGL {bgl:.1f} mmol/L < {v_thresh.get('bgl_hypoglycaemia_mmol', 3.0)} — immediate glucose; if not correcting rapidly, refer"
+            )
+        if bgl is not None and bgl > v_thresh.get("bgl_hyperglycaemia_mmol", 16.6):
+            triggers.append(
+                f"SEVERE HYPERGLYCAEMIA: BGL {bgl:.1f} mmol/L > {v_thresh.get('bgl_hyperglycaemia_mmol', 16.6)} — possible DKA or HHS, refer for IV management"
+            )
+
+    # --- 2. Red flag symptoms ---
+    if red_flags:
+        CRITICAL_RED_FLAG_TERMS = [rt["term"].lower() for rt in escalation_rules.get("critical_red_flag_terms", [])]
+        for flag in red_flags:
+            flag_lower = flag.lower()
+            for term in CRITICAL_RED_FLAG_TERMS:
+                if term in flag_lower:
+                    triggers.append(
+                        f"RED FLAG SYMPTOM: '{flag}' — requires immediate clinical assessment"
+                    )
+                    break
+
+    # --- 3. Diagnosis-level hard stops ---
+    HIGH_RISK_DIAGNOSES = [dx["name"].lower() for dx in escalation_rules.get("high_risk_diagnoses", [])]
     for high_risk_dx in HIGH_RISK_DIAGNOSES:
         if high_risk_dx in dx_name:
-            triggers.append(f"DIAGNOSIS HARD STOP: '{dx_name}' requires hospital-level care")
+            triggers.append(
+                f"DIAGNOSIS HARD STOP: '{dx_name}' requires hospital-level care — immediate referral"
+            )
+            break  # one trigger per diagnosis is sufficient
 
-    # --- Drug-level hard stops ---
-    INJECTABLE_DRUGS = ["artesunate", "quinine", "ceftriaxone", "oxytocin",
-                        "magnesium sulphate", "dexamethasone", "adrenaline",
-                        "morphine", "diazepam"]
+    # --- 4. Drug-level hard stops (injectables requiring supervised administration) ---
+    INJECTABLE_DRUGS = [inj["name"].lower() for inj in escalation_rules.get("injectable_drugs", [])]
     for drug in rx_drugs:
         for inj in INJECTABLE_DRUGS:
             if inj in drug:
@@ -756,23 +854,48 @@ def run_rule_engine(
                     f"doctor authorization mandatory before dispensing"
                 )
 
-    # --- Patient profile hard stops ---
-    if age < 2:
-        triggers.append("PATIENT AGE: infant under 2 months — all prescriptions require doctor authorization")
-
-    if pregnancy in ("pregnant", "third trimester", "second trimester", "first trimester"):
-        triggers.append("PREGNANCY: all prescriptions in pregnancy require doctor authorization")
-
-    if sex == "F" and age >= 12 and age <= 50 and pregnancy == "unknown":
+    # --- 5. Patient profile hard stops ---
+    profile_rules = escalation_rules.get("patient_profile_rules", {})
+    if age < profile_rules.get("infant_age_years_threshold", 2):
+        lbl = profile_rules.get("infant_threshold_label", "2 years")
         triggers.append(
-            "CHILDBEARING AGE: pregnancy status unknown in female of reproductive age — "
-            "confirm before dispensing teratogenic drugs"
+            f"PATIENT AGE: infant under {lbl} — all prescriptions require doctor authorization"
         )
 
-    if weight_kg and weight_kg < 5:
-        triggers.append("LOW WEIGHT: patient weight < 5kg — weight-based dosing requires doctor verification")
+    # Pregnancy-aware check — applies to both known-pregnant AND unknown-status females.
+    # Blanket blocking all prescriptions for pregnant patients is overly restrictive:
+    # e.g. paracetamol for a headache in a pregnant woman is safe.
+    # Only escalate when the diagnosis or drug is materially affected by pregnancy status.
+    PREGNANCY_SENSITIVE_DX = [dx["name"].lower() for dx in escalation_rules.get("pregnancy_sensitive_diagnoses", [])]
+    TERATOGENIC_DRUGS      = [td["name"].lower() for td in escalation_rules.get("teratogenic_drugs", [])]
+    is_sensitive_dx = any(dx in dx_name for dx in PREGNANCY_SENSITIVE_DX)
+    has_teratogen   = any(unsafe in drug for drug in rx_drugs for unsafe in TERATOGENIC_DRUGS)
 
-    # --- Allergy conflict check ---
+    min_cb_age = profile_rules.get("childbearing_age_min_years", 12)
+    max_cb_age = profile_rules.get("childbearing_age_max_years", 50)
+
+    IS_PREGNANT = pregnancy in ("pregnant", "first trimester", "second trimester", "third trimester")
+    IS_UNKNOWN  = pregnancy in ("", "unknown") and sex == "F" and min_cb_age <= age <= max_cb_age
+
+    if IS_PREGNANT and (is_sensitive_dx or has_teratogen):
+        triggers.append(
+            "PREGNANCY: confirmed pregnancy and the provisional diagnosis or prescribed drug "
+            "requires doctor sign-off before dispensing"
+        )
+    elif IS_UNKNOWN and (is_sensitive_dx or has_teratogen):
+        triggers.append(
+            "CHILDBEARING AGE: pregnancy status unknown in female of reproductive age, "
+            "AND provisional diagnosis or prescribed drugs are pregnancy-sensitive — "
+            "doctor authorization required"
+        )
+
+    weight_thresh = profile_rules.get("low_weight_kg_threshold", 5)
+    if weight_kg and weight_kg < weight_thresh:
+        triggers.append(
+            f"LOW WEIGHT: patient weight < {weight_thresh}kg — weight-based dosing requires doctor verification"
+        )
+
+    # --- 6. Allergy conflict check ---
     known_allergies = [a.lower() for a in demographics.get("known_allergies", [])]
     for drug in rx_drugs:
         for allergy in known_allergies:
@@ -782,7 +905,7 @@ def run_rule_engine(
                     f"documented allergy '{allergy}' — DO NOT DISPENSE"
                 )
 
-    # --- Confidence hard stop ---
+    # --- 7. Diagnostic confidence hard stop ---
     confidence = provisional_dx.get("provisional_diagnosis", {}).get("confidence", "high")
     if confidence == "low":
         triggers.append(
@@ -791,9 +914,9 @@ def run_rule_engine(
         )
 
     # Determine final tier
-    llm_tier       = triage_output.get("triage", {}).get("tier", "HIGH")
-    overrode_llm   = bool(triggers) and llm_tier == "LOW"
-    final_tier     = "HIGH" if triggers else llm_tier
+    llm_tier     = triage_output.get("triage", {}).get("tier", "HIGH")
+    overrode_llm = bool(triggers) and llm_tier == "LOW"
+    final_tier   = "HIGH" if triggers else llm_tier
 
     if overrode_llm:
         print(f"[RULE ENGINE] Overriding LLM tier LOW → HIGH. Triggers: {triggers}")
@@ -873,8 +996,16 @@ async def run_management_agent(
 
     # Rule engine gate
     print(f"[{session_id}] Rule engine: deterministic safety check")
+    # Merge vitals from both phases. Phase 3 (clarifying findings) takes priority
+    # on shared fields — measurements are more recent and more deliberate.
+    vitals = {**vault_context.get("extracted_concepts", {}).get("vitals_reported", {})}
+    for key, val in clarifying_findings.get("vitals_found", {}).items():
+        if key not in ("rdt_result",) and val is not None:
+            vitals[key] = val
+    red_flags = vault_context.get("extracted_concepts", {}).get("red_flags", [])
     rule_result = run_rule_engine(
-        provisional_dx, risk_assessment, triage_output, demographics
+        provisional_dx, risk_assessment, triage_output, demographics,
+        vitals=vitals, red_flags=red_flags,
     )
 
     # Merge rule engine tier into triage output

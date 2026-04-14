@@ -78,6 +78,24 @@ class Vault:
             json.dumps(patch)
         )
 
+    async def update_nested(self, path: list[str], value) -> None:
+        """
+        Set a single key deep inside the JSONB document using jsonb_set.
+        path = ["demographics", "pregnancy_status"]
+        Creates intermediate objects if they do not yet exist.
+        """
+        await self.conn.execute(
+            """
+            UPDATE sessions
+            SET data       = jsonb_set(data, $2::text[], $3::jsonb, true),
+                updated_at = now()
+            WHERE session_id = $1
+            """,
+            self.session_id,
+            path,
+            json.dumps(value),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Epidemiological prior — Layer 1 + Layer 2
@@ -264,11 +282,28 @@ async def extract_medical_concepts(
         "relevant_history": ["pertinent positives from history"],
         "risk_factors":     ["risk factors mentioned"],
         "vitals_reported": {
-            "temperature": "value if mentioned, else null",
-            "pulse":       "value if mentioned, else null",
-            "bp":          "value if mentioned, else null",
-            "spo2":        "value if mentioned, else null"
-        }
+            "temperature_c":    "numeric °C only e.g. 38.5 — null if not mentioned",
+            "pulse_bpm":        "numeric bpm only e.g. 112 — null if not mentioned",
+            "systolic_bp_mmhg": "numeric systolic mmHg only e.g. 85 — null if not mentioned",
+            "spo2_pct":         "numeric SpO2 percent only e.g. 94 — null if not mentioned",
+            "rr_per_min":       "numeric breaths/min only e.g. 28 — null if not mentioned",
+            "bgl_mmol":         "blood glucose numeric mmol/L e.g. 11.2 — null if not mentioned",
+            "gcs":              "numeric Glasgow Coma Scale 3-15 e.g. 13 — null if not mentioned"
+        },
+        "red_flags": [
+            "verbatim alarming finding explicitly stated e.g. 'cannot walk', "
+            "'vomiting blood', 'fitting', 'rigidity', 'unconscious', 'cannot breathe'"
+        ],
+        "pregnancy_status": (
+            "pregnant | not_pregnant | postpartum | unknown"
+            " — extract from transcript; use 'unknown' if patient is female "
+            "of reproductive age (12-50) but pregnancy/LMP was not discussed "
+            "or patient was unsure; use null for males or age outside 12-50"
+        ),
+        "lmp": (
+            "last menstrual period as stated verbally e.g. '3 weeks ago', "
+            "'15th of last month' — null if not mentioned"
+        )
     }, indent=2)
 
     prior_text = (
@@ -286,7 +321,18 @@ async def extract_medical_concepts(
             "- Extract only what is explicitly stated or clearly implied\n"
             "- Negatives are as important as positives — list all denied symptoms\n"
             "- Do not infer or assume anything not present in the transcript\n"
-            "- vitals_reported values should be null if not mentioned\n\n"
+            "- vitals_reported: return NUMERIC JSON numbers only — strip all units.\n"
+            "  e.g. temperature 38.5°C → 38.5; SpO2 94% → 94; BP 90/60 → 90 (systolic only).\n"
+            "  Null for any vital sign not explicitly mentioned in the transcript.\n"
+            "- red_flags: list verbatim any alarming symptom or finding explicitly stated.\n"
+            "  Include: 'cannot walk', 'vomiting blood', 'fitting', 'unconscious',\n"
+            "  'rigidity', 'severe breathing difficulty', 'cannot breathe', etc.\n"
+            "  Empty list [] if none mentioned.\n"
+            "- pregnancy_status: MANDATORY for any female patient aged 12-50.\n"
+            "  Set to 'pregnant' / 'not_pregnant' / 'postpartum' from explicit statements.\n"
+            "  Set to 'unknown' if the topic was not raised OR patient could not confirm.\n"
+            "  Set to null only for male patients or age clearly outside 12-50.\n"
+            "- lmp: record verbatim if stated; null otherwise\n\n"
             f"Return ONLY valid JSON matching this schema:\n{output_schema}\n\n"
             "JSON only. No explanation. No markdown."
         ),
@@ -433,6 +479,56 @@ async def stream_differential(
 # Call 3 — Gap analysis and clarifying questions
 # ---------------------------------------------------------------------------
 
+# Obstetric diagnoses that make pregnancy status safety-critical
+_PREGNANCY_SENSITIVE_DX = {
+    "ectopic pregnancy", "pre-eclampsia", "eclampsia",
+    "anaemia in pregnancy", "postpartum sepsis", "post-partum sepsis",
+    "hyperemesis gravidarum", "placenta praevia", "abruption",
+    "threatened miscarriage", "miscarriage", "antepartum haemorrhage",
+    "gestational diabetes", "obstetric cholestasis",
+    # Non-obstetric but treatment critically changes in pregnancy
+    "malaria", "severe malaria", "typhoid", "tuberculosis",
+    "pulmonary tb", "urinary tract infection", "uti",
+    "epilepsy", "hypertension",
+}
+
+
+def _pregnancy_relevance(
+    ddx: list[dict],
+    concepts: dict,
+    vault_context: dict,
+) -> tuple[bool, bool]:
+    """
+    Determine whether pregnancy clarification is needed in this session.
+
+    Returns:
+      needs_lmp_question : True → an LMP clarifying question must be injected
+      status_unknown     : True → pregnancy_status is absent or 'unknown'
+    """
+    demographics      = vault_context.get("demographics", {})
+    age               = demographics.get("age", 99)
+    sex               = demographics.get("sex", "").upper()
+    pregnancy_status  = (
+        concepts.get("pregnancy_status")
+        or demographics.get("pregnancy_status", "")
+        or ""
+    ).lower()
+
+    status_unknown = pregnancy_status in ("", "unknown")
+
+    if sex != "F" or not (12 <= age <= 50):
+        return False, False   # not applicable
+
+    if not status_unknown:
+        return False, False   # already confirmed
+
+    # Check whether any DDx entry is pregnancy-sensitive
+    dx_names = " ".join(d.get("disease", "").lower() for d in ddx)
+    relevant  = any(term in dx_names for term in _PREGNANCY_SENSITIVE_DX)
+
+    return relevant, True
+
+
 async def generate_clarifying_questions(
     ddx: list[dict],
     concepts: dict,
@@ -448,6 +544,12 @@ async def generate_clarifying_questions(
 
     Constrained to tools in bedside_tools.json. Never suggests
     investigations unavailable at a rural clinic.
+
+    Special rule — pregnancy clarification:
+      If the patient is a female of reproductive age (12-50), pregnancy
+      status was not established in phase 2, AND any DDx entry is
+      pregnancy-sensitive, an LMP / pregnancy status question is
+      injected at priority 1 regardless of the LLM's ranking.
 
     Output schema:
     {
@@ -480,6 +582,8 @@ async def generate_clarifying_questions(
     must_not_miss  = [d["disease"] for d in ddx if d.get("must_not_miss")]
     needs_referral = [d["disease"] for d in ddx if d.get("referral_required")]
 
+    needs_lmp_question, status_unknown = _pregnancy_relevance(ddx, concepts, vault_context)
+
     output_schema = json.dumps({
         "clinical_summary": "one sentence of what is known",
         "key_uncertainty":  "the most important unresolved diagnostic question",
@@ -499,19 +603,39 @@ async def generate_clarifying_questions(
         }]
     }, indent=2)
 
-    instructions = (
-        "INSTRUCTIONS:\n"
-        "- Generate 3-5 clarifying questions ranked by discriminating power\n"
-        "- Generate 2-4 bedside observations ranked by discriminating power\n"
-        "- Priority 1 = the single finding that would most change the ranking\n"
-        "- Must-not-miss diagnoses must be screened for even if probability is low\n"
-        "- Questions must be phrased simply enough for any patient to understand\n"
-        "- Observations must use ONLY tools from the available list below\n"
-        "- Never suggest labs, imaging, LP, ECG, or any hospital-level investigation\n\n"
-        f"AVAILABLE BEDSIDE TOOLS:\n{json.dumps(available_tools, indent=2)}\n\n"
-        f"Return ONLY valid JSON matching this schema:\n{output_schema}\n\n"
-        "JSON only. No explanation. No markdown."
-    )
+    # Build the pregnancy instruction block (injected only when needed)
+    if needs_lmp_question:
+        pregnancy_instruction = (
+            "MANDATORY PREGNANCY CLARIFICATION (priority 1):\n"
+            "Pregnancy status for this patient was not established in the history phase "
+            "and is relevant to the current differential. You MUST include the following "
+            "as the first clarifying question (priority 1) — do not omit or merge it:\n"
+            "  question: \"When did your last period start? Are you pregnant, "
+            "or could you be pregnant?\"\n"
+            "  discriminates_between: list all pregnancy-sensitive diagnoses in the DDx\n"
+            "  if_yes_favours: obstetric diagnosis or pregnancy-modified treatment path\n"
+            "  if_no_favours: non-obstetric diagnoses\n"
+            "  priority: 1 — renumber all other questions starting from 2\n"
+        )
+    else:
+        pregnancy_instruction = ""
+
+    instructions = "\n\n".join(filter(bool, [
+        (
+            "INSTRUCTIONS:\n"
+            "- Generate 3-5 clarifying questions ranked by discriminating power\n"
+            "- Generate 2-4 bedside observations ranked by discriminating power\n"
+            "- Priority 1 = the single finding that would most change the ranking\n"
+            "- Must-not-miss diagnoses must be screened for even if probability is low\n"
+            "- Questions must be phrased simply enough for any patient to understand\n"
+            "- Observations must use ONLY tools from the available list below\n"
+            "- Never suggest labs, imaging, LP, ECG, or any hospital-level investigation\n"
+            f"AVAILABLE BEDSIDE TOOLS:\n{json.dumps(available_tools, indent=2)}\n"
+            f"Return ONLY valid JSON matching this schema:\n{output_schema}\n\n"
+            "JSON only. No explanation. No markdown."
+        ),
+        pregnancy_instruction,
+    ]))
 
     prompt = "\n\n".join([
         "You are designing a targeted clinical assessment for a nurse in a remote "
@@ -536,7 +660,43 @@ async def generate_clarifying_questions(
         raw = raw.split("```")[1]
         if raw.startswith("json"):
             raw = raw[4:]
-    return json.loads(raw.strip())
+    result = json.loads(raw.strip())
+
+    # Safety net: if needs_lmp_question and the LLM somehow omitted it,
+    # insert the LMP question deterministically at priority 1.
+    if needs_lmp_question:
+        existing_qs = result.get("clarifying_questions", [])
+        lmp_already_present = any(
+            "period" in q.get("question", "").lower()
+            or "lmp" in q.get("question", "").lower()
+            or "pregnant" in q.get("question", "").lower()
+            for q in existing_qs
+        )
+        if not lmp_already_present:
+            pregnancy_sensitive_in_ddx = [
+                d["disease"] for d in ddx
+                if any(term in d["disease"].lower() for term in _PREGNANCY_SENSITIVE_DX)
+            ] or top_diagnoses
+            lmp_q = {
+                "question":              (
+                    "When did your last period start? "
+                    "Are you pregnant, or could you be pregnant?"
+                ),
+                "discriminates_between": pregnancy_sensitive_in_ddx,
+                "if_yes_favours":        "obstetric or pregnancy-modified diagnosis",
+                "if_no_favours":         "non-obstetric diagnosis",
+                "priority":              1,
+            }
+            # Renumber existing questions
+            for q in existing_qs:
+                q["priority"] = q.get("priority", 1) + 1
+            result["clarifying_questions"] = [lmp_q] + existing_qs
+            print(
+                "[PREGNANCY GATE] LMP clarifying question injected deterministically "
+                "(LLM omitted it despite instruction)."
+            )
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -576,12 +736,32 @@ async def run_diagnosis_agent(
     concepts = await extract_medical_concepts(transcript_segment, vault_context)
     await vault.update({"extracted_concepts": concepts})
 
+    # Write extracted pregnancy_status back into demographics so the rule
+    # engine and Management Agent always see a populated field.
+    extracted_pregnancy = concepts.get("pregnancy_status")
+    if extracted_pregnancy is not None:
+        # Merge into the demographics sub-document
+        await vault.update_nested(
+            ["demographics", "pregnancy_status"], extracted_pregnancy
+        )
+        if concepts.get("lmp"):
+            await vault.update_nested(["demographics", "lmp"], concepts["lmp"])
+        print(
+            f"[{session_id}] Pregnancy status extracted: {extracted_pregnancy} "
+            f"(LMP: {concepts.get('lmp')})"
+        )
+        # Refresh vault_context so Call 2 and Call 3 see the updated demographics
+        vault_context = await vault.read()
+    else:
+        print(f"[{session_id}] pregnancy_status not applicable for this patient")
+
     # Call 2 — differential generation
     print(f"[{session_id}] Call 2: generating differential")
     ddx = await generate_differential(concepts, vault_context, baseline_layer, epi_layer)
     await vault.update({"differential_table": ddx})
 
     # Call 3 — gap analysis + clarifying questions
+    # Pass updated vault_context so _pregnancy_relevance sees the latest demographics
     print(f"[{session_id}] Call 3: generating clarifying questions")
     clarifying = await generate_clarifying_questions(ddx, concepts, vault_context)
     await vault.update({

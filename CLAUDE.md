@@ -24,6 +24,7 @@ cdst/
 ├── diagnosis_agent.py          # Three-call pipeline, no RAG
 ├── management_agent.py         # Four-call pipeline, RAG in Call 2
 ├── orchestrator.py             # WebSocket session orchestrator — central component
+├── escalation_rules.json       # Rule engine configuration (MO reviewed)
 ├── data/
 │   ├── epi_prior_wb.json       # All 23 WB districts, 4 seasonal buckets
 │   ├── bedside_tools.json      # Constraint list for nurse-available tools
@@ -269,11 +270,17 @@ verbatim from Call 2 — exact drug, dose, route, frequency, duration.
 plain language — every drug, every dose, nothing omitted.
 
 **Rule engine** runs deterministically after Call 4. Can only escalate LOW → HIGH,
-never downgrade. Hard stops include:
+never downgrade. This logic has been extracted into a separate, data-driven configuration
+file (`escalation_rules.json`). This allows Medical Officers (MOs) to curate and update
+clinical policies, vital thresholds, red flags, and sensitive scenarios (like pregnancy)
+independently of code deployments.
+Hard stops configured in the JSON include:
+- Vital sign derangements (hypoxia, shock, etc.)
+- Red flag symptoms (convulsions, unconsciousness, etc.)
 - High-risk diagnosis names (sepsis, eclampsia, GBS, cord compression, etc.)
-- Injectable drugs (artesunate, oxytocin, magnesium sulphate, etc.)
-- Infant under 2 months
-- Pregnancy (any trimester)
+- Injectable/teratogenic drugs (artesunate, oxytocin, magnesium sulphate, etc.)
+- Infant under 2 years, low weight < 5kg
+- Pregnancy (any trimester) — conditional based on JSON flags (escalates if diagnosis is pregnancy-sensitive or drug is teratogenic)
 - Allergy conflict between prescribed drug and known allergies
 - Low diagnostic confidence
 
