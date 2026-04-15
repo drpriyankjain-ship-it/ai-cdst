@@ -20,15 +20,15 @@ pipelines — not agentic in the technical sense. True agentic behavior involves
 tool use, dynamic branching based on intermediate outputs, self-correction loops,
 and autonomous planning.
 
-The system has hard latency constraints: History Agent must deliver first token
-within 1.5s of Marker A, Diagnosis Agent within 1.5s of Marker B. The rule engine
+The system has hard latency constraints: History Stage must deliver first token
+within 1.5s of Marker A, Diagnosis Stage within 1.5s of Marker B. The rule engine
 is deterministic by design for patient safety.
 
 ---
 
 ## Options evaluated
 
-### 1. Management Agent RAG retrieval — tool-driven
+### 1. Management Stage RAG retrieval — tool-driven
 
 **Current:** Hardcoded top-2 diagnoses, top-8 chunks, 0.55 similarity threshold.
 
@@ -39,14 +39,14 @@ retrieval is thin. Tools would be:
 - `check_formulary(drug_name)`
 - `flag_drug_interaction(drug_a, drug_b, patient_allergies)`
 
-**Verdict: Worth doing.** Management Agent has no first-token latency SLA (7-8s
+**Verdict: Worth doing.** Management Stage has no first-token latency SLA (7-8s
 total is already acceptable). This is the highest-stakes output in the system —
 a dynamically retrieved weight-band dosing table for a paediatric malaria case is
 materially safer than a hardcoded retrieval that may miss it.
 
 ---
 
-### 2. Diagnosis Agent — self-correcting differential
+### 2. Diagnosis Stage — self-correcting differential
 
 **Agentic version:** After generating the differential, agent checks whether it
 missed a regionally endemic condition and self-corrects.
@@ -95,9 +95,9 @@ behavior is guaranteed, versioned, clinician-auditable, and deployable independe
 
 | Component | Decision | Reason |
 |---|---|---|
-| Management Agent RAG | Make tool-driven when refactoring | Highest stakes, no latency SLA, material quality gain |
-| Diagnosis Agent | Keep fixed pipeline | 1.5s first-token SLA rules out loops |
-| History Agent | Keep fixed pipeline | 1.5s first-token SLA, simple task |
+| Management Stage RAG | Make tool-driven when refactoring | Highest stakes, no latency SLA, material quality gain |
+| Diagnosis Stage | Keep fixed pipeline | 1.5s first-token SLA rules out loops |
+| History Stage | Keep fixed pipeline | 1.5s first-token SLA, simple task |
 | Confirmation pipeline | Design agentically when built | Async, no latency pressure, genuinely uncertain state |
 | Rule engine | Never agentic | Patient safety — must remain deterministic |
 | Doctor review | Tool-augmented when doctor UI is built | Moderate benefit, low priority |

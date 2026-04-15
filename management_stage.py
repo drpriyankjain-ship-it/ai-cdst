@@ -1,6 +1,6 @@
 """
-CDST Management Agent
-=====================
+CDST Management Stage  [fixed pipeline — planned: agentic RAG retrieval]
+=========================================================================
 Four-call pipeline with RAG for treatment protocol retrieval:
 
   Call 1: phase 3 transcript → extracted clarifying findings     (~900ms)
@@ -46,7 +46,7 @@ CLAUDE_MODEL       = "claude-sonnet-4-20250514"
 EPI_PRIOR_PATH     = "data/epi_prior_wb.json"
 BEDSIDE_TOOLS_PATH = "data/bedside_tools.json"
 FORMULARY_PATH     = "data/formulary_wb.json"
-ESCALATION_RULES_PATH = "escalation_rules.json"
+ESCALATION_RULES_PATH = "data/escalation_rules.json"
 RAG_TOP_K          = 8    # STG chunks per diagnosis for treatment retrieval
 
 client   = anthropic.Anthropic()
@@ -116,7 +116,7 @@ async def retrieve_treatment_protocols(
     Retrieve STG treatment protocol chunks for the top 1-2 diagnoses.
 
     Queries are treatment-focused — dose, duration, route, contraindications,
-    referral criteria. This is the core RAG use case for the Management Agent:
+    referral criteria. This is the core RAG use case for the Management Stage:
     retrieved authoritative text governs the prescription, not LLM recall.
 
     Returns a formatted string ready for prompt injection, or empty string
@@ -171,9 +171,9 @@ async def extract_clarifying_findings(
     """
     Extract structured findings from the phase 3 clarifying questions transcript.
 
-    This is the nurse's answers to the Diagnosis Agent's clarifying questions
+    This is the nurse's answers to the Diagnosis Stage's clarifying questions
     plus any bedside examination findings. It updates the clinical picture
-    before the Management Agent generates the provisional diagnosis.
+    before the Management Stage generates the provisional diagnosis.
 
     Input : phase 3 transcript (marker B → marker C)
     Output: structured JSON with answers, examination findings, updated
@@ -933,13 +933,13 @@ def run_rule_engine(
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-async def run_management_agent(
+async def run_management_stage(
     session_id: str,
     transcript_segment: str,   # phase 3 transcript (marker B → marker C)
     db_conn: asyncpg.Connection,
 ) -> dict:
     """
-    Full Management Agent pipeline.
+    Full Management Stage pipeline.
     Called by the session orchestrator when the nurse presses marker C.
 
     Flow:
@@ -1014,13 +1014,13 @@ async def run_management_agent(
 
     await vault.update({
         "triage_output":                   triage_output,
-        "management_agent_status":         "complete",
-        "management_agent_completed_at":   datetime.now().isoformat(),
+        "management_stage_status":         "complete",
+        "management_stage_completed_at":   datetime.now().isoformat(),
         "risk_tier":                       rule_result["final_risk_tier"],
         "doctor_auth_status":              "pending",
     })
 
-    print(f"[{session_id}] Management agent complete. "
+    print(f"[{session_id}] Management stage complete. "
           f"Risk tier: {rule_result['final_risk_tier']}")
 
     return {
@@ -1045,21 +1045,21 @@ class ManagementRequest(BaseModel):
     transcript_segment: str
 
 
-@app.post("/agent/management")
+@app.post("/stage/management")
 async def management_endpoint(req: ManagementRequest):
     """
     Non-streaming endpoint. Returns full structured result when complete.
     """
     conn = await asyncpg.connect(dsn="postgresql://localhost/cdst")
     try:
-        return await run_management_agent(
+        return await run_management_stage(
             req.session_id, req.transcript_segment, conn
         )
     finally:
         await conn.close()
 
 
-@app.post("/agent/management/stream")
+@app.post("/stage/management/stream")
 async def management_stream_endpoint(req: ManagementRequest):
     """
     Streaming endpoint for Call 2 (provisional Dx) display.

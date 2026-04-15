@@ -1,7 +1,7 @@
 """
-CDST Diagnosis Agent
-====================
-Three-call pipeline — no RAG (moved to Management Agent):
+CDST Diagnosis Stage  [fixed pipeline]
+=======================================
+Three-call pipeline — no RAG (moved to Management Stage):
 
   Call 1: transcript segment → extracted medical concepts       (~900ms)
   Call 2: concepts + epi prior → ranked differential (DDx)     (~3.2s, streaming)
@@ -10,7 +10,7 @@ Three-call pipeline — no RAG (moved to Management Agent):
 Design rationale:
   - LLM native clinical reasoning handles differential generation and gap
     analysis correctly without retrieval support.
-  - RAG is reserved for the Management Agent where retrieved STG protocol
+  - RAG is reserved for the Management Stage where retrieved STG protocol
     text directly governs dosing, contraindications, and referral decisions.
   - Epi prior (Layer 1 baseline + Layer 2 IDSP district/season lookup) is
     injected directly into Call 2 as structured context — no vector search.
@@ -215,7 +215,7 @@ def validate_differential(ddx: list[dict]) -> list[dict]:
     - Invalid probability → normalised to "moderate" + logged warning
     - Output re-sorted by rank
 
-    Downstream consumers (Management Agent, rule engine, doctor UI)
+    Downstream consumers (Management Stage, rule engine, doctor UI)
     depend on this structure being predictable on every call.
     """
     validated = []
@@ -640,7 +640,7 @@ async def generate_clarifying_questions(
     prompt = "\n\n".join([
         "You are designing a targeted clinical assessment for a nurse in a remote "
         "rural clinic in West Bengal. The nurse has 1-2 minutes to gather additional "
-        "information before the management agent runs.",
+        "information before the management stage runs.",
         f"CURRENT DIFFERENTIAL (ranked):\n{json.dumps(ddx, indent=2)}",
         f"TOP DIAGNOSES TO DISCRIMINATE: {json.dumps(top_diagnoses)}",
         f"MUST-NOT-MISS (screen regardless of probability): {json.dumps(must_not_miss)}",
@@ -703,13 +703,13 @@ async def generate_clarifying_questions(
 # Main pipeline — orchestrates all three calls
 # ---------------------------------------------------------------------------
 
-async def run_diagnosis_agent(
+async def run_diagnosis_stage(
     session_id: str,
     transcript_segment: str,
     db_conn: asyncpg.Connection,
 ) -> dict:
     """
-    Full Diagnosis Agent pipeline. Called by the session orchestrator
+    Full Diagnosis Stage pipeline. Called by the session orchestrator
     when the nurse presses the marker B button.
 
     Flow:
@@ -737,7 +737,7 @@ async def run_diagnosis_agent(
     await vault.update({"extracted_concepts": concepts})
 
     # Write extracted pregnancy_status back into demographics so the rule
-    # engine and Management Agent always see a populated field.
+    # engine and Management Stage always see a populated field.
     extracted_pregnancy = concepts.get("pregnancy_status")
     if extracted_pregnancy is not None:
         # Merge into the demographics sub-document
@@ -766,11 +766,11 @@ async def run_diagnosis_agent(
     clarifying = await generate_clarifying_questions(ddx, concepts, vault_context)
     await vault.update({
         "clarifying_questions":          clarifying,
-        "diagnosis_agent_status":        "complete",
-        "diagnosis_agent_completed_at":  datetime.now().isoformat(),
+        "diagnosis_stage_status":        "complete",
+        "diagnosis_stage_completed_at":  datetime.now().isoformat(),
     })
 
-    print(f"[{session_id}] Diagnosis agent complete")
+    print(f"[{session_id}] Diagnosis stage complete")
     return {
         "session_id": session_id,
         "concepts":   concepts,
@@ -791,28 +791,28 @@ class DiagnosisRequest(BaseModel):
     transcript_segment:  str
 
 
-@app.post("/agent/diagnosis")
+@app.post("/stage/diagnosis")
 async def diagnosis_endpoint(req: DiagnosisRequest):
     """
     Non-streaming endpoint. Returns full structured result when complete.
     Use when the nurse has natural downtime (she does — she's conducting
-    the consultation while the agent runs in the background).
+    the consultation while the stage runs in the background).
     """
     conn = await asyncpg.connect(dsn="postgresql://localhost/cdst")
     try:
-        return await run_diagnosis_agent(req.session_id, req.transcript_segment, conn)
+        return await run_diagnosis_stage(req.session_id, req.transcript_segment, conn)
     finally:
         await conn.close()
 
 
-@app.post("/agent/diagnosis/stream")
+@app.post("/stage/diagnosis/stream")
 async def diagnosis_stream_endpoint(req: DiagnosisRequest):
     """
     Streaming endpoint for the differential display step only.
 
     Yields the readable differential as tokens arrive so the nurse
     sees results painting in real time. The structured JSON output
-    is written to the Vault by run_diagnosis_agent() separately.
+    is written to the Vault by run_diagnosis_stage() separately.
     """
     conn          = await asyncpg.connect(dsn="postgresql://localhost/cdst")
     vault_context = await Vault(conn, req.session_id).read()

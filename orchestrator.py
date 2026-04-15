@@ -6,9 +6,9 @@ Central WebSocket handler for the full clinical consultation session.
 Handles the complete session lifecycle:
   1. Session init — patient lookup, Vault initialisation
   2. Continuous audio → Deepgram STT → rolling transcript accumulation
-  3. Marker A → History Agent → questionnaire streamed to nurse
-  4. Marker B → Diagnosis Agent → differential streamed to nurse
-  5. Marker C → Management Agent → triage output delivered to nurse
+  3. Marker A → History Stage → questionnaire streamed to nurse
+  4. Marker B → Diagnosis Stage → differential streamed to nurse
+  5. Marker C → Management Stage → triage output delivered to nurse
   6. Session end → Vault closed, doctor notification triggered
 
 WebSocket protocol
@@ -36,8 +36,8 @@ Client → Server:
 Server → Client:
   { "type": "session_ready", "session_id": "sess_abc123", "is_new_patient": true }
   { "type": "transcript", "text": "...", "is_final": true }
-  { "type": "agent_token", "agent": "history|diagnosis", "token": "..." }
-  { "type": "agent_complete", "agent": "history|diagnosis|management", "data": {...} }
+  { "type": "stage_token", "stage": "history|diagnosis", "token": "..." }
+  { "type": "stage_complete", "stage": "history|diagnosis|management", "data": {...} }
   { "type": "session_closed", "risk_tier": "low|high" }
   { "type": "audio_confirmed" }
   { "type": "error", "code": "AUTH_FAILED|SESSION_NOT_FOUND|...", "message": "..." }
@@ -68,9 +68,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-# Agent imports — call agent functions directly from the orchestrator.
-# Each agent handles its own Vault writes; the orchestrator owns the lifecycle.
-from history_agent import (
+# Stage imports — stage functions are called directly from the orchestrator.
+# Each stage handles its own Vault writes; the orchestrator owns the lifecycle.
+from history_stage import (
     extract_chief_complaint,
     generate_questionnaire,
     validate_questionnaire,
@@ -79,15 +79,15 @@ from history_agent import (
     load_baseline_diseases,
     load_epi_prior,
 )
-from diagnosis_agent import (
+from diagnosis_stage import (
     extract_medical_concepts,
     generate_differential,
     validate_differential,
     stream_differential,
     generate_clarifying_questions,
-    run_diagnosis_agent,
+    run_diagnosis_stage,
 )
-from management_agent import run_management_agent
+from management_stage import run_management_stage
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +170,7 @@ def extract_token(websocket: WebSocket) -> str:
 async def load_patient_record(conn: asyncpg.Connection, patient_id: str) -> dict:
     """
     Load patient summary from patient_records table.
-    Returns empty dict for unknown patients — History Agent treats an empty
+    Returns empty dict for unknown patients — History Stage treats an empty
     record as a new patient and collects a full intake.
     """
     row = await conn.fetchrow(
@@ -452,7 +452,7 @@ async def ws_send(ws: WebSocket, payload: dict) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Marker A — History Agent
+# Marker A — History Stage
 # ---------------------------------------------------------------------------
 
 async def handle_marker_a(ws: WebSocket, state: SessionState, t: float) -> None:
@@ -466,7 +466,7 @@ async def handle_marker_a(ws: WebSocket, state: SessionState, t: float) -> None:
       3. Concurrently:
          a. stream_questionnaire → tokens to nurse (human-readable, display only)
          b. generate_questionnaire → structured JSON → Vault
-      4. Send agent_complete with structured questionnaire
+      4. Send stage_complete with structured questionnaire
 
     Target: first token on screen within 1.5s of button press.
     """
@@ -505,7 +505,7 @@ async def handle_marker_a(ws: WebSocket, state: SessionState, t: float) -> None:
                 async for token in stream_questionnaire(
                     chief, vault_ctx, baseline, epi, patient_record
                 ):
-                    await ws_send(ws, {"type": "agent_token", "agent": "history", "token": token})
+                    await ws_send(ws, {"type": "stage_token", "stage": "history", "token": token})
 
             async def do_structured():
                 q    = await generate_questionnaire(chief, vault_ctx, baseline, epi, patient_record)
@@ -514,8 +514,8 @@ async def handle_marker_a(ws: WebSocket, state: SessionState, t: float) -> None:
                 await vault_update(conn, session_id, {
                     "questionnaire":              q,
                     "patient_record_stub":        stub,
-                    "history_agent_status":       "complete",
-                    "history_agent_completed_at": datetime.now(timezone.utc).isoformat(),
+                    "history_stage_status":       "complete",
+                    "history_stage_completed_at": datetime.now(timezone.utc).isoformat(),
                 })
                 return q
 
@@ -523,21 +523,21 @@ async def handle_marker_a(ws: WebSocket, state: SessionState, t: float) -> None:
             questionnaire, _ = await asyncio.gather(do_structured(), do_stream())
 
             await ws_send(ws, {
-                "type":  "agent_complete",
-                "agent": "history",
+                "type":  "stage_complete",
+                "stage": "history",
                 "data":  questionnaire,
             })
-            log.info("[%s] History agent complete", session_id)
+            log.info("[%s] History stage complete", session_id)
 
         except Exception as exc:
-            log.exception("[%s] History agent error: %s", session_id, exc)
-            await ws_send(ws, {"type": "error", "code": "HISTORY_AGENT_ERROR", "message": str(exc)})
+            log.exception("[%s] History stage error: %s", session_id, exc)
+            await ws_send(ws, {"type": "error", "code": "HISTORY_STAGE_ERROR", "message": str(exc)})
 
     asyncio.create_task(run())
 
 
 # ---------------------------------------------------------------------------
-# Marker B — Diagnosis Agent
+# Marker B — Diagnosis Stage
 # ---------------------------------------------------------------------------
 
 async def handle_marker_b(ws: WebSocket, state: SessionState, t: float) -> None:
@@ -551,7 +551,7 @@ async def handle_marker_b(ws: WebSocket, state: SessionState, t: float) -> None:
          a. stream_differential → tokens to nurse (display only)
          b. generate_differential → structured Vault write
       4. Generate clarifying questions (Call 3, ~1.4s)
-      5. Send agent_complete with full differential + clarifying questions
+      5. Send stage_complete with full differential + clarifying questions
 
     Target: differential starts streaming within 1.5s of button press.
     """
@@ -583,7 +583,7 @@ async def handle_marker_b(ws: WebSocket, state: SessionState, t: float) -> None:
             # Concurrent: stream differential to nurse + generate structured DDx
             async def do_stream():
                 async for token in stream_differential(concepts, vault_ctx, baseline, epi):
-                    await ws_send(ws, {"type": "agent_token", "agent": "diagnosis", "token": token})
+                    await ws_send(ws, {"type": "stage_token", "stage": "diagnosis", "token": token})
 
             async def do_structured():
                 ddx = await generate_differential(concepts, vault_ctx, baseline, epi)
@@ -599,36 +599,36 @@ async def handle_marker_b(ws: WebSocket, state: SessionState, t: float) -> None:
             clarifying = await generate_clarifying_questions(ddx, concepts, vault_ctx)
             await vault_update(conn, session_id, {
                 "clarifying_questions":          clarifying,
-                "diagnosis_agent_status":        "complete",
-                "diagnosis_agent_completed_at":  datetime.now(timezone.utc).isoformat(),
+                "diagnosis_stage_status":        "complete",
+                "diagnosis_stage_completed_at":  datetime.now(timezone.utc).isoformat(),
             })
 
             await ws_send(ws, {
-                "type":  "agent_complete",
-                "agent": "diagnosis",
+                "type":  "stage_complete",
+                "stage": "diagnosis",
                 "data": {
                     "differential":        ddx,
                     "clarifying_questions": clarifying,
                 },
             })
-            log.info("[%s] Diagnosis agent complete", session_id)
+            log.info("[%s] Diagnosis stage complete", session_id)
 
         except Exception as exc:
-            log.exception("[%s] Diagnosis agent error: %s", session_id, exc)
-            await ws_send(ws, {"type": "error", "code": "DIAGNOSIS_AGENT_ERROR", "message": str(exc)})
+            log.exception("[%s] Diagnosis stage error: %s", session_id, exc)
+            await ws_send(ws, {"type": "error", "code": "DIAGNOSIS_STAGE_ERROR", "message": str(exc)})
 
     asyncio.create_task(run())
 
 
 # ---------------------------------------------------------------------------
-# Marker C — Management Agent
+# Marker C — Management Stage
 # ---------------------------------------------------------------------------
 
 async def handle_marker_c(ws: WebSocket, state: SessionState, t: float) -> None:
     """
     Nurse pressed button after 1-2 minute clarifying questions phase.
 
-    The Management Agent runs its four-call pipeline including RAG and the
+    The Management Stage runs its four-call pipeline including RAG and the
     deterministic rule engine. Its run function handles all Vault writes
     internally, so we just await it and forward the result.
 
@@ -646,14 +646,14 @@ async def handle_marker_c(ws: WebSocket, state: SessionState, t: float) -> None:
 
     async def run():
         try:
-            log.info("[%s] Management agent: four-call pipeline starting", session_id)
-            result    = await run_management_agent(session_id, phase_3, conn)
+            log.info("[%s] Management stage: four-call pipeline starting", session_id)
+            result    = await run_management_stage(session_id, phase_3, conn)
             triage    = result.get("triage", {})
             risk_tier = result.get("rule_engine", {}).get("final_risk_tier", "high")
 
             await ws_send(ws, {
-                "type":  "agent_complete",
-                "agent": "management",
+                "type":  "stage_complete",
+                "stage": "management",
                 "data": {
                     "triage_output":        triage,
                     "risk_tier":            risk_tier,
@@ -666,11 +666,11 @@ async def handle_marker_c(ws: WebSocket, state: SessionState, t: float) -> None:
             if risk_tier == "high":
                 asyncio.create_task(_notify_doctor(session_id, triage))
 
-            log.info("[%s] Management agent complete — risk_tier=%s", session_id, risk_tier)
+            log.info("[%s] Management stage complete — risk_tier=%s", session_id, risk_tier)
 
         except Exception as exc:
-            log.exception("[%s] Management agent error: %s", session_id, exc)
-            await ws_send(ws, {"type": "error", "code": "MANAGEMENT_AGENT_ERROR", "message": str(exc)})
+            log.exception("[%s] Management stage error: %s", session_id, exc)
+            await ws_send(ws, {"type": "error", "code": "MANAGEMENT_STAGE_ERROR", "message": str(exc)})
 
     asyncio.create_task(run())
 
@@ -924,7 +924,7 @@ async def session_websocket(websocket: WebSocket):
 async def session_status(session_id: str):
     """
     Return current session state for doctor/admin review.
-    Used by the doctor review queue to check agent completion status.
+    Used by the doctor review queue to check stage completion status.
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -937,9 +937,9 @@ async def session_status(session_id: str):
         "session_id":               session_id,
         "risk_tier":                ctx.get("risk_tier"),
         "doctor_auth_status":       ctx.get("doctor_auth_status"),
-        "history_agent_status":     ctx.get("history_agent_status"),
-        "diagnosis_agent_status":   ctx.get("diagnosis_agent_status"),
-        "management_agent_status":  ctx.get("management_agent_status"),
+        "history_stage_status":     ctx.get("history_stage_status"),
+        "diagnosis_stage_status":   ctx.get("diagnosis_stage_status"),
+        "management_stage_status":  ctx.get("management_stage_status"),
         "session_started_at":       ctx.get("session_started_at"),
         "session_ended_at":         ctx.get("session_ended_at"),
     }

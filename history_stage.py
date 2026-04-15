@@ -1,12 +1,12 @@
 """
-CDST History Agent
-==================
+CDST History Stage  [fixed pipeline]
+=====================================
 Two-call pipeline — no RAG:
 
   Call 1: ~30s transcript → chief complaint extraction            (~700ms)
   Call 2: concepts + epi prior + visit type → questionnaire       (~1.3s, streaming)
 
-Most latency-critical agent in the pipeline. The nurse pressed the button
+Most latency-critical stage in the pipeline. The nurse pressed the button
 mid-consultation and is waiting for the questionnaire before continuing.
 Target: first token on screen within 1.5s of button press.
 
@@ -32,7 +32,7 @@ Design rationale:
   - Prior encounter history is small structured JSON — injected directly.
   - Two calls kept separate: extraction is a different task from generation,
     and extracted concepts are written to the Vault independently so the
-    Diagnosis Agent can read them without re-parsing the transcript.
+    Diagnosis Stage can read them without re-parsing the transcript.
 
 Dependencies:
     pip install anthropic asyncpg fastapi pydantic
@@ -677,8 +677,8 @@ def extract_patient_record_update(
 
     Note: at this point, the questionnaire contains the QUESTIONS to ask —
     not the answers. The actual answers come from the phase 2 transcript
-    parsed by the Diagnosis Agent. This function prepares the schema
-    so the Diagnosis Agent's concept extractor knows what structured
+    parsed by the Diagnosis Stage. This function prepares the schema
+    so the Diagnosis Stage's concept extractor knows what structured
     fields to populate.
 
     The actual patient_records update happens after session close, once
@@ -698,13 +698,13 @@ def extract_patient_record_update(
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-async def run_history_agent(
+async def run_history_stage(
     session_id: str,
     transcript_segment: str,
     db_conn: asyncpg.Connection,
 ) -> dict:
     """
-    Full History Agent pipeline.
+    Full History Stage pipeline.
     Called by the session orchestrator when the nurse presses marker A.
 
     Flow:
@@ -731,12 +731,12 @@ async def run_history_agent(
     epi_layer      = load_epi_prior(district_code, current_month)
 
     # Call 1
-    print(f"[{session_id}] History agent Call 1: extracting chief complaint")
+    print(f"[{session_id}] History stage Call 1: extracting chief complaint")
     chief_complaint = await extract_chief_complaint(transcript_segment, vault_context)
     await vault.update({"chief_complaint": chief_complaint})
 
     # Call 2
-    print(f"[{session_id}] History agent Call 2: generating questionnaire")
+    print(f"[{session_id}] History stage Call 2: generating questionnaire")
     questionnaire = await generate_questionnaire(
         chief_complaint,
         vault_context,
@@ -754,15 +754,15 @@ async def run_history_agent(
         "chief_complaint":               chief_complaint,
         "questionnaire":                 questionnaire,
         "patient_record_stub":           patient_record_stub,
-        "history_agent_status":          "complete",
-        "history_agent_completed_at":    datetime.now().isoformat(),
+        "history_stage_status":          "complete",
+        "history_stage_completed_at":    datetime.now().isoformat(),
     })
 
     missing = [f for f in [
         "past_medical_history", "family_history", "social_history",
         "current_medications", "allergies"
     ] if not patient_record.get(f)]
-    print(f"[{session_id}] History agent complete — "
+    print(f"[{session_id}] History stage complete — "
           f"missing fields to collect: {missing if missing else 'none — verification only'}")
 
     return {
@@ -785,28 +785,28 @@ class HistoryRequest(BaseModel):
     transcript_segment: str
 
 
-@app.post("/agent/history")
+@app.post("/stage/history")
 async def history_endpoint(req: HistoryRequest):
     """
     Non-streaming endpoint. Returns full structured result when complete.
     """
     conn = await asyncpg.connect(dsn="postgresql://localhost/cdst")
     try:
-        return await run_history_agent(
+        return await run_history_stage(
             req.session_id, req.transcript_segment, conn
         )
     finally:
         await conn.close()
 
 
-@app.post("/agent/history/stream")
+@app.post("/stage/history/stream")
 async def history_stream_endpoint(req: HistoryRequest):
     """
     Streaming endpoint — yields questionnaire as tokens arrive.
 
     The nurse sees sections appearing in real time and can start the
     interview immediately. The structured Vault write happens in
-    parallel via run_history_agent() called by the orchestrator.
+    parallel via run_history_stage() called by the orchestrator.
     """
     conn          = await asyncpg.connect(dsn="postgresql://localhost/cdst")
     vault_context = await Vault(conn, req.session_id).read()

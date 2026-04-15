@@ -10,7 +10,7 @@ architecture and initial development. Read this before writing any code.
 
 A mobile app for nurses working in remote rural West Bengal, India, where patients
 have no direct access to doctors. The nurse conducts a structured audio consultation.
-The app transcribes audio continuously, fires three AI agents at specific moments,
+The app transcribes audio continuously, fires three pipeline stages at specific moments,
 and produces a triage decision, prescription, and risk-assessed management plan that
 a remote doctor reviews asynchronously.
 
@@ -20,15 +20,15 @@ a remote doctor reviews asynchronously.
 
 ```
 cdst/
-├── history_agent.py            # Two-call pipeline, no RAG
-├── diagnosis_agent.py          # Three-call pipeline, no RAG
-├── management_agent.py         # Four-call pipeline, RAG in Call 2
+├── history_stage.py            # Two-call pipeline, no RAG
+├── diagnosis_stage.py          # Three-call pipeline, no RAG
+├── management_stage.py         # Four-call pipeline, RAG in Call 2
 ├── orchestrator.py             # WebSocket session orchestrator — central component
-├── escalation_rules.json       # Rule engine configuration (MO reviewed)
 ├── data/
 │   ├── epi_prior_wb.json       # All 23 WB districts, 4 seasonal buckets
 │   ├── bedside_tools.json      # Constraint list for nurse-available tools
-│   └── formulary_wb.json       # SHC-HWC essential medicines (MoHFW Operational Guidelines, Annexures 1 & 2)
+│   ├── formulary_wb.json       # SHC-HWC essential medicines (MoHFW Operational Guidelines, Annexures 1 & 2)
+│   └── escalation_rules.json   # Rule engine configuration (MO reviewed)
 ├── db/
 │   └── schema.sql              # Postgres schema: sessions, stg_chunks,
 │                               # patient_records, confirmed_encounters
@@ -77,13 +77,13 @@ until the session ends. Audio streams continuously to the server. Deepgram
 transcribes it in real time. The nurse presses three buttons:
 
 **Marker A** — ~30 seconds in. Patient has stated name, age, village, chief
-complaint, duration. Nothing else is known. History Agent fires.
+complaint, duration. Nothing else is known. History Stage fires.
 Target: questionnaire first token on screen within 1.5s.
 
-**Marker B** — after 3-4 minute structured interview. Diagnosis Agent fires.
+**Marker B** — after 3-4 minute structured interview. Diagnosis Stage fires.
 Target: differential starts streaming within 1.5s. Full pipeline ~5-6s.
 
-**Marker C** — after 1-2 minute clarifying questions phase. Management Agent
+**Marker C** — after 1-2 minute clarifying questions phase. Management Stage
 fires. Full pipeline ~7-8s including rule engine.
 
 Button presses send a lightweight JSON control message over the same WebSocket:
@@ -99,9 +99,9 @@ nurse) with a 90-day retention policy.
 ## Session orchestrator (orchestrator.py)
 
 **Built.** The central component — a FastAPI WebSocket server that owns the full
-session lifecycle. All agent functions are called directly from the orchestrator
-(not via HTTP); the orchestrator imports from history_agent, diagnosis_agent, and
-management_agent.
+session lifecycle. All stage functions are called directly from the orchestrator
+(not via HTTP); the orchestrator imports from history_stage, diagnosis_stage, and
+management_stage.
 
 ### WebSocket protocol
 
@@ -128,8 +128,8 @@ management_agent.
 ```
 { "type": "session_ready",   "session_id": "sess_abc123", "is_new_patient": true }
 { "type": "transcript",      "text": "...", "is_final": true }
-{ "type": "agent_token",     "agent": "history|diagnosis", "token": "..." }
-{ "type": "agent_complete",  "agent": "history|diagnosis|management", "data": {...} }
+{ "type": "stage_token",     "stage": "history|diagnosis", "token": "..." }
+{ "type": "stage_complete",  "stage": "history|diagnosis|management", "data": {...} }
 { "type": "session_closed",  "risk_tier": "low|high" }
 { "type": "audio_confirmed" }
 { "type": "error",           "code": "AUTH_FAILED|SESSION_NOT_FOUND|...", "message": "..." }
@@ -160,9 +160,9 @@ Expected claims: `{ "nurse_id": "N-001", "role": "nurse", "clinic_id": "C-042" }
 4. **Marker A (history_complete)** — orchestrator snapshots `transcript_full` as
    `phase_1_end`. Writes `marker_a_at` and `transcript_segments.phase_1` to Vault.
    Fires two concurrent asyncio tasks:
-   - `stream_questionnaire()` — tokens streamed to client as `agent_token` messages
+   - `stream_questionnaire()` — tokens streamed to client as `stage_token` messages
    - `generate_questionnaire()` + `validate_questionnaire()` — structured JSON written
-     to Vault; `patient_record_stub` also written for Diagnosis Agent to use
+     to Vault; `patient_record_stub` also written for Diagnosis Stage to use
    First token reaches nurse within ~800ms of button press.
 
 5. **Marker B (diagnosis_complete)** — slices phase 2 transcript (marker A → B).
@@ -170,10 +170,10 @@ Expected claims: `{ "nurse_id": "N-001", "role": "nurse", "clinic_id": "C-042" }
    - `stream_differential()` — tokens to client
    - `generate_differential()` + `validate_differential()` — structured DDx to Vault
    Then runs `generate_clarifying_questions()` sequentially (needs the validated DDx).
-   All three writes go to Vault before `agent_complete` is sent.
+   All three writes go to Vault before `stage_complete` is sent.
 
 6. **Marker C (management_complete)** — slices phase 3 transcript (marker B → C).
-   Calls `run_management_agent()` which handles all four LLM calls, RAG, the rule
+   Calls `run_management_stage()` which handles all four LLM calls, RAG, the rule
    engine, and Vault writes internally. On completion, the risk tier is written to
    Vault and HIGH risk cases trigger `_notify_doctor()` (stub — replace with FCM/SMS).
 
@@ -190,7 +190,7 @@ Expected claims: `{ "nurse_id": "N-001", "role": "nurse", "clinic_id": "C-042" }
 
 ### REST endpoints on the orchestrator
 
-- `GET  /session/{id}/status` — returns agent completion status and risk tier
+- `GET  /session/{id}/status` — returns stage completion status and risk tier
   (used by the doctor review queue)
 - `POST /session/{id}/doctor-auth` — doctor records approve / modify / reject
   with optional notes and modified prescription
@@ -204,9 +204,9 @@ This allows local development and testing without a live Deepgram account.
 
 ---
 
-## The three agents
+## The three stages
 
-### History Agent (agents/history_agent.py)
+### History Stage (history_stage.py)  [fixed pipeline]
 
 **Two LLM calls, no RAG.**
 
@@ -222,14 +222,14 @@ gets a short verification pass for changed fields only. The nurse never specifie
 visit type — the agent reasons it from the patient record state.
 
 The questionnaire output includes `patient_record_fields` — a structured object
-the Diagnosis Agent's concept extractor uses as a schema for what to populate
+the Diagnosis Stage's concept extractor uses as a schema for what to populate
 from the phase 2 transcript.
 
 Key function: `build_patient_record_context(patient_record)` returns:
 - `known_context`: formatted string of what the record already contains
 - `missing_fields`: list of field names that need to be collected this visit
 
-### Diagnosis Agent (agents/diagnosis_agent.py)
+### Diagnosis Stage (diagnosis_stage.py)  [fixed pipeline]
 
 **Three LLM calls, no RAG.**
 
@@ -253,7 +253,7 @@ constrained to tools in `bedside_tools.json`. Never suggests labs or imaging.
 get safe defaults and a logged warning. `icd10_code` default is `R69` (illness
 unspecified). This ensures all downstream consumers receive a predictable structure.
 
-### Management Agent (agents/management_agent.py)
+### Management Stage (management_stage.py)  [fixed pipeline — planned: agentic]
 
 **Four LLM calls, RAG in Call 2.**
 
@@ -300,7 +300,7 @@ Hard stops configured in the JSON include:
 
 ## The Vault
 
-One JSONB document per session in the `sessions` table. All agents read from
+One JSONB document per session in the `sessions` table. All stages read from
 and write to it incrementally. Never modified after session close — immutable
 audit trail.
 
@@ -323,7 +323,7 @@ confirmation: { rdt_result, treatment_response, doctor_agreed,
 ## The epidemiological prior — three layers
 
 **Layer 1** — hardcoded string of common WB primary care presentations.
-Injected directly into History and Diagnosis Agent prompts. Never retrieved.
+Injected directly into History and Diagnosis Stage prompts. Never retrieved.
 
 **Layer 2** — `data/epi_prior_wb.json`. District + seasonal bucket lookup.
 All 23 WB districts. Four seasons: winter (Dec-Feb), pre_monsoon (Mar-May),
@@ -349,13 +349,13 @@ Two tables serve different purposes:
 `sessions` — full raw session JSONB, forever, immutable. The audit trail.
 
 `patient_records` — compact structured summary per patient. Written only from
-confirmed encounters. This is what the History Agent reads at the next visit.
+confirmed encounters. This is what the History Stage reads at the next visit.
 Contains: demographics, known_conditions, known_allergies, current_medications,
 family_history, social_history, encounters (last 5 confirmed), significant_history.
 
 **Critical:** The orchestrator loads the patient record from `patient_records`
 at session start and writes it into the Vault under `patient_record`. The History
-Agent reads `vault_context["patient_record"]` — empty dict for new patients.
+History Stage reads `vault_context["patient_record"]` — empty dict for new patients.
 
 Past medical history, medications, allergies, and family/social history are
 collected during the phase 2 interview (questionnaire phase), NOT upfront.
@@ -364,13 +364,13 @@ what is missing for this patient and seeds the permanent record.
 
 ---
 
-## RAG — Management Agent only
+## RAG — Management Stage only
 
-RAG is used ONLY in the Management Agent Call 2. Not in History or Diagnosis Agents.
+RAG is used ONLY in the Management Stage Call 2. Not in History or Diagnosis Stages.
 
-**Why only Management Agent:** Drug selection, dosing, contraindications, and
+**Why only Management Stage:** Drug selection, dosing, contraindications, and
 referral criteria must follow the retrieved locally-validated STG, not LLM recall.
-A hallucinated drug dose causes patient harm. The Diagnosis Agent's differential
+A hallucinated drug dose causes patient harm. The Diagnosis Stage's differential
 generation and gap analysis uses LLM general clinical knowledge, which is reliable
 for this task and does not benefit from retrieval.
 
@@ -481,14 +481,14 @@ python scripts/ingest_stg.py --file docs/nhm_stg_malaria.pdf --disease malaria -
 5. West Bengal state protocol addenda (if any)
 
 **Do not ingest `formulary_wb.json`** — the formulary is a small JSON file injected
-directly into Management Agent Call 2 prompts. It does not go in the vector store.
+directly into Management Stage Call 2 prompts. It does not go in the vector store.
 
 ### After ingestion
 Verify with a direct Postgres query:
 ```sql
 SELECT disease, count(*) FROM stg_chunks GROUP BY disease ORDER BY count DESC;
 ```
-The Management Agent uses similarity threshold 0.55 and retrieves top-8 chunks per
+The Management Stage uses similarity threshold 0.55 and retrieves top-8 chunks per
 diagnosis (max 2 diagnoses = 16 chunks per Call 2 prompt).
 
 ---
@@ -505,9 +505,9 @@ record created by default with duplicate merging later? This affects how the
 orchestrator loads the patient record.
 
 **2. Nurse UI — post-management output**
-After the Management Agent completes, what does the nurse physically do?
+After the Management Stage completes, what does the nurse physically do?
 Can she add notes before the case goes to the doctor? Can she flag
-disagreement with the recommendation? This affects the Management Agent
+disagreement with the recommendation? This affects the Management Stage
 output schema and doctor interface design.
 
 **3. Standing orders — the most consequential clinical question**
@@ -533,7 +533,7 @@ the entire authorization flow design.
 
 ### Backend — safety and data
 - [x] Doctor authorization API (POST /session/{id}/doctor-auth — approve/modify/reject)
-- [ ] Audit log (append-only record of every agent call with inputs, outputs, Vault snapshot)
+- [ ] Audit log (append-only record of every stage call with inputs, outputs, Vault snapshot)
 - [x] STG ingestion pipeline (scripts/ingest_stg.py — chunk, embed, insert into pgvector)
 - [ ] Formulary service (admin update UI, per-clinic JSON management)
 - [ ] Layer 3 epi prior query (aggregate confirmed_encounters by district/season)
@@ -577,13 +577,13 @@ explicit discussion:
 
 - **Continuous WebSocket, not discrete file uploads.** Button presses are
   timestamp markers, not file boundaries. This eliminates STT latency for
-  agents 2 and 3.
+  stages 2 and 3.
 
-- **No RAG in History or Diagnosis Agents.** LLM general clinical knowledge
+- **No RAG in History or Diagnosis Stages.** LLM general clinical knowledge
   is sufficient and reliable for differential generation and gap analysis.
-  RAG belongs in the Management Agent where it governs prescriptions.
+  RAG belongs in the Management Stage where it governs prescriptions.
 
-- **Three separate agents, not one.** Each agent has a single bounded job.
+- **Three separate stages, not one.** Each stage has a single bounded job.
   Failures are isolated. Each call is debuggable independently.
 
 - **Deterministic rule engine, not LLM for safety decisions.** Rules are
@@ -609,9 +609,9 @@ explicit discussion:
 
 | File | Status | Notes |
 |---|---|---|
-| history_agent.py | Complete | Two-call, no RAG, gap-aware; imports from here into orchestrator |
-| diagnosis_agent.py | Complete | Three-call, no RAG, validated schema; imports from here into orchestrator |
-| management_agent.py | Complete | Four-call, RAG, rule engine; called via run_management_agent() |
+| history_stage.py | Complete | Two-call, no RAG, gap-aware; imports from here into orchestrator |
+| diagnosis_stage.py | Complete | Three-call, no RAG, validated schema; imports from here into orchestrator |
+| management_stage.py | Complete | Four-call, RAG, rule engine; called via run_management_stage() |
 | orchestrator.py | Complete | WebSocket session lifecycle, Deepgram STT, all marker handlers, doctor-auth REST API |
 | scripts/ingest_stg.py | Complete | CLI to chunk/embed/insert STG docs; run before first session |
 | db/schema.sql | Complete | sessions, stg_chunks, patient_records, confirmed_encounters |
