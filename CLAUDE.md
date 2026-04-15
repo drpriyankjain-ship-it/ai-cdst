@@ -541,6 +541,22 @@ the entire authorization flow design.
 
 ---
 
+## Design discussions and rejected alternatives
+
+The `adr/` folder contains Architecture Decision Records — analyses of options
+considered, paths not taken, and the reasoning behind them. Each ADR is numbered,
+dated, and immutable once written.
+
+**Read the relevant ADR before proposing architectural changes to any component
+it covers.** This prevents re-litigating decisions that have already been worked
+through.
+
+| ADR | Topic |
+|---|---|
+| [001-agentic-patterns.md](adr/001-agentic-patterns.md) | Which parts of the pipeline should be agentic vs fixed; trade-offs for this use case |
+
+---
+
 ## Design principles — do not revisit without strong reason
 
 These decisions were made deliberately and should not be changed without
