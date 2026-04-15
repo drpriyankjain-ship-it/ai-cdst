@@ -28,10 +28,22 @@ cdst/
 ├── data/
 │   ├── epi_prior_wb.json       # All 23 WB districts, 4 seasonal buckets
 │   ├── bedside_tools.json      # Constraint list for nurse-available tools
-│   └── formulary_wb.json       # PLACEHOLDER — needs real drug stock data
+│   └── formulary_wb.json       # SHC-HWC essential medicines (MoHFW Operational Guidelines, Annexures 1 & 2)
 ├── db/
 │   └── schema.sql              # Postgres schema: sessions, stg_chunks,
 │                               # patient_records, confirmed_encounters
+├── docs/
+│   ├── arch/
+│   │   ├── cdst_full_pipeline.html           # Full system architecture diagram
+│   │   └── continuous_stream_pipeline.html   # Audio streaming architecture diagram
+│   ├── eng/
+│   │   ├── rag_brief.md                      # Engineering brief for RAG setup
+│   │   └── adr/
+│   │       └── 001-agentic-patterns.md       # Which parts of the pipeline should be agentic vs fixed
+│   └── clinical/
+│       ├── bedside_tools_crosscheck.md       # Guideline citations for bedside_tools.json
+│       ├── high_risk_escalation_rules.md     # Human-readable guide to escalation_rules.json
+│       └── Operational Guidelines For Health and Wellness Centers.pdf  # MoHFW HWC source doc
 ├── scripts/
 │   └── ingest_stg.py           # STG embedding pipeline (chunk → embed → pgvector)
 └── CLAUDE.md                   # This file
@@ -367,17 +379,18 @@ Schema: `chunk_id, source, disease, section, content, embedding vector(384)`.
 IVFFlat index with lists=100 for ANN search. Similarity threshold: 0.55.
 Top-k: 8 chunks per diagnosis, max 2 diagnoses = 16 chunks max in prompt.
 
-**Documents to embed** (see `docs/rag_brief.docx` for full detail):
+**Documents to embed** (see `docs/rag_brief.md` for full detail):
 - NHM Standard Treatment Guidelines — all volumes
 - NVBDCP malaria treatment protocol (ACT dosing by weight band)
 - NHM kala-azar operational guidelines
-- West Bengal state drug formulary ← CRITICAL, currently placeholder
+- West Bengal state drug formulary (SHC-HWC level — populated from MoHFW Operational Guidelines)
 - RNTCP/NTP TB treatment guidelines
 
 **Formulary is NOT in the vector store.** It is a small JSON file injected
 directly into the Call 2 prompt. One file per clinic type (PHC vs CHC).
-`data/formulary_wb.json` is currently a placeholder schema — must be populated
-with real drug stock before going live.
+`data/formulary_wb.json` contains the SHC-HWC essential medicines list sourced
+from MoHFW Operational Guidelines (Annexures 1 & 2). Per-clinic stock availability
+should be verified before going live.
 
 ---
 
@@ -543,7 +556,7 @@ the entire authorization flow design.
 
 ## Design discussions and rejected alternatives
 
-The `adr/` folder contains Architecture Decision Records — analyses of options
+The `docs/eng/adr/` folder contains Architecture Decision Records — analyses of options
 considered, paths not taken, and the reasoning behind them. Each ADR is numbered,
 dated, and immutable once written.
 
@@ -553,7 +566,7 @@ through.
 
 | ADR | Topic |
 |---|---|
-| [001-agentic-patterns.md](adr/001-agentic-patterns.md) | Which parts of the pipeline should be agentic vs fixed; trade-offs for this use case |
+| [001-agentic-patterns.md](docs/eng/adr/001-agentic-patterns.md) | Which parts of the pipeline should be agentic vs fixed; trade-offs for this use case |
 
 ---
 
@@ -604,8 +617,9 @@ explicit discussion:
 | db/schema.sql | Complete | sessions, stg_chunks, patient_records, confirmed_encounters |
 | data/epi_prior_wb.json | Complete | All 23 WB districts, 4 seasons, sourced from IDSP/NVBDCP |
 | data/bedside_tools.json | Complete | Nurse-available tools constraint list |
-| data/formulary_wb.json | Placeholder | Schema only — needs real drug stock data |
-| docs/rag_brief.docx | Complete | Engineering brief for RAG setup |
-| docs/cdst_full_pipeline.html | Complete | Full system architecture diagram |
-| docs/continuous_stream_pipeline.html | Complete | Audio streaming architecture diagram |
-| docs/cdst_backend_architecture.html | Complete | Backend layer diagram |
+| data/formulary_wb.json | Complete | SHC-HWC essential medicines from MoHFW Operational Guidelines Annexures 1 & 2 |
+| docs/eng/rag_brief.md | Complete | Engineering brief for RAG setup |
+| docs/arch/cdst_full_pipeline.html | Complete | Full system architecture diagram |
+| docs/arch/continuous_stream_pipeline.html | Complete | Audio streaming architecture diagram |
+| docs/clinical/bedside_tools_crosscheck.md | Complete | Guideline citations for bedside_tools.json |
+| docs/clinical/high_risk_escalation_rules.md | Complete | Human-readable guide to escalation_rules.json |
