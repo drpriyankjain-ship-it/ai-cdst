@@ -94,6 +94,58 @@ class Vault:
 # Epidemiological prior — Layer 1 + Layer 2
 # ---------------------------------------------------------------------------
 
+DISTRICT_CODE_TO_STATE = {
+    # States
+    "AP": "Andhra Pradesh",
+    "AR": "Arunachal Pradesh",
+    "AS": "Assam",
+    "BR": "Bihar",
+    "CG": "Chhattisgarh",
+    "GA": "Goa",
+    "GJ": "Gujarat",
+    "HR": "Haryana",
+    "HP": "Himachal Pradesh",
+    "JH": "Jharkhand",
+    "JK": "Jammu and Kashmir",
+    "KA": "Karnataka",
+    "KL": "Kerala",
+    "MP": "Madhya Pradesh",
+    "MH": "Maharashtra",
+    "MN": "Manipur",
+    "ML": "Meghalaya",
+    "MZ": "Mizoram",
+    "NL": "Nagaland",
+    "OD": "Odisha",
+    "OR": "Odisha",
+    "PB": "Punjab",
+    "RJ": "Rajasthan",
+    "SK": "Sikkim",
+    "TN": "Tamil Nadu",
+    "TG": "Telangana",
+    "TR": "Tripura",
+    "UP": "Uttar Pradesh",
+    "UK": "Uttarakhand",
+    "WB": "West Bengal",
+    # Union Territories
+    "AN": "Andaman and Nicobar Islands",
+    "CH": "Chandigarh",
+    "DL": "Delhi",
+    "LA": "Ladakh",
+    "LD": "Lakshadweep",
+    "PY": "Puducherry",
+}
+
+
+def state_from_district_code(district_code: str) -> str:
+    """
+    Derive state name from district_code prefix convention.
+    e.g. 'WB_MSD' → 'West Bengal', 'BR_MZF' → 'Bihar'.
+    Falls back to 'rural India' if prefix not recognised.
+    """
+    prefix = district_code.split("_")[0].upper()
+    return DISTRICT_CODE_TO_STATE.get(prefix, "rural India")
+
+
 MONTH_TO_SEASON = {
     1: "winter",        2: "winter",        3: "pre_monsoon",
     4: "pre_monsoon",   5: "pre_monsoon",   6: "monsoon",
@@ -104,12 +156,12 @@ MONTH_TO_SEASON = {
 
 def load_baseline_diseases() -> str:
     """
-    Layer 1 — common primary care presentations in rural West Bengal.
+    Layer 1 — common primary care presentations in rural eastern India.
     Injected into Call 2 to ensure the questionnaire probes relevant
     differential directions even when the chief complaint is vague.
     """
     return (
-        "LAYER 1 — BASELINE DISEASE BURDEN (rural West Bengal primary care):\n"
+        "LAYER 1 — BASELINE DISEASE BURDEN (rural primary care, eastern India):\n"
         "Always consider these regardless of location or season:\n"
         "  Respiratory : acute RTI, pneumonia, pulmonary TB, COPD exacerbation, asthma\n"
         "  Fever       : typhoid, malaria, dengue, UTI, viral syndrome, scrub typhus\n"
@@ -269,6 +321,21 @@ def build_patient_record_context(patient_record: dict) -> tuple[str, list[str]]:
 # Helpers
 # ---------------------------------------------------------------------------
 
+def is_complaint_missing(chief_complaint: dict) -> bool:
+    """
+    Return True if the chief complaint was not captured in phase 1.
+    Triggers the nudge path — Call 2 is NOT fired.
+
+    Treats null, empty string, and semantically empty values
+    ("unknown", "unclear", "not stated", "n/a") as missing.
+    """
+    value = (chief_complaint.get("chief_complaint") or "").strip().lower()
+    if not value:
+        return True
+    empty_sentinels = {"unknown", "unclear", "not stated", "not mentioned", "n/a", "none"}
+    return value in empty_sentinels
+
+
 def parse_llm_json(raw: str) -> dict | list:
     raw = raw.strip()
     if raw.startswith("```"):
@@ -304,7 +371,8 @@ async def extract_chief_complaint(
         "patient_name":             "name as stated verbally",
         "age":                      "age as stated e.g. '34' or 'about 40'",
         "village":                  "village or area as stated",
-        "chief_complaint":          "single sentence — what the patient came for",
+        "chief_complaint":          "primary complaint — most distressing or first mentioned — single sentence",
+        "additional_complaints":    ["any secondary complaint explicitly mentioned — empty list if none"],
         "duration":                 "how long this has been present — patient's own words or null",
         "severity_if_mentioned":    "mild|moderate|severe or null if not mentioned",
         "spontaneous_history": [
@@ -413,6 +481,18 @@ async def generate_questionnaire(
     }
     """
     demographics      = vault_context.get("demographics", {})
+    district_code     = vault_context.get("gps", {}).get("district_code", "WB_UNKNOWN")
+    state_name        = state_from_district_code(district_code)
+    lang              = chief_complaint.get("language_of_consultation", "English")
+    language_instruction = (
+        "" if lang == "English" else
+        f"LANGUAGE: The consultation is in {lang}. "
+        f"After each question, add a romanised {lang} translation in brackets — "
+        f"for example: 'Do you have fever? (jwor hochhe?)' for Bengali, "
+        f"'Do you have fever? (bukhaar hai?)' for Hindi. "
+        f"Use plain everyday words in the translation — not medical terminology."
+    )
+
     # ── Determine what is known and what needs to be collected ───────────────
     known_context, missing_fields = build_patient_record_context(patient_record)
     has_prior_record = bool(patient_record)
@@ -509,16 +589,30 @@ async def generate_questionnaire(
     prompt = "\n\n".join(filter(bool, [
         (
             "You are generating a structured interview questionnaire for a nurse "
-            "in a remote rural clinic in West Bengal, India. The nurse reads these "
+            f"in a remote rural clinic in {state_name}, India. The nurse reads these "
             "questions directly to the patient during a 3-4 minute interview.\n\n"
             f"PATIENT RECORD STATUS:\n{known_context}"
         ),
         f"PATIENT (from 30-second opening):\n{json.dumps(vault_context.get('demographics', {}), indent=2)}",
         f"CHIEF COMPLAINT:\n{json.dumps(chief_complaint, indent=2)}",
         spontaneous_text,
+        language_instruction,
         baseline_layer,
         epi_layer,
         (
+            "CLINICAL FRAMEWORK FOR CHIEF COMPLAINT SECTION:\n"
+            "Choose the framework that fits the presentation — do not force SOCRATES where it does not apply.\n"
+            "  Pain / acute symptoms   → SOCRATES (site, onset, character, radiation, associated\n"
+            "                            symptoms, timing, exacerbating/relieving factors, severity)\n"
+            "  Gynaecological/obstetric → Menstrual/obstetric history: LMP, cycle regularity,\n"
+            "                             duration and quantity of bleeding (pad count, clots),\n"
+            "                             pain, obstetric history (G/P/A), contraception use\n"
+            "  Infertility              → Duration of trying, cycle regularity, prior pregnancies,\n"
+            "                             partner history, relevant risk factors (STI, TB)\n"
+            "  Chronic/constitutional  → Duration, progression, systemic features (weight loss,\n"
+            "                            night sweats, fatigue, appetite), relevant exposures\n"
+            "  Psychiatric/behavioural → Onset, triggers, sleep, function, safety (self-harm)\n"
+            "For mixed presentations, use the framework that best fits the primary complaint.\n\n"
             "QUESTIONNAIRE DESIGN:\n"
             "- 4-6 sections maximum — interview takes 3-4 minutes total\n"
             "- Each section: 3-5 questions\n"
@@ -528,10 +622,12 @@ async def generate_questionnaire(
             "- follow_up: what to ask if the answer is yes or abnormal\n"
             "- discriminates: brief nurse-only note — not read to patient\n\n"
             "CHIEF COMPLAINT SECTION (always include):\n"
-            "- SOCRATES: site, onset, character, radiation, associated symptoms,\n"
-            "  timing, exacerbating/relieving factors, severity\n"
+            "- Primary complaint: full clinical framework (see below)\n"
             "- Systemic symptoms: fever, weight loss, night sweats, fatigue, appetite\n"
-            "- Epi prior conditions: include ONLY if compatible with chief complaint\n\n"
+            "- Epi prior conditions: include ONLY if compatible with chief complaint\n"
+            "- Additional complaints: if present in chief_complaint.additional_complaints,\n"
+            "  add one shorter section per complaint — onset, severity, and 2-3 key\n"
+            "  discriminating questions only. Do not apply full framework to secondary complaints.\n\n"
             + history_instruction + "\n\n"
             "MANDATORY SAFETY QUESTIONS (always — regardless of what is recorded):\n"
             "- Female patients aged 12-50: current pregnancy status and LMP\n"
@@ -577,22 +673,48 @@ async def stream_questionnaire(
     separately for the structured Vault write.
     """
     demographics    = vault_context.get("demographics", {})
+    district_code   = vault_context.get("gps", {}).get("district_code", "WB_UNKNOWN")
+    state_name      = state_from_district_code(district_code)
+    lang            = chief_complaint.get("language_of_consultation", "English")
+    language_instruction = (
+        "" if lang == "English" else
+        f"LANGUAGE: The consultation is in {lang}. "
+        f"After each question, add a romanised {lang} translation in brackets — "
+        f"for example: 'Do you have fever? (jwor hochhe?)' for Bengali, "
+        f"'Do you have fever? (bukhaar hai?)' for Hindi. "
+        f"Use plain everyday words in the translation — not medical terminology."
+    )
     known_context, missing_fields = build_patient_record_context(patient_record)
     has_missing = bool(missing_fields)
 
     prompt = "\n\n".join(filter(bool, [
-        "Generate a structured interview questionnaire for a nurse in rural "
-        "West Bengal. Write it as clearly numbered sections with questions the "
+        f"Generate a structured interview questionnaire for a nurse in rural "
+        f"{state_name}. Write it as clearly numbered sections with questions the "
         "nurse reads directly to the patient. Be concise — start immediately.\n\n"
         f"PATIENT RECORD STATUS:\n{known_context}",
         f"Patient: {json.dumps(demographics)}",
-        f"Chief complaint: {json.dumps(chief_complaint)}",
+        f"Chief complaint (primary): {json.dumps(chief_complaint.get('chief_complaint'))}",
+        (
+            "Additional complaints: " + json.dumps(chief_complaint.get("additional_complaints", []))
+            if chief_complaint.get("additional_complaints")
+            else ""
+        ),
+        language_instruction,
         baseline_layer,
         epi_layer,
         (
+            "Clinical framework — choose by presentation type:\n"
+            "  Pain/acute → SOCRATES\n"
+            "  Gynaecological/obstetric → menstrual/obstetric history (LMP, cycle, quantity, G/P/A, contraception)\n"
+            "  Infertility → duration, cycle regularity, prior pregnancies, partner history\n"
+            "  Chronic/constitutional → duration, progression, systemic features, exposures\n"
+            "Do not force SOCRATES fields that do not apply."
+        ),
+        (
             "Format: numbered sections with bullet questions. "
             "4-6 sections, 3-5 questions each. Plain language. "
-            "Chief complaint first. "
+            "Primary complaint first (full framework). "
+            "If additional complaints listed, add one short section per complaint (2-3 questions each). "
             + ("Collect missing history fields: " + ", ".join(missing_fields) + "."
                if has_missing else "Verify existing history — confirm what has changed.")
         ),
@@ -735,6 +857,23 @@ async def run_history_stage(
     chief_complaint = await extract_chief_complaint(transcript_segment, vault_context)
     await vault.update({"chief_complaint": chief_complaint})
 
+    # Nudge path — chief complaint not captured, do not fire Call 2
+    if is_complaint_missing(chief_complaint):
+        print(f"[{session_id}] History stage: chief complaint missing — nudge sent, Call 2 skipped")
+        await vault.update({
+            "history_stage_status": "nudge_required",
+            "nudge_reason":         "chief_complaint_missing",
+        })
+        return {
+            "session_id":  session_id,
+            "nudge":       True,
+            "nudge_message": (
+                "Chief complaint was not captured clearly. "
+                "Please ask the patient to describe their problem again "
+                "and press Marker A once more."
+            ),
+        }
+
     # Call 2
     print(f"[{session_id}] History stage Call 2: generating questionnaire")
     questionnaire = await generate_questionnaire(
@@ -819,6 +958,16 @@ async def history_stream_endpoint(req: HistoryRequest):
     chief_complaint = await extract_chief_complaint(req.transcript_segment, vault_context)
     baseline_layer  = load_baseline_diseases()
     epi_layer       = load_epi_prior(district_code, current_month)
+
+    if is_complaint_missing(chief_complaint):
+        async def nudge_stream():
+            yield (
+                "\n⚠ Chief complaint was not captured clearly. "
+                "Please ask the patient to describe their problem again "
+                "and press Marker A once more.\n"
+            )
+            await conn.close()
+        return StreamingResponse(nudge_stream(), media_type="text/plain")
 
     async def token_stream():
         async for chunk in stream_questionnaire(
