@@ -414,6 +414,61 @@ async def extract_chief_complaint(
 
 
 # ---------------------------------------------------------------------------
+# Fixed first-visit background history section
+# ---------------------------------------------------------------------------
+#
+# Injected verbatim into the questionnaire output for every new patient
+# (i.e. any visit where background history fields are missing from the record).
+# Not LLM-generated — same questions, same order, every first visit.
+# Rationale: see docs/eng/adr/002-history-intake-approach.md
+#
+FIRST_VISIT_HISTORY_QUESTIONS = {
+    "section_title": "Background History",
+    "rationale": (
+        "Standard first-visit intake — collected once per patient, "
+        "seeds the permanent record. Fixed question set for consistent coverage."
+    ),
+    "questions": [
+        {
+            "question":      "Do you have any long-term illness — like diabetes, high blood pressure, TB, asthma, epilepsy, or heart disease?",
+            "follow_up":     "How long have you had it? Are you on treatment for it?",
+            "discriminates": "Past medical history — chronic conditions",
+        },
+        {
+            "question":      "Have you ever been admitted to hospital or had an operation?",
+            "follow_up":     "When was this, and what was it for?",
+            "discriminates": "Past medical history — hospitalisations and surgery",
+        },
+        {
+            "question":      "Do any illnesses run in your family — your parents or brothers and sisters — like diabetes, TB, high blood pressure, or cancer?",
+            "follow_up":     "Which family member, and which illness?",
+            "discriminates": "Family history",
+        },
+        {
+            "question":      "What work do you do?",
+            "follow_up":     "Any exposure to chemicals, dust, pesticides, or heavy lifting at work?",
+            "discriminates": "Social history — occupation and occupational exposures",
+        },
+        {
+            "question":      "Do you use tobacco in any form — smoking, chewing, or gutka? Do you drink alcohol?",
+            "follow_up":     "How much, and for how long?",
+            "discriminates": "Social history — tobacco and alcohol use",
+        },
+        {
+            "question":      "Are you taking any medicines at the moment — tablets, injections, syrups, or any traditional or herbal remedies?",
+            "follow_up":     "What is the name? What dose? How long have you been taking it?",
+            "discriminates": "Current medications — including OTC and traditional",
+        },
+        {
+            "question":      "Have you ever had a bad reaction or allergy to any medicine or food?",
+            "follow_up":     "What happened — rash, swelling, breathing difficulty?",
+            "discriminates": "Allergies and adverse drug reactions",
+        },
+    ],
+}
+
+
+# ---------------------------------------------------------------------------
 # Call 2 — Generate contextualised questionnaire
 # ---------------------------------------------------------------------------
 
@@ -590,7 +645,7 @@ async def generate_questionnaire(
         (
             "You are generating a structured interview questionnaire for a nurse "
             f"in a remote rural clinic in {state_name}, India. The nurse reads these "
-            "questions directly to the patient during a 3-4 minute interview.\n\n"
+            "questions directly to the patient during a structured interview.\n\n"
             f"PATIENT RECORD STATUS:\n{known_context}"
         ),
         f"PATIENT (from 30-second opening):\n{json.dumps(vault_context.get('demographics', {}), indent=2)}",
@@ -614,7 +669,7 @@ async def generate_questionnaire(
             "  Psychiatric/behavioural → Onset, triggers, sleep, function, safety (self-harm)\n"
             "For mixed presentations, use the framework that best fits the primary complaint.\n\n"
             "QUESTIONNAIRE DESIGN:\n"
-            "- 4-6 sections maximum — interview takes 3-4 minutes total\n"
+            "- 4-8 sections depending on complexity — interview typically 5-10 minutes\n"
             "- Each section: 3-5 questions\n"
             "- Chief complaint section is ALWAYS first\n"
             "- Questions within each section: most to least discriminating\n"
@@ -650,7 +705,16 @@ async def generate_questionnaire(
         messages=[{"role": "user", "content": prompt}]
     )
 
-    return parse_llm_json(response.content[0].text)
+    questionnaire = parse_llm_json(response.content[0].text)
+
+    # Inject fixed background history section for first/partial visits.
+    # The LLM generates the chief complaint section; this ensures complete
+    # and consistent coverage of PMH/FHx/SHx/medications/allergies every time.
+    if missing_fields:
+        questionnaire.setdefault("sections", [])
+        questionnaire["sections"].append(FIRST_VISIT_HISTORY_QUESTIONS)
+
+    return questionnaire
 
 
 # ---------------------------------------------------------------------------
@@ -712,7 +776,7 @@ async def stream_questionnaire(
         ),
         (
             "Format: numbered sections with bullet questions. "
-            "4-6 sections, 3-5 questions each. Plain language. "
+            "4-8 sections depending on complexity, 3-5 questions each. Plain language. "
             "Primary complaint first (full framework). "
             "If additional complaints listed, add one short section per complaint (2-3 questions each). "
             + ("Collect missing history fields: " + ", ".join(missing_fields) + "."
@@ -727,6 +791,16 @@ async def stream_questionnaire(
     ) as stream:
         for text in stream.text_stream:
             yield text
+
+    # Append fixed background history section for first/partial visits.
+    # Streamed as plain text after the LLM section so the nurse sees it immediately.
+    if has_missing:
+        section = FIRST_VISIT_HISTORY_QUESTIONS
+        yield f"\n\n{section['section_title'].upper()}\n"
+        for i, q in enumerate(section["questions"], 1):
+            yield f"\n{i}. {q['question']}\n"
+            if q.get("follow_up"):
+                yield f"   → If yes / abnormal: {q['follow_up']}\n"
 
 
 # ---------------------------------------------------------------------------
