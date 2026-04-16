@@ -29,13 +29,18 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from epi_utils import (
+    state_from_district_code,
+    load_baseline_diseases,
+    load_epi_prior,
+)
+
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
 CLAUDE_MODEL       = "claude-sonnet-4-20250514"
-EPI_PRIOR_PATH     = "data/epi_prior_wb.json"
 BEDSIDE_TOOLS_PATH = "data/bedside_tools.json"
 
 client = anthropic.Anthropic()   # API key from environment
@@ -95,81 +100,6 @@ class Vault:
             path,
             json.dumps(value),
         )
-
-
-# ---------------------------------------------------------------------------
-# Epidemiological prior — Layer 1 + Layer 2
-# ---------------------------------------------------------------------------
-
-MONTH_TO_SEASON = {
-    1: "winter",        2: "winter",        3: "pre_monsoon",
-    4: "pre_monsoon",   5: "pre_monsoon",   6: "monsoon",
-    7: "monsoon",       8: "monsoon",       9: "monsoon",
-    10: "post_monsoon", 11: "post_monsoon", 12: "winter",
-}
-
-
-def load_baseline_diseases() -> str:
-    """
-    Layer 1 — common primary care presentations in rural West Bengal.
-    Hardcoded string injected directly into Call 2 prompt.
-    Not retrieved, not embedded — stable across all sessions.
-    """
-    return (
-        "LAYER 1 — BASELINE DISEASE BURDEN (rural West Bengal primary care):\n"
-        "Always consider these regardless of location or season:\n"
-        "  Respiratory : acute RTI, pneumonia, pulmonary TB, COPD exacerbation, asthma\n"
-        "  Fever       : typhoid, malaria, dengue, UTI, viral syndrome, scrub typhus\n"
-        "  GI          : acute gastroenteritis, peptic ulcer disease, cholera, hepatitis A/E\n"
-        "  Cardiac     : hypertension, heart failure, ischaemic heart disease\n"
-        "  Metabolic   : type 2 diabetes, iron-deficiency anaemia, malnutrition, B12 deficiency\n"
-        "  Neurological: stroke, GBS, peripheral neuropathy, epilepsy, cord compression\n"
-        "  Obstetric   : pre-eclampsia, anaemia in pregnancy, post-partum sepsis\n"
-        "  Trauma      : snake envenomation, fractures, burns\n"
-        "These anchor the differential. Layer 2 elevates endemic infectious diseases "
-        "where locally relevant — it does not replace this baseline."
-    )
-
-
-def load_epi_prior(district_code: str, month: int) -> str:
-    """
-    Layer 2 — IDSP/NVBDCP district + season endemic disease weights.
-    Returns a formatted string for prompt injection, or empty string
-    if the district is unknown (logged as a data gap warning).
-    """
-    with open(EPI_PRIOR_PATH) as f:
-        prior = json.load(f)
-
-    season        = MONTH_TO_SEASON.get(month, "monsoon")
-    district_data = prior.get("districts", {}).get(district_code)
-
-    if not district_data:
-        print(
-            f"[EPI PRIOR WARNING] District '{district_code}' not in "
-            f"epi_prior_wb.json. Layer 2 modifier absent. Add district to resolve."
-        )
-        return ""
-
-    season_diseases = district_data.get("seasons", {}).get(season, [])
-    if not season_diseases:
-        return ""
-
-    district_name = district_data.get("name", district_code)
-    lines = "\n".join(
-        "  - {disease}: weight {weight:.2f}{note}".format(
-            disease=d["disease"],
-            weight=d["weight"],
-            note=f" — {d['note']}" if d.get("note") else ""
-        )
-        for d in sorted(season_diseases, key=lambda x: x["weight"], reverse=True)
-    )
-    return (
-        f"LAYER 2 — DISTRICT/SEASON MODIFIER "
-        f"({district_name}, {season} season, IDSP/NVBDCP data):\n"
-        "The following endemic diseases have elevated local prevalence right now.\n"
-        "Weight appropriately — they modify but do not replace Layer 1 above.\n"
-        f"{lines}"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -377,7 +307,9 @@ async def generate_differential(
 
     Output validated against the 11-field canonical schema.
     """
-    demographics = vault_context.get("demographics", {})
+    demographics  = vault_context.get("demographics", {})
+    district_code = vault_context.get("gps", {}).get("district_code", "WB_UNKNOWN")
+    state_name    = state_from_district_code(district_code)
 
     schema_example = json.dumps([{
         "rank":                 1,
@@ -401,7 +333,7 @@ async def generate_differential(
         "  — it never overrides the presenting complaint\n"
         "- must_not_miss=true regardless of probability for: GBS, cord compression,\n"
         "  meningitis, ectopic pregnancy, severe malaria, eclampsia, stroke, AFP\n"
-        "- regionally_specific=true for diseases with elevated West Bengal prevalence\n"
+        f"- regionally_specific=true for diseases with elevated {state_name} prevalence\n"
         "- referral_required=true for any diagnosis needing hospital-level care\n"
         "- discriminating_tests: bedside only — hands, stethoscope, BP cuff,\n"
         "  pulse oximeter, malaria RDT, glucometer, urine dipstick,\n"
@@ -414,7 +346,7 @@ async def generate_differential(
     )
 
     prompt = "\n\n".join([
-        "You are a clinical decision support system assisting a nurse in rural West Bengal, India.\n"
+        f"You are a clinical decision support system assisting a nurse in rural {state_name}, India.\n"
         "Generate a differential diagnosis for the patient below.",
         f"PATIENT:\n{json.dumps(demographics, indent=2)}",
         f"EXTRACTED CLINICAL CONCEPTS:\n{json.dumps(concepts, indent=2)}",
@@ -454,10 +386,12 @@ async def stream_differential(
     afterward to get the validated structured output for the Vault.
     This function is for display only.
     """
-    demographics = vault_context.get("demographics", {})
+    demographics  = vault_context.get("demographics", {})
+    district_code = vault_context.get("gps", {}).get("district_code", "WB_UNKNOWN")
+    state_name    = state_from_district_code(district_code)
 
     prompt = "\n\n".join([
-        "You are a clinical decision support system for a nurse in rural West Bengal.\n"
+        f"You are a clinical decision support system for a nurse in rural {state_name}.\n"
         "Generate a ranked differential diagnosis. Write it as a readable numbered list "
         "with brief reasoning for each entry. Be concise — the nurse is with a patient.",
         f"Patient: {json.dumps(demographics)}",
@@ -578,6 +512,22 @@ async def generate_clarifying_questions(
     with open(BEDSIDE_TOOLS_PATH) as f:
         available_tools = json.load(f)
 
+    district_code = vault_context.get("gps", {}).get("district_code", "WB_UNKNOWN")
+    state_name    = state_from_district_code(district_code)
+
+    lang = (
+        vault_context.get("chief_complaint", {}).get("language_of_consultation", "English")
+        or "English"
+    )
+    language_instruction = (
+        "" if lang == "English" else
+        f"LANGUAGE: The consultation is in {lang}. After each clarifying question, "
+        f"add a romanised {lang} translation in brackets using plain everyday words "
+        f"(not medical terminology). Example format: "
+        f"\"Do you have a headache? *(mathay byatha hochhe?)*\" (Bengali) or "
+        f"\"Do you have a headache? *(sir mein dard hai?)*\" (Hindi)."
+    )
+
     top_diagnoses  = [d["disease"] for d in ddx[:3]]
     must_not_miss  = [d["disease"] for d in ddx if d.get("must_not_miss")]
     needs_referral = [d["disease"] for d in ddx if d.get("referral_required")]
@@ -635,11 +585,12 @@ async def generate_clarifying_questions(
             "JSON only. No explanation. No markdown."
         ),
         pregnancy_instruction,
+        language_instruction,
     ]))
 
     prompt = "\n\n".join([
-        "You are designing a targeted clinical assessment for a nurse in a remote "
-        "rural clinic in West Bengal. The nurse has 1-2 minutes to gather additional "
+        f"You are designing a targeted clinical assessment for a nurse in a remote "
+        f"rural clinic in {state_name}. The nurse has 1-2 minutes to gather additional "
         "information before the management stage runs.",
         f"CURRENT DIFFERENTIAL (ranked):\n{json.dumps(ddx, indent=2)}",
         f"TOP DIAGNOSES TO DISCRIMINATE: {json.dumps(top_diagnoses)}",

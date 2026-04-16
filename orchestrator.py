@@ -76,6 +76,8 @@ from history_stage import (
     validate_questionnaire,
     extract_patient_record_update,
     stream_questionnaire,
+)
+from epi_utils import (
     load_baseline_diseases,
     load_epi_prior,
 )

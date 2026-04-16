@@ -23,6 +23,7 @@ cdst/
 ├── history_stage.py            # Two-call pipeline, no RAG
 ├── diagnosis_stage.py          # Three-call pipeline, no RAG
 ├── management_stage.py         # Four-call pipeline, RAG in Call 2
+├── epi_utils.py                # Shared epi utilities — imported by all three stages
 ├── orchestrator.py             # WebSocket session orchestrator — central component
 ├── data/
 │   ├── epi_prior_wb.json       # All 23 WB districts, 4 seasonal buckets
@@ -66,7 +67,7 @@ shows logical grouping only.
 | Embeddings | sentence-transformers/all-MiniLM-L6-v2 (384-dim) |
 | Mobile | React Native |
 | Auth | JWT, role-based: nurse / doctor / admin |
-| Target region | West Bengal, India — 23 districts |
+| Target region | All India (piloting in West Bengal — 23 districts) |
 
 ---
 
@@ -567,6 +568,7 @@ through.
 | ADR | Topic |
 |---|---|
 | [001-agentic-patterns.md](docs/eng/adr/001-agentic-patterns.md) | Which parts of the pipeline should be agentic vs fixed; trade-offs for this use case |
+| [002-history-intake-approach.md](docs/eng/adr/002-history-intake-approach.md) | Fixed vs LLM-generated background history questions; Option A implemented, Option C deferred to before field pilots |
 
 ---
 
@@ -612,6 +614,7 @@ explicit discussion:
 | history_stage.py | Complete | Two-call, no RAG, gap-aware; imports from here into orchestrator |
 | diagnosis_stage.py | Complete | Three-call, no RAG, validated schema; imports from here into orchestrator |
 | management_stage.py | Complete | Four-call, RAG, rule engine; called via run_management_stage() |
+| epi_utils.py | Complete | Shared module: DISTRICT_CODE_TO_STATE, state_from_district_code(), MONTH_TO_SEASON, load_baseline_diseases(), load_epi_prior() — imported by all three stages |
 | orchestrator.py | Complete | WebSocket session lifecycle, Deepgram STT, all marker handlers, doctor-auth REST API |
 | scripts/ingest_stg.py | Complete | CLI to chunk/embed/insert STG docs; run before first session |
 | db/schema.sql | Complete | sessions, stg_chunks, patient_records, confirmed_encounters |

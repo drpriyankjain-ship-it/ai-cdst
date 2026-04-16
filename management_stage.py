@@ -37,13 +37,14 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from epi_utils import state_from_district_code
+
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
 CLAUDE_MODEL       = "claude-sonnet-4-20250514"
-EPI_PRIOR_PATH     = "data/epi_prior_wb.json"
 BEDSIDE_TOOLS_PATH = "data/bedside_tools.json"
 FORMULARY_PATH     = "data/formulary_wb.json"
 ESCALATION_RULES_PATH = "data/escalation_rules.json"
@@ -299,6 +300,8 @@ async def generate_provisional_diagnosis_and_rx(
     concepts         = vault_context.get("extracted_concepts", {})
     prior_encounters = vault_context.get("prior_encounters", [])
     known_allergies  = demographics.get("known_allergies", [])
+    district_code    = vault_context.get("gps", {}).get("district_code", "WB_UNKNOWN")
+    state_name       = state_from_district_code(district_code)
 
     output_schema = json.dumps({
         "provisional_diagnosis": {
@@ -331,8 +334,8 @@ async def generate_provisional_diagnosis_and_rx(
     )
 
     prompt = "\n\n".join([
-        "You are generating a provisional diagnosis and prescription for a nurse "
-        "in rural West Bengal. The prescription must follow retrieved NHM STG "
+        f"You are generating a provisional diagnosis and prescription for a nurse "
+        f"in rural {state_name}. The prescription must follow retrieved NHM STG "
         "protocols and be constrained to drugs available in the local formulary.",
         f"PATIENT:\n{json.dumps(demographics, indent=2)}",
         f"KNOWN ALLERGIES: {json.dumps(known_allergies)}",
@@ -593,8 +596,23 @@ async def generate_triage_and_handoff(
       }
     }
     """
-    demographics = vault_context.get("demographics", {})
-    ddx          = vault_context.get("differential_table", [])
+    demographics  = vault_context.get("demographics", {})
+    ddx           = vault_context.get("differential_table", [])
+    district_code = vault_context.get("gps", {}).get("district_code", "WB_UNKNOWN")
+    state_name    = state_from_district_code(district_code)
+
+    lang = (
+        vault_context.get("chief_complaint", {}).get("language_of_consultation", "English")
+        or "English"
+    )
+    language_instruction = (
+        "" if lang == "English" else
+        f"LANGUAGE: The consultation is in {lang}. The patient_instructions section "
+        f"(diagnosis_explained, treatment_summary, do_list, dont_list, return_criteria, "
+        f"follow_up) must be written in English AND include a romanised {lang} translation "
+        f"in brackets after each sentence or list item, using plain everyday words "
+        f"(not medical terminology)."
+    )
 
     risk_tier = risk_assessment.get(
         "mitigation_plan", {}
@@ -640,7 +658,7 @@ async def generate_triage_and_handoff(
         ).strftime("%H:%M today")
     )
 
-    prompt = "\n\n".join([
+    prompt = "\n\n".join(filter(None, [
         "Generate the triage decision, patient instructions, and doctor handoff "
         "package based on the risk assessment below.",
         f"PATIENT:\n{json.dumps(demographics, indent=2)}",
@@ -649,6 +667,7 @@ async def generate_triage_and_handoff(
         f"FULL DIFFERENTIAL:\n{json.dumps(ddx[:3], indent=2)}",
         f"RISK TIER FROM ASSESSMENT: {risk_tier}",
         f"AUTHORIZATION DEADLINE: {auth_deadline}",
+        language_instruction or None,
         (
             "INSTRUCTIONS:\n\n"
             "TRIAGE:\n"
@@ -689,7 +708,7 @@ async def generate_triage_and_handoff(
             f"Return ONLY valid JSON matching this schema:\n{output_schema}\n\n"
             "JSON only. No explanation. No markdown."
         ),
-    ])
+    ]))
 
     response = client.messages.create(
         model=CLAUDE_MODEL,
@@ -1077,13 +1096,16 @@ async def management_stream_endpoint(req: ManagementRequest):
     )
     stg_context = await retrieve_treatment_protocols(conn, top_diagnoses)
 
-    demographics  = vault_context.get("demographics", {})
+    demographics    = vault_context.get("demographics", {})
     known_allergies = demographics.get("known_allergies", [])
-    concepts      = vault_context.get("extracted_concepts", {})
+    concepts        = vault_context.get("extracted_concepts", {})
+    state_name      = state_from_district_code(
+        vault_context.get("gps", {}).get("district_code", "WB_UNKNOWN")
+    )
 
     stream_prompt = (
-        "Generate a provisional diagnosis and treatment plan for a nurse "
-        "in rural West Bengal. Be clear and concise — the nurse is with a patient.\n\n"
+        f"Generate a provisional diagnosis and treatment plan for a nurse "
+        f"in rural {state_name}. Be clear and concise — the nurse is with a patient.\n\n"
         f"Patient: {json.dumps(demographics)}\n"
         f"Allergies: {json.dumps(known_allergies)}\n"
         f"Differential: {json.dumps(ddx[:3])}\n"
