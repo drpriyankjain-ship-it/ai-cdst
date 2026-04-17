@@ -40,10 +40,18 @@ from epi_utils import (
 # Configuration
 # ---------------------------------------------------------------------------
 
-CLAUDE_MODEL       = "claude-sonnet-4-20250514"
-BEDSIDE_TOOLS_PATH = "data/bedside_tools.json"
+CLAUDE_MODEL           = "claude-sonnet-4-20250514"
+BEDSIDE_TOOLS_PATH     = "data/bedside_tools.json"
+MUST_NOT_MISS_PATH     = "data/must_not_miss.json"
 
 client = anthropic.Anthropic()   # API key from environment
+
+
+def load_must_not_miss() -> list[str]:
+    """Load must-not-miss diagnosis names from data/must_not_miss.json."""
+    with open(MUST_NOT_MISS_PATH) as f:
+        data = json.load(f)
+    return [entry["name"] for entry in data["diagnoses"]]
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +206,7 @@ async def extract_medical_concepts(
     and prior encounter history from the Vault.
     """
     demographics     = vault_context.get("demographics", {})
-    prior_encounters = vault_context.get("prior_encounters", [])
+    prior_encounters = vault_context.get("patient_record", {}).get("encounters", [])
 
     output_schema = json.dumps({
         "chief_complaint": "single sentence summary",
@@ -233,7 +241,11 @@ async def extract_medical_concepts(
         "lmp": (
             "last menstrual period as stated verbally e.g. '3 weeks ago', "
             "'15th of last month' — null if not mentioned"
-        )
+        ),
+        "uncertain_findings": [{
+            "topic":            "symptom or finding name",
+            "patient_response": "verbatim or close paraphrase of the ambiguous answer"
+        }]
     }, indent=2)
 
     prior_text = (
@@ -251,8 +263,12 @@ async def extract_medical_concepts(
             "- Extract only what is explicitly stated or clearly implied\n"
             "- Negatives are as important as positives — list all denied symptoms\n"
             "- Do not infer or assume anything not present in the transcript\n"
-            "- vitals_reported: return NUMERIC JSON numbers only — strip all units.\n"
-            "  e.g. temperature 38.5°C → 38.5; SpO2 94% → 94; BP 90/60 → 90 (systolic only).\n"
+            "- vitals_reported: return NUMERIC JSON numbers only.\n"
+            "  temperature_c: convert to °C before returning.\n"
+            "    If the stated value is > 50, assume °F and convert: (F − 32) × 5/9.\n"
+            "    If the stated value is ≤ 50, assume °C. Round to 1 decimal.\n"
+            "  All other vitals: strip units as-is.\n"
+            "  e.g. SpO2 94% → 94; BP 90/60 → 90 (systolic only).\n"
             "  Null for any vital sign not explicitly mentioned in the transcript.\n"
             "- red_flags: list verbatim any alarming symptom or finding explicitly stated.\n"
             "  Include: 'cannot walk', 'vomiting blood', 'fitting', 'unconscious',\n"
@@ -262,7 +278,12 @@ async def extract_medical_concepts(
             "  Set to 'pregnant' / 'not_pregnant' / 'postpartum' from explicit statements.\n"
             "  Set to 'unknown' if the topic was not raised OR patient could not confirm.\n"
             "  Set to null only for male patients or age clearly outside 12-50.\n"
-            "- lmp: record verbatim if stated; null otherwise\n\n"
+            "- lmp: record verbatim if stated; null otherwise\n"
+            "- uncertain_findings: list any topic where the patient's answer was\n"
+            "  ambiguous, qualified, or unclear — e.g. 'sometimes', 'maybe', 'not sure',\n"
+            "  'a little'. Record the topic name and the patient's response verbatim.\n"
+            "  Do NOT place these in symptoms or negatives.\n"
+            "  Empty list [] if all answers were clear.\n\n"
             f"Return ONLY valid JSON matching this schema:\n{output_schema}\n\n"
             "JSON only. No explanation. No markdown."
         ),
@@ -321,23 +342,26 @@ async def generate_differential(
         "must_not_miss":        True,
         "regionally_specific":  False,
         "reasoning":            "One sentence clinical rationale",
-        "discriminating_tests": ["tone assessment both legs", "deep tendon reflexes"],
+        "discriminating_tests": ["nerve conduction studies", "CSF analysis", "tone assessment both legs"],
         "referral_required":    True,
     }], indent=2)
 
     instructions = (
         "INSTRUCTIONS:\n"
         "- Generate 4-6 differential diagnoses ranked by probability\n"
-        "- Layer 1 baseline diseases always anchor the differential\n"
+        "- Layer 1 lists common primary care presentations — include any that are\n"
+        "  compatible with the presenting features. If the clinical picture strongly\n"
+        "  suggests a diagnosis outside Layer 1, rank it appropriately regardless.\n"
+        "  The presenting complaint always dominates — never force a Layer 1 disease\n"
+        "  into the differential when it does not fit the features.\n"
         "- Layer 2 epi prior elevates endemic diseases where the presentation is compatible\n"
         "  — it never overrides the presenting complaint\n"
-        "- must_not_miss=true regardless of probability for: GBS, cord compression,\n"
-        "  meningitis, ectopic pregnancy, severe malaria, eclampsia, stroke, AFP\n"
+        f"- must_not_miss=true regardless of probability for: {', '.join(load_must_not_miss())}\n"
         f"- regionally_specific=true for diseases with elevated {state_name} prevalence\n"
         "- referral_required=true for any diagnosis needing hospital-level care\n"
-        "- discriminating_tests: bedside only — hands, stethoscope, BP cuff,\n"
-        "  pulse oximeter, malaria RDT, glucometer, urine dipstick,\n"
-        "  urine pregnancy test, HemoCue. Never suggest labs, imaging, or LP\n"
+        "- discriminating_tests: list investigations that would most effectively\n"
+        "  distinguish this diagnosis from others in the differential.\n"
+        "  Include all relevant tests — bedside, laboratory, or imaging.\n"
         "- icd10_code: most specific applicable ICD-10 code\n"
         "- Base reasoning ONLY on features present — never assume unstated findings\n\n"
         f"Return ONLY a JSON array. Every entry must contain all 11 fields:\n"
@@ -590,13 +614,21 @@ async def generate_clarifying_questions(
 
     prompt = "\n\n".join([
         f"You are designing a targeted clinical assessment for a nurse in a remote "
-        f"rural clinic in {state_name}. The nurse has 1-2 minutes to gather additional "
-        "information before the management stage runs.",
+        f"rural clinic in {state_name}. Prioritise questions and observations that are "
+        "highest-yield — findings that would most change the differential or flag a "
+        "must-not-miss diagnosis — and that can be completed within a routine clinic visit.",
         f"CURRENT DIFFERENTIAL (ranked):\n{json.dumps(ddx, indent=2)}",
         f"TOP DIAGNOSES TO DISCRIMINATE: {json.dumps(top_diagnoses)}",
         f"MUST-NOT-MISS (screen regardless of probability): {json.dumps(must_not_miss)}",
         f"REFERRAL-REQUIRED DIAGNOSES: {json.dumps(needs_referral)}",
         f"CLINICAL FEATURES ALREADY KNOWN:\n{json.dumps(concepts, indent=2)}",
+        (
+            "UNCERTAIN FINDINGS (ambiguous or qualified answers from the transcript — "
+            "prioritise re-asking these if they are discriminating for the differential):\n"
+            + (json.dumps(concepts.get("uncertain_findings", []), indent=2)
+               if concepts.get("uncertain_findings")
+               else "None — all answers were clear.")
+        ),
         instructions,
     ])
 

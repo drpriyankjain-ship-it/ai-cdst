@@ -106,8 +106,9 @@ def load_baseline_diseases() -> str:
         "  Neurological: stroke, GBS, peripheral neuropathy, epilepsy, cord compression\n"
         "  Obstetric   : pre-eclampsia, anaemia in pregnancy, post-partum sepsis\n"
         "  Trauma      : snake envenomation, fractures, burns\n"
-        "These anchor the differential. Layer 2 elevates endemic infectious diseases "
-        "where locally relevant — it does not replace this baseline."
+        "Consider each of these where compatible with the presenting features. "
+        "Layer 2 elevates endemic infectious diseases where locally relevant — "
+        "it does not replace this baseline. Neither layer overrides the presenting complaint."
     )
 
 

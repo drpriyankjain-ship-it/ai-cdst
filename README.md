@@ -37,15 +37,21 @@ cdst/
 │   ├── epi_prior_wb.json   # Epidemiological priors — all 23 WB districts, 4 seasons
 │   ├── bedside_tools.json  # Constraint list for nurse-available diagnostic tools
 │   ├── formulary_wb.json   # SHC-HWC essential medicines (MoHFW Operational Guidelines)
-│   └── escalation_rules.json # Deterministic rule engine config (MO-maintained)
+│   ├── escalation_rules.json # Deterministic rule engine config (MO-maintained)
+│   └── must_not_miss.json  # Must-not-miss diagnoses list (MO-maintained)
 ├── db/
 │   └── schema.sql          # Postgres schema
 ├── docs/
+│   ├── DECISIONS_OPEN.md   # All unresolved questions — grouped by who must answer them
 │   ├── arch/               # System and audio streaming architecture diagrams
 │   ├── eng/
 │   │   ├── rag_brief.md    # Engineering brief for RAG setup
 │   │   └── adr/            # Architecture Decision Records (read before proposing changes)
-│   └── clinical/           # Bedside tools citations, escalation rules guide, MoHFW source doc
+│   └── clinical/
+│       ├── MO_REVIEW_CHECKLIST.md  # Site onboarding checklist for Medical Officers
+│       ├── bedside_tools_crosscheck.md
+│       ├── high_risk_escalation_rules.md
+│       └── source-materials/       # Raw source PDFs (MoHFW guidelines, STG volumes)
 └── scripts/
     └── ingest_stg.py       # STG embedding pipeline (chunk → embed → pgvector)
 ```
@@ -146,6 +152,7 @@ Three LLM calls, no RAG. Fires at Marker B.
 
 Differential output always has 11 required fields. `validate_differential()` fills
 safe defaults for any missing fields so downstream consumers never handle nulls.
+Must-not-miss diagnoses are loaded from `data/must_not_miss.json` at runtime.
 
 ### Management Stage (`management_stage.py`)
 Four LLM calls, RAG in Call 2. Fires at Marker C.
@@ -224,6 +231,9 @@ there have already been worked through.
 | ADR | Topic |
 |-----|-------|
 | [001-agentic-patterns.md](docs/eng/adr/001-agentic-patterns.md) | Agentic vs fixed pipeline design trade-offs |
+| [002-history-intake-approach.md](docs/eng/adr/002-history-intake-approach.md) | Fixed vs LLM-generated background history questions |
+
+Open questions and decisions still pending are tracked in [`docs/DECISIONS_OPEN.md`](docs/DECISIONS_OPEN.md).
 
 Key decisions that are not up for re-discussion without strong reason:
 - Continuous WebSocket, not discrete file uploads

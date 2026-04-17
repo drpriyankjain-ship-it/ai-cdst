@@ -29,22 +29,27 @@ cdst/
 │   ├── epi_prior_wb.json       # All 23 WB districts, 4 seasonal buckets
 │   ├── bedside_tools.json      # Constraint list for nurse-available tools
 │   ├── formulary_wb.json       # SHC-HWC essential medicines (MoHFW Operational Guidelines, Annexures 1 & 2)
-│   └── escalation_rules.json   # Rule engine configuration (MO reviewed)
+│   ├── escalation_rules.json   # Rule engine configuration (MO reviewed)
+│   └── must_not_miss.json      # Must-not-miss diagnoses list (MO reviewed) — loaded by Diagnosis Stage
 ├── db/
 │   └── schema.sql              # Postgres schema: sessions, stg_chunks,
 │                               # patient_records, confirmed_encounters
 ├── docs/
+│   ├── DECISIONS_OPEN.md       # All unresolved questions — grouped by who must answer them
 │   ├── arch/
 │   │   ├── cdst_full_pipeline.html           # Full system architecture diagram
 │   │   └── continuous_stream_pipeline.html   # Audio streaming architecture diagram
 │   ├── eng/
 │   │   ├── rag_brief.md                      # Engineering brief for RAG setup
 │   │   └── adr/
-│   │       └── 001-agentic-patterns.md       # Which parts of the pipeline should be agentic vs fixed
+│   │       ├── README.md                     # ADR index — read before proposing architectural changes
+│   │       ├── 001-agentic-patterns.md       # Which parts of the pipeline should be agentic vs fixed
+│   │       └── 002-history-intake-approach.md # Fixed vs LLM-generated background history questions
 │   └── clinical/
+│       ├── MO_REVIEW_CHECKLIST.md            # Site onboarding checklist for Medical Officers
 │       ├── bedside_tools_crosscheck.md       # Guideline citations for bedside_tools.json
 │       ├── high_risk_escalation_rules.md     # Human-readable guide to escalation_rules.json
-│       └── Operational Guidelines For Health and Wellness Centers.pdf  # MoHFW HWC source doc
+│       └── source-materials/                 # Raw source PDFs (MoHFW guidelines, STG volumes)
 ├── scripts/
 │   └── ingest_stg.py           # STG embedding pipeline (chunk → embed → pgvector)
 └── CLAUDE.md                   # This file
@@ -235,20 +240,30 @@ Key function: `build_patient_record_context(patient_record)` returns:
 **Three LLM calls, no RAG.**
 
 Call 1 (~900ms): Extracts structured medical concepts from the phase 2 transcript.
-Negatives are as important as positives. Output is written to Vault independently.
+Negatives are as important as positives. Ambiguous or qualified patient answers
+(e.g. "sometimes", "not sure") are captured separately in `uncertain_findings`
+rather than collapsed into positives or negatives. Prior encounter history is read
+from `patient_record.encounters` in the Vault. Output written to Vault independently.
 
 Call 2 (~3.2s, streaming): Generates ranked differential (4-6 conditions) using
-LLM general knowledge + two-layer epidemiological prior. No RAG. The epi prior
-correctly contributes nothing for neurological or other non-endemic presentations
-— the presenting complaint always dominates.
+LLM general knowledge + two-layer epidemiological prior. No RAG. Layer 1 is a
+checklist of common presentations to consider — not a mandatory anchor. The
+presenting complaint always dominates both layers. `discriminating_tests` records
+all clinically relevant investigations (bedside, lab, or imaging); Call 3 filters
+to what is bedside-feasible.
 
-Call 3 (~1.4s, streaming): Generates bedside gap analysis and clarifying questions,
-constrained to tools in `bedside_tools.json`. Never suggests labs or imaging.
+Call 3 (~1.4s, streaming): Generates gap analysis and clarifying questions,
+constrained to tools in `bedside_tools.json`. `uncertain_findings` from Call 1
+are surfaced as priority re-ask candidates if discriminating for the differential.
+
+**Must-not-miss diagnoses** are loaded at runtime from `data/must_not_miss.json`
+(34 diagnoses across 8 categories, MO-maintained). Any diagnosis on this list is
+flagged `must_not_miss=true` in the differential regardless of probability ranking.
 
 **Canonical differential schema — 11 fields, always present:**
 `rank`, `disease`, `icd10_code`, `probability`, `supporting_features`, `against`,
 `must_not_miss`, `regionally_specific`, `reasoning`, `discriminating_tests`
-(bedside only), `referral_required`.
+(all test types — bedside, lab, imaging), `referral_required`.
 
 `validate_differential()` runs after every LLM differential call. Missing fields
 get safe defaults and a logged warning. `icd10_code` default is `R69` (illness
@@ -494,10 +509,13 @@ diagnosis (max 2 diagnoses = 16 chunks per Call 2 prompt).
 
 ---
 
-## Outstanding questions — answer before building these components
+## Outstanding questions
 
-These three questions were explicitly deferred and must be resolved before
-implementing the relevant components:
+All open decisions — including the three blocking questions below — are tracked
+with full context in [`docs/DECISIONS_OPEN.md`](docs/DECISIONS_OPEN.md), grouped
+by who needs to answer them (Product/Clinical Lead, Medical Officer, Engineering).
+
+The three questions that must be resolved before building the remaining components:
 
 **1. Patient identity and registration**
 How does the app know who the patient is at session start? Does the nurse
@@ -570,6 +588,8 @@ through.
 | [001-agentic-patterns.md](docs/eng/adr/001-agentic-patterns.md) | Which parts of the pipeline should be agentic vs fixed; trade-offs for this use case |
 | [002-history-intake-approach.md](docs/eng/adr/002-history-intake-approach.md) | Fixed vs LLM-generated background history questions; Option A implemented, Option C deferred to before field pilots |
 
+See [`docs/eng/adr/README.md`](docs/eng/adr/README.md) for the ADR index.
+
 ---
 
 ## Design principles — do not revisit without strong reason
@@ -621,8 +641,13 @@ explicit discussion:
 | data/epi_prior_wb.json | Complete | All 23 WB districts, 4 seasons, sourced from IDSP/NVBDCP |
 | data/bedside_tools.json | Complete | Nurse-available tools constraint list |
 | data/formulary_wb.json | Complete | SHC-HWC essential medicines from MoHFW Operational Guidelines Annexures 1 & 2 |
+| data/must_not_miss.json | Complete | 34 must-not-miss diagnoses across 8 categories; loaded by Diagnosis Stage at runtime |
+| data/escalation_rules.json | Complete | Rule engine config — vital thresholds, red flags, diagnosis/drug hard-stops |
+| docs/DECISIONS_OPEN.md | Complete | All unresolved questions grouped by owner (Product, MO, Engineering) |
 | docs/eng/rag_brief.md | Complete | Engineering brief for RAG setup |
+| docs/eng/adr/README.md | Complete | ADR index — read before proposing architectural changes |
 | docs/arch/cdst_full_pipeline.html | Complete | Full system architecture diagram |
 | docs/arch/continuous_stream_pipeline.html | Complete | Audio streaming architecture diagram |
+| docs/clinical/MO_REVIEW_CHECKLIST.md | Complete | Step-by-step site onboarding checklist for Medical Officers |
 | docs/clinical/bedside_tools_crosscheck.md | Complete | Guideline citations for bedside_tools.json |
 | docs/clinical/high_risk_escalation_rules.md | Complete | Human-readable guide to escalation_rules.json |
