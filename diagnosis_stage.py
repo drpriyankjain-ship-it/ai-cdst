@@ -245,7 +245,16 @@ async def extract_medical_concepts(
         "uncertain_findings": [{
             "topic":            "symptom or finding name",
             "patient_response": "verbatim or close paraphrase of the ambiguous answer"
-        }]
+        }],
+        "past_medical_history": [
+            "condition name as stated e.g. 'type 2 diabetes', 'pulmonary TB 2022'"
+        ],
+        "current_medications": [
+            "drug name and dose as stated e.g. 'metformin 500mg twice daily'"
+        ],
+        "allergies_reported": [
+            "allergen and reaction as stated e.g. 'penicillin — rash'"
+        ]
     }, indent=2)
 
     prior_text = (
@@ -283,7 +292,14 @@ async def extract_medical_concepts(
             "  ambiguous, qualified, or unclear — e.g. 'sometimes', 'maybe', 'not sure',\n"
             "  'a little'. Record the topic name and the patient's response verbatim.\n"
             "  Do NOT place these in symptoms or negatives.\n"
-            "  Empty list [] if all answers were clear.\n\n"
+            "  Empty list [] if all answers were clear.\n"
+            "- past_medical_history: list any chronic or past conditions the patient\n"
+            "  explicitly mentions (e.g. 'I have diabetes', 'treated for TB last year').\n"
+            "  Empty list [] if none stated.\n"
+            "- current_medications: list drugs the patient says they are currently taking,\n"
+            "  with dose and frequency if stated. Empty list [] if none.\n"
+            "- allergies_reported: list allergens with reaction as stated\n"
+            "  (e.g. 'penicillin — rash'). Empty list [] if none.\n\n"
             f"Return ONLY valid JSON matching this schema:\n{output_schema}\n\n"
             "JSON only. No explanation. No markdown."
         ),

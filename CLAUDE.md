@@ -184,7 +184,7 @@ Expected claims: `{ "nurse_id": "N-001", "role": "nurse", "clinic_id": "C-042" }
      messages (display only — structured output comes separately)
    - `run_management_stage()` — all four LLM calls, RAG, rule engine, Vault writes
    On completion, `stage_complete` carries `triage_output`, `risk_tier`,
-   `provisional_diagnosis`, and `risk_assessment`. HIGH risk cases trigger
+   `problem_list`, and `risk_assessment`. HIGH risk cases trigger
    `_notify_doctor()` (stub — replace with FCM/SMS).
 
 7. **Reconnect** — client sends `{ "type": "reconnect", "session_id": "..." }`.
@@ -269,27 +269,33 @@ unspecified). This ensures all downstream consumers receive a predictable struct
 
 Call 1 (~900ms) + RAG retrieval run in parallel via `asyncio.gather`:
 - Call 1 extracts clarifying findings from phase 3 transcript
-- RAG retrieves STG treatment protocol chunks for top 1-2 diagnoses from the DDx
+- RAG retrieves STG chunks for ALL DDx diagnoses + known established conditions
+  (provisional diagnosis not yet determined; any DDx entry could be selected)
 
-Call 2 (~2.5s, streaming): Generates provisional diagnosis and fully specified
-prescription. STG context from RAG grounds the prescription. Local formulary
-constrains drug selection to what is actually stocked at the clinic.
-Prescription must cite `stg_source` for each drug.
+Call 2 (~2.5s, streaming): Generates a **problem list** — all distinct clinical issues
+in the encounter: the acute presenting complaint plus any established conditions,
+incidental findings, or deferred items. Each problem has type
+(`acute_new | established | incidental | deferred`), an assessment, and a plan.
+Every prescription item carries a `for_problem` attribution integer.
+STG context from RAG grounds the prescription. Local formulary constrains drug
+selection. `stg_source` must be cited per drug. Output key: `problem_list`.
 
 Call 3 (~1.8s): Five-dimension risk assessment — no RAG, pure LLM reasoning:
-1. Diagnostic uncertainty — what if the provisional Dx is wrong?
-2. Iatrogenic risk — risk of the treatment itself (allergy check, interactions)
+1. Diagnostic uncertainty — what if the acute provisional Dx is wrong?
+2. Iatrogenic risk — risk of ALL prescribed drugs across ALL problems
 3. Delay risk — consequence of waiting for doctor auth
 4. Complication watch — what to monitor for
 5. Mitigation plan — what resolves each risk; what cannot be mitigated remotely
 
+`acute_problem_confidence` (high|moderate|low) added to diagnostic_uncertainty —
+read by the rule engine without parsing the full problem list structure.
+
 overall_risk_tier = HIGH if ANY unmitigable risk exists, or delay window < 2 hours.
 
 Call 4 (~1.2s, streaming): Triage decision, patient instructions in plain language,
-doctor handoff package. `prescription_issued` in the handoff copies every drug
-verbatim from Call 2 — exact drug, dose, route, frequency, duration.
-`treatment_summary` in patient instructions translates the prescription into
-plain language — every drug, every dose, nothing omitted.
+doctor handoff package. `prescription_issued` copies ALL drugs from ALL problems
+verbatim with `for_problem` attribution — exact drug, dose, route, frequency, duration.
+`treatment_summary` translates ALL prescribed drugs into plain language.
 
 **Rule engine** runs deterministically after Call 4. Can only escalate LOW → HIGH,
 never downgrade. This logic has been extracted into a separate, data-driven configuration
@@ -321,7 +327,7 @@ transcript_full, transcript_segments (phase_1, phase_2, phase_3),
 marker_a_at, marker_b_at, marker_c_at (session-relative seconds),
 chief_complaint, extracted_concepts, questionnaire,
 differential_table, clarifying_questions,
-clarifying_findings, provisional_diagnosis, risk_assessment, triage_output,
+clarifying_findings, problem_list, risk_assessment, triage_output,
 audio: { url, codec, duration_seconds, upload_status, retain_until },
 risk_tier, doctor_auth_status,
 confirmation: { rdt_result, treatment_response, doctor_agreed,

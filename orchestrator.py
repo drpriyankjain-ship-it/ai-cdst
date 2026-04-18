@@ -672,7 +672,7 @@ async def handle_marker_c(ws: WebSocket, state: SessionState, t: float) -> None:
                 "data": {
                     "triage_output":         triage,
                     "risk_tier":             risk_tier,
-                    "provisional_diagnosis": result.get("provisional_dx", {}),
+                    "problem_list":          result.get("problem_list", {}),
                     "risk_assessment":       result.get("risk_assessment", {}),
                 },
             })
