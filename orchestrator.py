@@ -36,7 +36,7 @@ Client → Server:
 Server → Client:
   { "type": "session_ready", "session_id": "sess_abc123", "is_new_patient": true }
   { "type": "transcript", "text": "...", "is_final": true }
-  { "type": "stage_token", "stage": "history|diagnosis", "token": "..." }
+  { "type": "stage_token", "stage": "history|diagnosis|management", "token": "..." }
   { "type": "stage_complete", "stage": "history|diagnosis|management", "data": {...} }
   { "type": "session_closed", "risk_tier": "low|high" }
   { "type": "audio_confirmed" }
@@ -89,7 +89,7 @@ from diagnosis_stage import (
     generate_clarifying_questions,
     run_diagnosis_stage,
 )
-from management_stage import run_management_stage
+from management_stage import run_management_stage, stream_management
 
 
 # ---------------------------------------------------------------------------
@@ -630,12 +630,15 @@ async def handle_marker_c(ws: WebSocket, state: SessionState, t: float) -> None:
     """
     Nurse pressed button after 1-2 minute clarifying questions phase.
 
-    The Management Stage runs its four-call pipeline including RAG and the
-    deterministic rule engine. Its run function handles all Vault writes
-    internally, so we just await it and forward the result.
+    Flow:
+      1. Snapshot phase 3 transcript (marker B → marker C)
+      2. Concurrently:
+         a. stream_management → tokens to nurse (prose Dx + Rx, display only)
+         b. run_management_stage → full four-call pipeline + rule engine → Vault
+      3. Send stage_complete with structured triage output, risk tier, Dx, Rx
 
-    Full pipeline: ~7-8s. No token streaming for management — the structured
-    triage output is delivered as a single message on completion.
+    Target: provisional diagnosis starts streaming within ~1.5s of button press.
+    Full structured output arrives ~7-8s after button press.
     """
     state.marker_c_at = t
 
@@ -648,8 +651,18 @@ async def handle_marker_c(ws: WebSocket, state: SessionState, t: float) -> None:
 
     async def run():
         try:
-            log.info("[%s] Management stage: four-call pipeline starting", session_id)
-            result    = await run_management_stage(session_id, phase_3, conn)
+            vault_ctx = await vault_read(conn, session_id)
+
+            async def do_stream():
+                async for token in stream_management(phase_3, vault_ctx, conn):
+                    await ws_send(ws, {"type": "stage_token", "stage": "management", "token": token})
+
+            async def do_structured():
+                return await run_management_stage(session_id, phase_3, conn)
+
+            log.info("[%s] Management stage: streaming + four-call pipeline starting", session_id)
+            result, _ = await asyncio.gather(do_structured(), do_stream())
+
             triage    = result.get("triage", {})
             risk_tier = result.get("rule_engine", {}).get("final_risk_tier", "high")
 
@@ -657,14 +670,13 @@ async def handle_marker_c(ws: WebSocket, state: SessionState, t: float) -> None:
                 "type":  "stage_complete",
                 "stage": "management",
                 "data": {
-                    "triage_output":        triage,
-                    "risk_tier":            risk_tier,
+                    "triage_output":         triage,
+                    "risk_tier":             risk_tier,
                     "provisional_diagnosis": result.get("provisional_dx", {}),
-                    "risk_assessment":      result.get("risk_assessment", {}),
+                    "risk_assessment":       result.get("risk_assessment", {}),
                 },
             })
 
-            # HIGH risk: notify doctor immediately
             if risk_tier == "high":
                 asyncio.create_task(_notify_doctor(session_id, triage))
 
