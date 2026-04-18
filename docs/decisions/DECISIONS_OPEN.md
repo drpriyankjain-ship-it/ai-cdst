@@ -53,7 +53,7 @@ These items are ready for clinical review. No engineering work is blocked — bu
 the system cannot go live at any site without these approvals.
 
 ### 4. Escalation rules sign-off
-**Document:** [docs/clinical/high_risk_escalation_rules.md](clinical/high_risk_escalation_rules.md)
+**Document:** [docs/clinical/high_risk_escalation_rules.md](../clinical/high_risk_escalation_rules.md)
 **Status:** Blank sign-off fields — MO has not yet formally reviewed.
 
 The Medical Officer must review all thresholds, red flag symptoms, diagnosis
@@ -63,7 +63,7 @@ activation.
 ---
 
 ### 5. Must-not-miss diagnosis list sign-off
-**Document:** [data/must_not_miss.json](../data/must_not_miss.json)
+**Document:** [data/must_not_miss.json](../../data/must_not_miss.json)
 **Status:** Drafted by engineering. Requires MO clinical review.
 
 34 diagnoses across 8 categories. MO should confirm inclusions, exclusions,
@@ -72,7 +72,7 @@ and any region-specific additions before the first site goes live.
 ---
 
 ### 6. Bedside tools list sign-off
-**Document:** [docs/clinical/bedside_tools_crosscheck.md](clinical/bedside_tools_crosscheck.md)
+**Document:** [docs/clinical/bedside_tools_crosscheck.md](../clinical/bedside_tools_crosscheck.md)
 **Status:** Guideline crosscheck complete. Requires MO confirmation for each site.
 
 Per-site verification needed: pulse oximeter availability confirmed; otoscope
@@ -81,7 +81,7 @@ excluded; peak flow meter listed but availability should be verified per clinic.
 ---
 
 ### 7. Formulary population
-**File:** [data/formulary_wb.json](../data/formulary_wb.json)
+**File:** [data/formulary_wb.json](../../data/formulary_wb.json)
 **Status:** Seeded from MoHFW Operational Guidelines Annexures 1 & 2. Requires
 per-clinic stock verification before going live.
 
@@ -96,7 +96,7 @@ discrepancies directly affect prescription safety.
 These are internal engineering tasks with no external dependency.
 
 ### 8. Option B — targeted Diagnosis Stage extraction
-**Blocking:** Must be complete before field pilots. See [ADR 002](eng/adr/002-history-intake-approach.md).
+**Blocking:** Must be complete before field pilots. See [ADR 002](adr/002-history-intake-approach.md).
 
 The History Stage currently uses fixed background history questions (Option A)
 to ensure PMH, FHx, SHx, medications, and allergies are always asked.
@@ -108,7 +108,7 @@ Option C (A + B together) is the target. Option B is the missing half.
 ---
 
 ### 9. RAG corpus and threshold decisions
-**Document:** [docs/eng/rag_brief.md](eng/rag_brief.md) §4.9
+**Document:** [docs/arch/rag_brief.md](../arch/rag_brief.md) §4.9
 
 Six items requiring human judgment before the RAG pipeline is production-ready:
 
@@ -124,7 +124,7 @@ Six items requiring human judgment before the RAG pipeline is production-ready:
 ---
 
 ### 10. Management Stage RAG — make tool-driven
-**Not blocking MVP. Recommended before scale.** See [ADR 001](eng/adr/001-agentic-patterns.md).
+**Not blocking MVP. Recommended before scale.** See [ADR 001](adr/001-agentic-patterns.md).
 
 Current retrieval is hardcoded: top-2 diagnoses, top-8 chunks, 0.55 threshold.
 ADR 001 recommends making this tool-driven (LLM decides which diagnoses need
@@ -134,7 +134,7 @@ Tools needed: `retrieve_stg()`, `check_formulary()`, `flag_drug_interaction()`.
 ---
 
 ### 11. Confirmation pipeline — design agentically
-**Not blocking MVP. Required for Layer 3 epi prior.** See [ADR 001](eng/adr/001-agentic-patterns.md).
+**Not blocking MVP. Required for Layer 3 epi prior.** See [ADR 001](adr/001-agentic-patterns.md).
 
 The confirmation pipeline (monitors RDT results, treatment response, doctor
 agreement, then commits to `confirmed_encounters`) is not yet built.
@@ -159,7 +159,7 @@ directly in the UI. Edits go through engineering; the portal is the approval gat
 Files requiring MO sign-off: `escalation_rules.json`, `must_not_miss.json`,
 `formulary_wb.json`, `bedside_tools.json`, `epi_prior_wb.json`.
 
-See also: [docs/clinical/MO_REVIEW_CHECKLIST.md](clinical/MO_REVIEW_CHECKLIST.md)
+See also: [docs/clinical/MO_REVIEW_CHECKLIST.md](../clinical/MO_REVIEW_CHECKLIST.md)
 for the manual equivalent of this workflow (used until the portal is built).
 
 ---

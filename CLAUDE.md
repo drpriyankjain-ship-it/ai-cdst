@@ -35,16 +35,16 @@ cdst/
 │   └── schema.sql              # Postgres schema: sessions, stg_chunks,
 │                               # patient_records, confirmed_encounters
 ├── docs/
-│   ├── DECISIONS_OPEN.md       # All unresolved questions — grouped by who must answer them
-│   ├── arch/
-│   │   ├── cdst_full_pipeline.html           # Full system architecture diagram
-│   │   └── continuous_stream_pipeline.html   # Audio streaming architecture diagram
-│   ├── eng/
-│   │   ├── rag_brief.md                      # Engineering brief for RAG setup
+│   ├── decisions/
+│   │   ├── DECISIONS_OPEN.md   # All unresolved questions — grouped by who must answer them
 │   │   └── adr/
 │   │       ├── README.md                     # ADR index — read before proposing architectural changes
 │   │       ├── 001-agentic-patterns.md       # Which parts of the pipeline should be agentic vs fixed
 │   │       └── 002-history-intake-approach.md # Fixed vs LLM-generated background history questions
+│   ├── arch/
+│   │   ├── cdst_full_pipeline.html           # Full system architecture diagram
+│   │   ├── continuous_stream_pipeline.html   # Audio streaming architecture diagram
+│   │   └── rag_brief.md                      # Engineering brief for RAG setup
 │   └── clinical/
 │       ├── MO_REVIEW_CHECKLIST.md            # Site onboarding checklist for Medical Officers
 │       ├── bedside_tools_crosscheck.md       # Guideline citations for bedside_tools.json
@@ -441,7 +441,7 @@ max 2 diagnoses = 16 chunks per Call 2 prompt.
 ## Outstanding questions
 
 All open decisions — including the three blocking questions below — are tracked
-with full context in [`docs/DECISIONS_OPEN.md`](docs/DECISIONS_OPEN.md), grouped
+with full context in [`docs/decisions/DECISIONS_OPEN.md`](docs/decisions/DECISIONS_OPEN.md), grouped
 by who needs to answer them (Product/Clinical Lead, Medical Officer, Engineering).
 
 The three questions that must be resolved before building the remaining components:
@@ -479,10 +479,10 @@ through.
 
 | ADR | Topic |
 |---|---|
-| [001-agentic-patterns.md](docs/eng/adr/001-agentic-patterns.md) | Which parts of the pipeline should be agentic vs fixed; trade-offs for this use case |
-| [002-history-intake-approach.md](docs/eng/adr/002-history-intake-approach.md) | Fixed vs LLM-generated background history questions; Option A implemented, Option C deferred to before field pilots |
+| [001-agentic-patterns.md](docs/decisions/adr/001-agentic-patterns.md) | Which parts of the pipeline should be agentic vs fixed; trade-offs for this use case |
+| [002-history-intake-approach.md](docs/decisions/adr/002-history-intake-approach.md) | Fixed vs LLM-generated background history questions; Option A implemented, Option C deferred to before field pilots |
 
-See [`docs/eng/adr/README.md`](docs/eng/adr/README.md) for the ADR index.
+See [`docs/decisions/adr/README.md`](docs/decisions/adr/README.md) for the ADR index.
 
 ---
 
@@ -525,9 +525,9 @@ explicit discussion:
 | data/formulary_wb.json | Complete | SHC-HWC essential medicines from MoHFW Operational Guidelines Annexures 1 & 2 |
 | data/must_not_miss.json | Complete | 34 must-not-miss diagnoses across 8 categories; loaded by Diagnosis Stage at runtime |
 | data/escalation_rules.json | Complete | Rule engine config — vital thresholds, red flags, diagnosis/drug hard-stops |
-| docs/DECISIONS_OPEN.md | Complete | All unresolved questions grouped by owner (Product, MO, Engineering) |
-| docs/eng/rag_brief.md | Complete | Engineering brief for RAG setup |
-| docs/eng/adr/README.md | Complete | ADR index — read before proposing architectural changes |
+| docs/decisions/DECISIONS_OPEN.md | Complete | All unresolved questions grouped by owner (Product, MO, Engineering) |
+| docs/arch/rag_brief.md | Complete | Engineering brief for RAG setup |
+| docs/decisions/adr/README.md | Complete | ADR index — read before proposing architectural changes |
 | docs/arch/cdst_full_pipeline.html | Complete | Full system architecture diagram |
 | docs/arch/continuous_stream_pipeline.html | Complete | Audio streaming architecture diagram |
 | docs/clinical/MO_REVIEW_CHECKLIST.md | Complete | Step-by-step site onboarding checklist for Medical Officers |
