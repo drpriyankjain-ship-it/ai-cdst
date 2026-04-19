@@ -16,17 +16,17 @@ Design rationale:
     injected directly into Call 2 as structured context — no vector search.
 
 Dependencies:
-    pip install anthropic asyncpg fastapi pydantic
+    pip install google-genai asyncpg fastapi pydantic
 """
 
 import json
 from datetime import datetime
 from typing import AsyncIterator
 
-import anthropic
 import asyncpg
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
+from google.genai import types
 from pydantic import BaseModel
 
 from epi_utils import (
@@ -34,17 +34,16 @@ from epi_utils import (
     load_baseline_diseases,
     load_epi_prior,
 )
+from llm_client import gemini
+from model_config import MODEL_D1_CONCEPTS, MODEL_D2_DIFFERENTIAL, MODEL_D3_CLARIFYING
 
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-CLAUDE_MODEL           = "claude-sonnet-4-20250514"
 BEDSIDE_TOOLS_PATH     = "data/bedside_tools.json"
 MUST_NOT_MISS_PATH     = "data/must_not_miss.json"
-
-client = anthropic.Anthropic()   # API key from environment
 
 
 def load_must_not_miss() -> list[str]:
@@ -177,69 +176,65 @@ def validate_differential(ddx: list[dict]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Tool schemas — force structured JSON output from every LLM call
+# Response schemas — structured JSON output for every LLM call
 # ---------------------------------------------------------------------------
 
-_TOOL_MEDICAL_CONCEPTS = {
-    "name": "submit_medical_concepts",
-    "description": "Submit structured medical concepts extracted from the phase 2 transcript",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "chief_complaint":  {"type": "string"},
-            "symptoms": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "name":      {"type": "string"},
-                        "duration":  {"type": ["string", "null"]},
-                        "severity":  {"type": ["string", "null"]},
-                        "character": {"type": ["string", "null"]},
-                    },
-                    "required": ["name"],
-                },
-            },
-            "negatives":        {"type": "array", "items": {"type": "string"}},
-            "relevant_history": {"type": "array", "items": {"type": "string"}},
-            "risk_factors":     {"type": "array", "items": {"type": "string"}},
-            "vitals_reported": {
+_SCHEMA_MEDICAL_CONCEPTS = {
+    "type": "object",
+    "properties": {
+        "chief_complaint":  {"type": "string"},
+        "symptoms": {
+            "type": "array",
+            "items": {
                 "type": "object",
                 "properties": {
-                    "temperature_c":    {"type": ["number", "null"]},
-                    "pulse_bpm":        {"type": ["number", "null"]},
-                    "systolic_bp_mmhg": {"type": ["number", "null"]},
-                    "spo2_pct":         {"type": ["number", "null"]},
-                    "rr_per_min":       {"type": ["number", "null"]},
-                    "bgl_mmol":         {"type": ["number", "null"]},
-                    "gcs":              {"type": ["number", "null"]},
+                    "name":      {"type": "string"},
+                    "duration":  {"type": "string", "nullable": True},
+                    "severity":  {"type": "string", "nullable": True},
+                    "character": {"type": "string", "nullable": True},
                 },
+                "required": ["name"],
             },
-            "red_flags":          {"type": "array", "items": {"type": "string"}},
-            "pregnancy_status":   {"type": ["string", "null"]},
-            "lmp":                {"type": ["string", "null"]},
-            "uncertain_findings": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "topic":            {"type": "string"},
-                        "patient_response": {"type": "string"},
-                    },
-                    "required": ["topic", "patient_response"],
-                },
-            },
-            "past_medical_history": {"type": "array", "items": {"type": "string"}},
-            "current_medications":  {"type": "array", "items": {"type": "string"}},
-            "allergies_reported":   {"type": "array", "items": {"type": "string"}},
         },
-        "required": [
-            "chief_complaint", "symptoms", "negatives", "relevant_history",
-            "risk_factors", "vitals_reported", "red_flags", "pregnancy_status",
-            "lmp", "uncertain_findings", "past_medical_history",
-            "current_medications", "allergies_reported",
-        ],
+        "negatives":        {"type": "array", "items": {"type": "string"}},
+        "relevant_history": {"type": "array", "items": {"type": "string"}},
+        "risk_factors":     {"type": "array", "items": {"type": "string"}},
+        "vitals_reported": {
+            "type": "object",
+            "properties": {
+                "temperature_c":    {"type": "number", "nullable": True},
+                "pulse_bpm":        {"type": "number", "nullable": True},
+                "systolic_bp_mmhg": {"type": "number", "nullable": True},
+                "spo2_pct":         {"type": "number", "nullable": True},
+                "rr_per_min":       {"type": "number", "nullable": True},
+                "bgl_mmol":         {"type": "number", "nullable": True},
+                "gcs":              {"type": "number", "nullable": True},
+            },
+        },
+        "red_flags":          {"type": "array", "items": {"type": "string"}},
+        "pregnancy_status":   {"type": "string", "nullable": True},
+        "lmp":                {"type": "string", "nullable": True},
+        "uncertain_findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "topic":            {"type": "string"},
+                    "patient_response": {"type": "string"},
+                },
+                "required": ["topic", "patient_response"],
+            },
+        },
+        "past_medical_history": {"type": "array", "items": {"type": "string"}},
+        "current_medications":  {"type": "array", "items": {"type": "string"}},
+        "allergies_reported":   {"type": "array", "items": {"type": "string"}},
     },
+    "required": [
+        "chief_complaint", "symptoms", "negatives", "relevant_history",
+        "risk_factors", "vitals_reported", "red_flags", "pregnancy_status",
+        "lmp", "uncertain_findings", "past_medical_history",
+        "current_medications", "allergies_reported",
+    ],
 }
 
 _DDX_ITEM_SCHEMA = {
@@ -265,57 +260,49 @@ _DDX_ITEM_SCHEMA = {
     ],
 }
 
-_TOOL_DIFFERENTIAL = {
-    "name": "submit_differential",
-    "description": "Submit the ranked differential diagnosis list",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "differential": {"type": "array", "items": _DDX_ITEM_SCHEMA},
-        },
-        "required": ["differential"],
+_SCHEMA_DIFFERENTIAL = {
+    "type": "object",
+    "properties": {
+        "differential": {"type": "array", "items": _DDX_ITEM_SCHEMA},
     },
+    "required": ["differential"],
 }
 
-_TOOL_CLARIFYING_QS = {
-    "name": "submit_clarifying_questions",
-    "description": "Submit the gap analysis and clarifying questions for the nurse",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "clinical_summary": {"type": "string"},
-            "key_uncertainty":  {"type": "string"},
-            "clarifying_questions": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "question":              {"type": "string"},
-                        "discriminates_between": {"type": "array", "items": {"type": "string"}},
-                        "if_yes_favours":        {"type": "string"},
-                        "if_no_favours":         {"type": "string"},
-                        "priority":              {"type": "integer"},
-                    },
-                    "required": ["question", "discriminates_between", "if_yes_favours", "if_no_favours", "priority"],
+_SCHEMA_CLARIFYING_QS = {
+    "type": "object",
+    "properties": {
+        "clinical_summary": {"type": "string"},
+        "key_uncertainty":  {"type": "string"},
+        "clarifying_questions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "question":              {"type": "string"},
+                    "discriminates_between": {"type": "array", "items": {"type": "string"}},
+                    "if_yes_favours":        {"type": "string"},
+                    "if_no_favours":         {"type": "string"},
+                    "priority":              {"type": "integer"},
                 },
-            },
-            "bedside_observations": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "observation":           {"type": "string"},
-                        "tool_required":         {"type": "string"},
-                        "discriminates_between": {"type": "array", "items": {"type": "string"}},
-                        "finding_and_meaning":   {"type": "string"},
-                        "priority":              {"type": "integer"},
-                    },
-                    "required": ["observation", "tool_required", "discriminates_between", "finding_and_meaning", "priority"],
-                },
+                "required": ["question", "discriminates_between", "if_yes_favours", "if_no_favours", "priority"],
             },
         },
-        "required": ["clinical_summary", "key_uncertainty", "clarifying_questions", "bedside_observations"],
+        "bedside_observations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "observation":           {"type": "string"},
+                    "tool_required":         {"type": "string"},
+                    "discriminates_between": {"type": "array", "items": {"type": "string"}},
+                    "finding_and_meaning":   {"type": "string"},
+                    "priority":              {"type": "integer"},
+                },
+                "required": ["observation", "tool_required", "discriminates_between", "finding_and_meaning", "priority"],
+            },
+        },
     },
+    "required": ["clinical_summary", "key_uncertainty", "clarifying_questions", "bedside_observations"],
 }
 
 
@@ -386,15 +373,17 @@ async def extract_medical_concepts(
         ),
     ])
 
-    response = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=1000,
-        tools=[_TOOL_MEDICAL_CONCEPTS],
-        tool_choice={"type": "tool", "name": "submit_medical_concepts"},
-        messages=[{"role": "user", "content": prompt}]
+    response = await gemini.aio.models.generate_content(
+        model=MODEL_D1_CONCEPTS,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=_SCHEMA_MEDICAL_CONCEPTS,
+            max_output_tokens=1000,
+        )
     )
 
-    return response.content[0].input
+    return json.loads(response.text)
 
 
 # ---------------------------------------------------------------------------
@@ -456,15 +445,17 @@ async def generate_differential(
         instructions,
     ])
 
-    response = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=2000,
-        tools=[_TOOL_DIFFERENTIAL],
-        tool_choice={"type": "tool", "name": "submit_differential"},
-        messages=[{"role": "user", "content": prompt}]
+    response = await gemini.aio.models.generate_content(
+        model=MODEL_D2_DIFFERENTIAL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=_SCHEMA_DIFFERENTIAL,
+            max_output_tokens=2000,
+        )
     )
 
-    return validate_differential(response.content[0].input["differential"])
+    return validate_differential(json.loads(response.text)["differential"])
 
 
 # ---------------------------------------------------------------------------
@@ -502,13 +493,13 @@ async def stream_differential(
         epi_layer if epi_layer else "",
     ])
 
-    with client.messages.stream(
-        model=CLAUDE_MODEL,
-        max_tokens=1500,
-        messages=[{"role": "user", "content": prompt}]
-    ) as stream:
-        for text in stream.text_stream:
-            yield text
+    async for chunk in gemini.aio.models.generate_content_stream(
+        model=MODEL_D2_DIFFERENTIAL,
+        contents=prompt,
+        config=types.GenerateContentConfig(max_output_tokens=1500),
+    ):
+        if chunk.text:
+            yield chunk.text
 
 
 # ---------------------------------------------------------------------------
@@ -690,15 +681,17 @@ async def generate_clarifying_questions(
         instructions,
     ])
 
-    response = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=1500,
-        tools=[_TOOL_CLARIFYING_QS],
-        tool_choice={"type": "tool", "name": "submit_clarifying_questions"},
-        messages=[{"role": "user", "content": prompt}]
+    response = await gemini.aio.models.generate_content(
+        model=MODEL_D3_CLARIFYING,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=_SCHEMA_CLARIFYING_QS,
+            max_output_tokens=1500,
+        )
     )
 
-    result = response.content[0].input
+    result = json.loads(response.text)
 
     # Safety net: if needs_lmp_question and the LLM somehow omitted it,
     # insert the LMP question deterministically at priority 1.

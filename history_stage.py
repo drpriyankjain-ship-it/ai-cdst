@@ -35,17 +35,17 @@ Design rationale:
     Diagnosis Stage can read them without re-parsing the transcript.
 
 Dependencies:
-    pip install anthropic asyncpg fastapi pydantic
+    pip install google-genai asyncpg fastapi pydantic
 """
 
 import json
 from datetime import datetime
 from typing import AsyncIterator
 
-import anthropic
 import asyncpg
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
+from google.genai import types
 from pydantic import BaseModel
 
 from epi_utils import (
@@ -55,15 +55,8 @@ from epi_utils import (
     load_baseline_diseases,
     load_epi_prior,
 )
-
-
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
-CLAUDE_MODEL = "claude-sonnet-4-20250514"
-
-client = anthropic.Anthropic()   # API key from environment
+from llm_client import gemini
+from model_config import MODEL_H1_CHIEF_COMPLAINT, MODEL_H2_QUESTIONNAIRE
 
 
 # ---------------------------------------------------------------------------
@@ -216,106 +209,98 @@ def is_complaint_missing(chief_complaint: dict) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Tool schemas — force structured JSON output from every LLM call
+# Response schemas — structured JSON output for every LLM call
 # ---------------------------------------------------------------------------
 
-_TOOL_CHIEF_COMPLAINT = {
-    "name": "submit_chief_complaint",
-    "description": "Submit structured chief complaint extracted from the opening transcript",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "patient_name":             {"type": ["string", "null"]},
-            "age":                      {"type": ["string", "null"]},
-            "village":                  {"type": ["string", "null"]},
-            "chief_complaint":          {"type": ["string", "null"]},
-            "additional_complaints":    {"type": "array", "items": {"type": "string"}},
-            "duration":                 {"type": ["string", "null"]},
-            "severity_if_mentioned":    {"type": ["string", "null"]},
-            "spontaneous_history":      {"type": "array", "items": {"type": "string"}},
-            "red_flags_mentioned":      {"type": "array", "items": {"type": "string"}},
-            "language_of_consultation": {"type": "string"},
-        },
-        "required": [
-            "patient_name", "age", "village", "chief_complaint",
-            "additional_complaints", "duration", "severity_if_mentioned",
-            "spontaneous_history", "red_flags_mentioned", "language_of_consultation",
-        ],
+_SCHEMA_CHIEF_COMPLAINT = {
+    "type": "object",
+    "properties": {
+        "patient_name":             {"type": "string", "nullable": True},
+        "age":                      {"type": "string", "nullable": True},
+        "village":                  {"type": "string", "nullable": True},
+        "chief_complaint":          {"type": "string", "nullable": True},
+        "additional_complaints":    {"type": "array", "items": {"type": "string"}},
+        "duration":                 {"type": "string", "nullable": True},
+        "severity_if_mentioned":    {"type": "string", "nullable": True},
+        "spontaneous_history":      {"type": "array", "items": {"type": "string"}},
+        "red_flags_mentioned":      {"type": "array", "items": {"type": "string"}},
+        "language_of_consultation": {"type": "string"},
     },
+    "required": [
+        "patient_name", "age", "village", "chief_complaint",
+        "additional_complaints", "duration", "severity_if_mentioned",
+        "spontaneous_history", "red_flags_mentioned", "language_of_consultation",
+    ],
 }
 
-_TOOL_QUESTIONNAIRE = {
-    "name": "submit_questionnaire",
-    "description": "Submit the structured nurse interview questionnaire",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "opening_context":    {"type": "string"},
-            "known_and_verified": {"type": "array", "items": {"type": "string"}},
-            "sections": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "section_title": {"type": "string"},
-                        "rationale":     {"type": "string"},
-                        "questions": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "question":      {"type": "string"},
-                                    "follow_up":     {"type": "string"},
-                                    "discriminates": {"type": "string"},
-                                },
-                                "required": ["question", "follow_up", "discriminates"],
-                            },
-                        },
-                    },
-                    "required": ["section_title", "rationale", "questions"],
-                },
-            },
-            "mandatory_safety_questions": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "question": {"type": "string"},
-                        "reason":   {"type": "string"},
-                    },
-                    "required": ["question", "reason"],
-                },
-            },
-            "prior_encounter_flags": {"type": "array", "items": {"type": "string"}},
-            "patient_record_fields": {
+_SCHEMA_QUESTIONNAIRE = {
+    "type": "object",
+    "properties": {
+        "opening_context":    {"type": "string"},
+        "known_and_verified": {"type": "array", "items": {"type": "string"}},
+        "sections": {
+            "type": "array",
+            "items": {
                 "type": "object",
                 "properties": {
-                    "past_medical_history": {"type": "array", "items": {"type": "string"}},
-                    "family_history":       {"type": "array", "items": {"type": "string"}},
-                    "social_history": {
-                        "type": "object",
-                        "properties": {
-                            "occupation":       {"type": "string"},
-                            "living_situation": {"type": "string"},
-                            "tobacco":          {"type": "string"},
-                            "alcohol":          {"type": "string"},
+                    "section_title": {"type": "string"},
+                    "rationale":     {"type": "string"},
+                    "questions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "question":      {"type": "string"},
+                                "follow_up":     {"type": "string"},
+                                "discriminates": {"type": "string"},
+                            },
+                            "required": ["question", "follow_up", "discriminates"],
                         },
                     },
-                    "current_medications": {"type": "array", "items": {"type": "string"}},
-                    "allergies":           {"type": "array", "items": {"type": "string"}},
-                    "immunisation_flags":  {"type": "array", "items": {"type": "string"}},
                 },
-                "required": [
-                    "past_medical_history", "family_history", "social_history",
-                    "current_medications", "allergies", "immunisation_flags",
-                ],
+                "required": ["section_title", "rationale", "questions"],
             },
         },
-        "required": [
-            "opening_context", "known_and_verified", "sections",
-            "mandatory_safety_questions", "prior_encounter_flags", "patient_record_fields",
-        ],
+        "mandatory_safety_questions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string"},
+                    "reason":   {"type": "string"},
+                },
+                "required": ["question", "reason"],
+            },
+        },
+        "prior_encounter_flags": {"type": "array", "items": {"type": "string"}},
+        "patient_record_fields": {
+            "type": "object",
+            "properties": {
+                "past_medical_history": {"type": "array", "items": {"type": "string"}},
+                "family_history":       {"type": "array", "items": {"type": "string"}},
+                "social_history": {
+                    "type": "object",
+                    "properties": {
+                        "occupation":       {"type": "string"},
+                        "living_situation": {"type": "string"},
+                        "tobacco":          {"type": "string"},
+                        "alcohol":          {"type": "string"},
+                    },
+                },
+                "current_medications": {"type": "array", "items": {"type": "string"}},
+                "allergies":           {"type": "array", "items": {"type": "string"}},
+                "immunisation_flags":  {"type": "array", "items": {"type": "string"}},
+            },
+            "required": [
+                "past_medical_history", "family_history", "social_history",
+                "current_medications", "allergies", "immunisation_flags",
+            ],
+        },
     },
+    "required": [
+        "opening_context", "known_and_verified", "sections",
+        "mandatory_safety_questions", "prior_encounter_flags", "patient_record_fields",
+    ],
 }
 
 
@@ -359,15 +344,17 @@ async def extract_chief_complaint(
         ),
     ])
 
-    response = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=600,
-        tools=[_TOOL_CHIEF_COMPLAINT],
-        tool_choice={"type": "tool", "name": "submit_chief_complaint"},
-        messages=[{"role": "user", "content": prompt}]
+    response = await gemini.aio.models.generate_content(
+        model=MODEL_H1_CHIEF_COMPLAINT,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=_SCHEMA_CHIEF_COMPLAINT,
+            max_output_tokens=600,
+        )
     )
 
-    return response.content[0].input
+    return json.loads(response.text)
 
 
 # ---------------------------------------------------------------------------
@@ -618,15 +605,17 @@ async def generate_questionnaire(
         ),
     ]))
 
-    response = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=2000,
-        tools=[_TOOL_QUESTIONNAIRE],
-        tool_choice={"type": "tool", "name": "submit_questionnaire"},
-        messages=[{"role": "user", "content": prompt}]
+    response = await gemini.aio.models.generate_content(
+        model=MODEL_H2_QUESTIONNAIRE,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=_SCHEMA_QUESTIONNAIRE,
+            max_output_tokens=2000,
+        )
     )
 
-    questionnaire = response.content[0].input
+    questionnaire = json.loads(response.text)
 
     # Inject fixed background history section for first/partial visits.
     # The LLM generates the chief complaint section; this ensures complete
@@ -705,13 +694,13 @@ async def stream_questionnaire(
         ),
     ]))
 
-    with client.messages.stream(
-        model=CLAUDE_MODEL,
-        max_tokens=1500,
-        messages=[{"role": "user", "content": prompt}]
-    ) as stream:
-        for text in stream.text_stream:
-            yield text
+    async for chunk in gemini.aio.models.generate_content_stream(
+        model=MODEL_H2_QUESTIONNAIRE,
+        contents=prompt,
+        config=types.GenerateContentConfig(max_output_tokens=1500),
+    ):
+        if chunk.text:
+            yield chunk.text
 
     # Append fixed background history section for first/partial visits.
     # Streamed as plain text after the LLM section so the nurse sees it immediately.

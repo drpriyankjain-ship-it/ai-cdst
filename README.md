@@ -68,7 +68,7 @@ All Python files are at the repo root, not in subdirectories.
 | Database | Postgres + pgvector |
 | Object storage | S3-compatible |
 | STT | Deepgram streaming WebSocket |
-| LLM | Claude claude-sonnet-4-20250514 (Anthropic API) |
+| LLM | Gemini via Google Gemini API (`google-genai` SDK) |
 | Embeddings | sentence-transformers/all-MiniLM-L6-v2 (384-dim) |
 | Mobile | React Native |
 | Auth | JWT — roles: nurse / doctor / admin |

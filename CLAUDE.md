@@ -24,6 +24,8 @@ cdst/
 ├── diagnosis_stage.py          # Three-call pipeline, no RAG
 ├── management_stage.py         # Four-call pipeline, RAG in Call 2
 ├── epi_utils.py                # Shared epi utilities — imported by all three stages
+├── model_config.py             # LLM model assignments for all 9 pipeline calls — edit here to change models
+├── llm_client.py               # Shared Gemini client instance (reads GEMINI_API_KEY)
 ├── orchestrator.py             # WebSocket session orchestrator — central component
 ├── data/
 │   ├── epi_prior_wb.json       # All 23 WB districts, 4 seasonal buckets
@@ -68,7 +70,7 @@ shows logical grouping only.
 | Database | Postgres + pgvector extension |
 | Object storage | S3-compatible (audio files) |
 | STT | Deepgram streaming WebSocket |
-| LLM | Claude claude-sonnet-4-6 via Anthropic API |
+| LLM | Gemini via Google Gemini API (`google-genai` SDK) — model assignments in `model_config.py` |
 | Embeddings | sentence-transformers/all-MiniLM-L6-v2 (384-dim) |
 | Mobile | React Native |
 | Auth | JWT, role-based: nurse / doctor / admin |

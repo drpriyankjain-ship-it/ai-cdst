@@ -23,35 +23,38 @@ Triage output:
   - HIGH : urgent synchronous doctor contact or immediate referral
 
 Dependencies:
-    pip install anthropic asyncpg pgvector sentence-transformers fastapi pydantic
+    pip install google-genai asyncpg pgvector sentence-transformers fastapi pydantic
 """
 
 import json
 from datetime import datetime, timedelta
 from typing import AsyncIterator
 
-import anthropic
 import asyncpg
 import asyncio
 from sentence_transformers import SentenceTransformer
 from fastapi import FastAPI, HTTPException
+from google.genai import types
 from pydantic import BaseModel
 
 from epi_utils import state_from_district_code
+from llm_client import gemini
+from model_config import (
+    MODEL_M1_FINDINGS, MODEL_M2_PRESCRIPTION,
+    MODEL_M3_RISK, MODEL_M4_TRIAGE,
+)
 
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-CLAUDE_MODEL       = "claude-sonnet-4-6"
 BEDSIDE_TOOLS_PATH = "data/bedside_tools.json"
 FORMULARY_PATH     = "data/formulary_wb.json"
 ESCALATION_RULES_PATH = "data/escalation_rules.json"
 RAG_TOP_K          = 8    # STG chunks per diagnosis for treatment retrieval
 STAGE_TIMEOUT_SECS = 120  # hard ceiling for the full pipeline; orchestrator should wrap with asyncio.wait_for
 
-client   = anthropic.AsyncAnthropic()
 embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
 with open(ESCALATION_RULES_PATH) as _f:
@@ -90,58 +93,54 @@ class Vault:
 
 
 # ---------------------------------------------------------------------------
-# Tool schemas — force structured JSON output from every LLM call
+# Response schemas — structured JSON output for every LLM call
 # ---------------------------------------------------------------------------
 
-_TOOL_CLARIFYING_FINDINGS = {
-    "name": "submit_clarifying_findings",
-    "description": "Submit structured findings extracted from the phase 3 clarifying transcript",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "answers_to_clarifying_questions": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "question": {"type": "string"},
-                        "answer":   {"type": "string"},
-                    },
-                    "required": ["question", "answer"],
-                },
-            },
-            "bedside_examination_findings": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "observation": {"type": "string"},
-                        "result":      {"type": "string"},
-                    },
-                    "required": ["observation", "result"],
-                },
-            },
-            "new_symptoms": {"type": "array", "items": {"type": "string"}},
-            "vitals_found": {
+_SCHEMA_CLARIFYING_FINDINGS = {
+    "type": "object",
+    "properties": {
+        "answers_to_clarifying_questions": {
+            "type": "array",
+            "items": {
                 "type": "object",
                 "properties": {
-                    "temperature_c":    {"type": ["number", "null"]},
-                    "pulse_bpm":        {"type": ["number", "null"]},
-                    "systolic_bp_mmhg": {"type": ["number", "null"]},
-                    "spo2_pct":         {"type": ["number", "null"]},
-                    "rr_per_min":       {"type": ["number", "null"]},
-                    "bgl_mmol":         {"type": ["number", "null"]},
-                    "gcs":              {"type": ["number", "null"]},
-                    "weight_kg":        {"type": ["number", "null"]},
-                    "rdt_result":       {"type": ["string", "null"]},
+                    "question": {"type": "string"},
+                    "answer":   {"type": "string"},
                 },
+                "required": ["question", "answer"],
             },
         },
-        "required": [
-            "answers_to_clarifying_questions", "bedside_examination_findings",
-            "new_symptoms", "vitals_found",
-        ],
+        "bedside_examination_findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "observation": {"type": "string"},
+                    "result":      {"type": "string"},
+                },
+                "required": ["observation", "result"],
+            },
+        },
+        "new_symptoms": {"type": "array", "items": {"type": "string"}},
+        "vitals_found": {
+            "type": "object",
+            "properties": {
+                "temperature_c":    {"type": "number", "nullable": True},
+                "pulse_bpm":        {"type": "number", "nullable": True},
+                "systolic_bp_mmhg": {"type": "number", "nullable": True},
+                "spo2_pct":         {"type": "number", "nullable": True},
+                "rr_per_min":       {"type": "number", "nullable": True},
+                "bgl_mmol":         {"type": "number", "nullable": True},
+                "gcs":              {"type": "number", "nullable": True},
+                "weight_kg":        {"type": "number", "nullable": True},
+                "rdt_result":       {"type": "string", "nullable": True},
+            },
+        },
     },
+    "required": [
+        "answers_to_clarifying_questions", "bedside_examination_findings",
+        "new_symptoms", "vitals_found",
+    ],
 }
 
 _PRESCRIPTION_ITEM_SCHEMA = {
@@ -160,188 +159,176 @@ _PRESCRIPTION_ITEM_SCHEMA = {
     "required": ["drug", "dose", "route", "frequency", "duration", "for_problem"],
 }
 
-_TOOL_PROBLEM_LIST = {
-    "name": "submit_problem_list",
-    "description": "Submit the problem-oriented management plan with provisional diagnosis and prescriptions",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "problem_list": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "problem_number": {"type": "integer"},
-                        "problem_title":  {"type": "string"},
-                        "type":           {"type": "string", "enum": ["acute_new", "established", "incidental", "deferred"]},
-                        "assessment":     {"type": "object"},
-                        "plan": {
-                            "type": "object",
-                            "properties": {
-                                "prescription":        {"type": "array", "items": _PRESCRIPTION_ITEM_SCHEMA},
-                                "investigations":      {"type": "array", "items": {"type": "string"}},
-                                "non_pharmacological": {"type": "array", "items": {"type": "string"}},
-                                "management_notes":    {"type": ["string", "null"]},
-                            },
-                            "required": ["prescription", "investigations", "non_pharmacological"],
-                        },
-                    },
-                    "required": ["problem_number", "problem_title", "type", "assessment", "plan"],
-                },
-            },
-            "non_pharmacological_shared": {"type": "array", "items": {"type": "string"}},
-            "formulary_substitutions":    {"type": "array", "items": {"type": "string"}},
-        },
-        "required": ["problem_list", "non_pharmacological_shared", "formulary_substitutions"],
-    },
-}
-
-_TOOL_RISK_ASSESSMENT = {
-    "name": "submit_risk_assessment",
-    "description": "Submit the five-dimension risk assessment",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "diagnostic_uncertainty": {
+_SCHEMA_PROBLEM_LIST = {
+    "type": "object",
+    "properties": {
+        "problem_list": {
+            "type": "array",
+            "items": {
                 "type": "object",
                 "properties": {
-                    "must_not_miss_still_in_play": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "diagnosis":             {"type": "string"},
-                                "why_still_possible":    {"type": "string"},
-                                "consequence_if_missed": {"type": "string"},
-                                "ruling_out_action":     {"type": "string"},
-                            },
-                            "required": ["diagnosis", "why_still_possible", "consequence_if_missed", "ruling_out_action"],
-                        },
-                    },
-                    "confidence_in_provisional": {"type": "string", "enum": ["high", "moderate", "low"]},
-                    "uncertainty_mitigable":     {"type": "boolean"},
-                },
-                "required": ["must_not_miss_still_in_play", "confidence_in_provisional", "uncertainty_mitigable"],
-            },
-            "iatrogenic_risk": {
-                "type": "object",
-                "properties": {
-                    "risks": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "risk":        {"type": "string"},
-                                "affected_by": {"type": "string"},
-                                "severity":    {"type": "string", "enum": ["low", "moderate", "high"]},
-                                "mitigation":  {"type": "string"},
-                            },
-                            "required": ["risk", "affected_by", "severity", "mitigation"],
-                        },
-                    },
-                    "allergy_check":     {"type": "string"},
-                    "interaction_check": {"type": "string"},
-                },
-                "required": ["risks", "allergy_check", "interaction_check"],
-            },
-            "delay_risk": {
-                "type": "object",
-                "properties": {
-                    "time_sensitive":         {"type": "boolean"},
-                    "safe_delay_window":      {"type": "string"},
-                    "rationale":              {"type": "string"},
-                    "if_delayed_consequence": {"type": "string"},
-                },
-                "required": ["time_sensitive", "safe_delay_window", "rationale", "if_delayed_consequence"],
-            },
-            "complication_watch": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "complication":  {"type": "string"},
-                        "warning_signs": {"type": "array", "items": {"type": "string"}},
-                        "nurse_action":  {"type": "string"},
-                        "timeframe":     {"type": "string"},
-                    },
-                    "required": ["complication", "warning_signs", "nurse_action", "timeframe"],
-                },
-            },
-            "mitigation_plan": {
-                "type": "object",
-                "properties": {
-                    "mitigable_risks":     {"type": "array", "items": {"type": "string"}},
-                    "unmitigable_risks":   {"type": "array", "items": {"type": "string"}},
-                    "home_monitoring":     {"type": "array", "items": {"type": "string"}},
-                    "return_criteria":     {"type": "array", "items": {"type": "string"}},
-                    "overall_risk_tier":   {"type": "string", "enum": ["LOW", "HIGH"]},
-                    "risk_tier_rationale": {"type": "string"},
-                },
-                "required": [
-                    "mitigable_risks", "unmitigable_risks", "home_monitoring",
-                    "return_criteria", "overall_risk_tier", "risk_tier_rationale",
-                ],
-            },
-        },
-        "required": ["diagnostic_uncertainty", "iatrogenic_risk", "delay_risk", "complication_watch", "mitigation_plan"],
-    },
-}
-
-_TOOL_TRIAGE_HANDOFF = {
-    "name": "submit_triage_handoff",
-    "description": "Submit the triage decision, patient instructions, and doctor handoff package",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "triage": {
-                "type": "object",
-                "properties": {
-                    "tier":      {"type": "string", "enum": ["LOW", "HIGH"]},
-                    "rationale": {"type": "string"},
-                    "action":    {"type": "string"},
-                    "referral": {
+                    "problem_number": {"type": "integer"},
+                    "problem_title":  {"type": "string"},
+                    "type":           {"type": "string", "enum": ["acute_new", "established", "incidental", "deferred"]},
+                    "assessment":     {"type": "object"},
+                    "plan": {
                         "type": "object",
                         "properties": {
-                            "required": {"type": "boolean"},
-                            "urgency":  {"type": "string"},
-                            "facility": {"type": "string"},
-                            "reason":   {"type": "string"},
+                            "prescription":        {"type": "array", "items": _PRESCRIPTION_ITEM_SCHEMA},
+                            "investigations":      {"type": "array", "items": {"type": "string"}},
+                            "non_pharmacological": {"type": "array", "items": {"type": "string"}},
+                            "management_notes":    {"type": "string", "nullable": True},
                         },
-                        "required": ["required", "urgency", "facility", "reason"],
+                        "required": ["prescription", "investigations", "non_pharmacological"],
                     },
                 },
-                "required": ["tier", "rationale", "action", "referral"],
-            },
-            "patient_instructions": {
-                "type": "object",
-                "properties": {
-                    "diagnosis_explained": {"type": "string"},
-                    "treatment_summary":   {"type": "string"},
-                    "do_list":             {"type": "array", "items": {"type": "string"}},
-                    "dont_list":           {"type": "array", "items": {"type": "string"}},
-                    "return_criteria":     {"type": "array", "items": {"type": "string"}},
-                    "follow_up":           {"type": "string"},
-                },
-                "required": ["diagnosis_explained", "treatment_summary", "do_list", "dont_list", "return_criteria", "follow_up"],
-            },
-            "doctor_handoff": {
-                "type": "object",
-                "properties": {
-                    "one_liner":                 {"type": "string"},
-                    "clinical_summary":          {"type": "string"},
-                    "differential_table":        {"type": "string"},
-                    "key_risks_flagged":         {"type": "array", "items": {"type": "string"}},
-                    "questions_for_doctor":      {"type": "array", "items": {"type": "string"}},
-                    "authorization_required_by": {"type": "string"},
-                },
-                "required": [
-                    "one_liner", "clinical_summary", "differential_table",
-                    "key_risks_flagged", "questions_for_doctor", "authorization_required_by",
-                ],
+                "required": ["problem_number", "problem_title", "type", "assessment", "plan"],
             },
         },
-        "required": ["triage", "patient_instructions", "doctor_handoff"],
+        "non_pharmacological_shared": {"type": "array", "items": {"type": "string"}},
+        "formulary_substitutions":    {"type": "array", "items": {"type": "string"}},
     },
+    "required": ["problem_list", "non_pharmacological_shared", "formulary_substitutions"],
+}
+
+_SCHEMA_RISK_ASSESSMENT = {
+    "type": "object",
+    "properties": {
+        "diagnostic_uncertainty": {
+            "type": "object",
+            "properties": {
+                "must_not_miss_still_in_play": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "diagnosis":             {"type": "string"},
+                            "why_still_possible":    {"type": "string"},
+                            "consequence_if_missed": {"type": "string"},
+                            "ruling_out_action":     {"type": "string"},
+                        },
+                        "required": ["diagnosis", "why_still_possible", "consequence_if_missed", "ruling_out_action"],
+                    },
+                },
+                "confidence_in_provisional": {"type": "string", "enum": ["high", "moderate", "low"]},
+                "uncertainty_mitigable":     {"type": "boolean"},
+            },
+            "required": ["must_not_miss_still_in_play", "confidence_in_provisional", "uncertainty_mitigable"],
+        },
+        "iatrogenic_risk": {
+            "type": "object",
+            "properties": {
+                "risks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "risk":        {"type": "string"},
+                            "affected_by": {"type": "string"},
+                            "severity":    {"type": "string", "enum": ["low", "moderate", "high"]},
+                            "mitigation":  {"type": "string"},
+                        },
+                        "required": ["risk", "affected_by", "severity", "mitigation"],
+                    },
+                },
+                "allergy_check":     {"type": "string"},
+                "interaction_check": {"type": "string"},
+            },
+            "required": ["risks", "allergy_check", "interaction_check"],
+        },
+        "delay_risk": {
+            "type": "object",
+            "properties": {
+                "time_sensitive":         {"type": "boolean"},
+                "safe_delay_window":      {"type": "string"},
+                "rationale":              {"type": "string"},
+                "if_delayed_consequence": {"type": "string"},
+            },
+            "required": ["time_sensitive", "safe_delay_window", "rationale", "if_delayed_consequence"],
+        },
+        "complication_watch": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "complication":  {"type": "string"},
+                    "warning_signs": {"type": "array", "items": {"type": "string"}},
+                    "nurse_action":  {"type": "string"},
+                    "timeframe":     {"type": "string"},
+                },
+                "required": ["complication", "warning_signs", "nurse_action", "timeframe"],
+            },
+        },
+        "mitigation_plan": {
+            "type": "object",
+            "properties": {
+                "mitigable_risks":     {"type": "array", "items": {"type": "string"}},
+                "unmitigable_risks":   {"type": "array", "items": {"type": "string"}},
+                "home_monitoring":     {"type": "array", "items": {"type": "string"}},
+                "return_criteria":     {"type": "array", "items": {"type": "string"}},
+                "overall_risk_tier":   {"type": "string", "enum": ["LOW", "HIGH"]},
+                "risk_tier_rationale": {"type": "string"},
+            },
+            "required": [
+                "mitigable_risks", "unmitigable_risks", "home_monitoring",
+                "return_criteria", "overall_risk_tier", "risk_tier_rationale",
+            ],
+        },
+    },
+    "required": ["diagnostic_uncertainty", "iatrogenic_risk", "delay_risk", "complication_watch", "mitigation_plan"],
+}
+
+_SCHEMA_TRIAGE_HANDOFF = {
+    "type": "object",
+    "properties": {
+        "triage": {
+            "type": "object",
+            "properties": {
+                "tier":      {"type": "string", "enum": ["LOW", "HIGH"]},
+                "rationale": {"type": "string"},
+                "action":    {"type": "string"},
+                "referral": {
+                    "type": "object",
+                    "properties": {
+                        "required": {"type": "boolean"},
+                        "urgency":  {"type": "string"},
+                        "facility": {"type": "string"},
+                        "reason":   {"type": "string"},
+                    },
+                    "required": ["required", "urgency", "facility", "reason"],
+                },
+            },
+            "required": ["tier", "rationale", "action", "referral"],
+        },
+        "patient_instructions": {
+            "type": "object",
+            "properties": {
+                "diagnosis_explained": {"type": "string"},
+                "treatment_summary":   {"type": "string"},
+                "do_list":             {"type": "array", "items": {"type": "string"}},
+                "dont_list":           {"type": "array", "items": {"type": "string"}},
+                "return_criteria":     {"type": "array", "items": {"type": "string"}},
+                "follow_up":           {"type": "string"},
+            },
+            "required": ["diagnosis_explained", "treatment_summary", "do_list", "dont_list", "return_criteria", "follow_up"],
+        },
+        "doctor_handoff": {
+            "type": "object",
+            "properties": {
+                "one_liner":                 {"type": "string"},
+                "clinical_summary":          {"type": "string"},
+                "differential_table":        {"type": "string"},
+                "key_risks_flagged":         {"type": "array", "items": {"type": "string"}},
+                "questions_for_doctor":      {"type": "array", "items": {"type": "string"}},
+                "authorization_required_by": {"type": "string"},
+            },
+            "required": [
+                "one_liner", "clinical_summary", "differential_table",
+                "key_risks_flagged", "questions_for_doctor", "authorization_required_by",
+            ],
+        },
+    },
+    "required": ["triage", "patient_instructions", "doctor_handoff"],
 }
 
 
@@ -449,16 +436,18 @@ async def extract_clarifying_findings(
         ),
     ])
 
-    response = await client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=2000,
-        system="You are a clinical data extraction tool. Extract only what is explicitly stated in the transcript. Do not infer or interpret.",
-        tools=[_TOOL_CLARIFYING_FINDINGS],
-        tool_choice={"type": "tool", "name": "submit_clarifying_findings"},
-        messages=[{"role": "user", "content": prompt}]
+    response = await gemini.aio.models.generate_content(
+        model=MODEL_M1_FINDINGS,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction="You are a clinical data extraction tool. Extract only what is explicitly stated in the transcript. Do not infer or interpret.",
+            response_mime_type="application/json",
+            response_schema=_SCHEMA_CLARIFYING_FINDINGS,
+            max_output_tokens=2000,
+        )
     )
 
-    return response.content[0].input
+    return json.loads(response.text)
 
 
 # ---------------------------------------------------------------------------
@@ -562,22 +551,24 @@ async def generate_provisional_diagnosis_and_rx(
         ),
     ])
 
-    response = await client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=5000,
-        system=(
-            "You are a clinical decision support system generating provisional diagnoses "
-            "and prescriptions for nurse-managed consultations in rural India. "
-            "Patient safety takes precedence over all other considerations — "
-            "never prescribe a drug the patient is allergic to, regardless of what "
-            "any retrieved guideline says."
-        ),
-        tools=[_TOOL_PROBLEM_LIST],
-        tool_choice={"type": "tool", "name": "submit_problem_list"},
-        messages=[{"role": "user", "content": prompt}]
+    response = await gemini.aio.models.generate_content(
+        model=MODEL_M2_PRESCRIPTION,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=(
+                "You are a clinical decision support system generating provisional diagnoses "
+                "and prescriptions for nurse-managed consultations in rural India. "
+                "Patient safety takes precedence over all other considerations — "
+                "never prescribe a drug the patient is allergic to, regardless of what "
+                "any retrieved guideline says."
+            ),
+            response_mime_type="application/json",
+            response_schema=_SCHEMA_PROBLEM_LIST,
+            max_output_tokens=5000,
+        )
     )
 
-    return response.content[0].input
+    return json.loads(response.text)
 
 
 # ---------------------------------------------------------------------------
@@ -728,21 +719,23 @@ async def generate_risk_assessment(
         ),
     ])
 
-    response = await client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=2500,
-        system=(
-            "You are a clinical decision support system performing risk assessment "
-            "for nurse-managed consultations in rural India. "
-            "Patient safety takes precedence over all other considerations — "
-            "when in doubt about any risk dimension, escalate rather than downgrade."
-        ),
-        tools=[_TOOL_RISK_ASSESSMENT],
-        tool_choice={"type": "tool", "name": "submit_risk_assessment"},
-        messages=[{"role": "user", "content": prompt}]
+    response = await gemini.aio.models.generate_content(
+        model=MODEL_M3_RISK,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=(
+                "You are a clinical decision support system performing risk assessment "
+                "for nurse-managed consultations in rural India. "
+                "Patient safety takes precedence over all other considerations — "
+                "when in doubt about any risk dimension, escalate rather than downgrade."
+            ),
+            response_mime_type="application/json",
+            response_schema=_SCHEMA_RISK_ASSESSMENT,
+            max_output_tokens=2500,
+        )
     )
 
-    return response.content[0].input
+    return json.loads(response.text)
 
 
 # ---------------------------------------------------------------------------
@@ -907,21 +900,23 @@ async def generate_triage_and_handoff(
         ),
     ]))
 
-    response = await client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=3000,
-        system=(
-            "You are a clinical decision support system generating triage decisions "
-            "and doctor handoff packages for nurse-managed consultations in rural India. "
-            "Patient safety takes precedence over all other considerations — "
-            "never downgrade a risk tier, and never omit a flagged risk from the handoff."
-        ),
-        tools=[_TOOL_TRIAGE_HANDOFF],
-        tool_choice={"type": "tool", "name": "submit_triage_handoff"},
-        messages=[{"role": "user", "content": prompt}]
+    response = await gemini.aio.models.generate_content(
+        model=MODEL_M4_TRIAGE,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=(
+                "You are a clinical decision support system generating triage decisions "
+                "and doctor handoff packages for nurse-managed consultations in rural India. "
+                "Patient safety takes precedence over all other considerations — "
+                "never downgrade a risk tier, and never omit a flagged risk from the handoff."
+            ),
+            response_mime_type="application/json",
+            response_schema=_SCHEMA_TRIAGE_HANDOFF,
+            max_output_tokens=3000,
+        )
     )
 
-    result = response.content[0].input
+    result = json.loads(response.text)
     result.setdefault("doctor_handoff", {})["prescription_issued"] = prescription_issued
     return result
 
@@ -1412,10 +1407,10 @@ async def stream_management(
         "4) Key instructions for the nurse"
     )
 
-    async with client.messages.stream(
-        model=CLAUDE_MODEL,
-        max_tokens=1500,
-        messages=[{"role": "user", "content": stream_prompt}]
-    ) as stream:
-        async for text in stream.text_stream:
-            yield text
+    async for chunk in gemini.aio.models.generate_content_stream(
+        model=MODEL_M4_TRIAGE,
+        contents=stream_prompt,
+        config=types.GenerateContentConfig(max_output_tokens=1500),
+    ):
+        if chunk.text:
+            yield chunk.text
