@@ -215,13 +215,108 @@ def is_complaint_missing(chief_complaint: dict) -> bool:
     return value in empty_sentinels
 
 
-def parse_llm_json(raw: str) -> dict | list:
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    return json.loads(raw.strip())
+# ---------------------------------------------------------------------------
+# Tool schemas — force structured JSON output from every LLM call
+# ---------------------------------------------------------------------------
+
+_TOOL_CHIEF_COMPLAINT = {
+    "name": "submit_chief_complaint",
+    "description": "Submit structured chief complaint extracted from the opening transcript",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "patient_name":             {"type": ["string", "null"]},
+            "age":                      {"type": ["string", "null"]},
+            "village":                  {"type": ["string", "null"]},
+            "chief_complaint":          {"type": ["string", "null"]},
+            "additional_complaints":    {"type": "array", "items": {"type": "string"}},
+            "duration":                 {"type": ["string", "null"]},
+            "severity_if_mentioned":    {"type": ["string", "null"]},
+            "spontaneous_history":      {"type": "array", "items": {"type": "string"}},
+            "red_flags_mentioned":      {"type": "array", "items": {"type": "string"}},
+            "language_of_consultation": {"type": "string"},
+        },
+        "required": [
+            "patient_name", "age", "village", "chief_complaint",
+            "additional_complaints", "duration", "severity_if_mentioned",
+            "spontaneous_history", "red_flags_mentioned", "language_of_consultation",
+        ],
+    },
+}
+
+_TOOL_QUESTIONNAIRE = {
+    "name": "submit_questionnaire",
+    "description": "Submit the structured nurse interview questionnaire",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "opening_context":    {"type": "string"},
+            "known_and_verified": {"type": "array", "items": {"type": "string"}},
+            "sections": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "section_title": {"type": "string"},
+                        "rationale":     {"type": "string"},
+                        "questions": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "question":      {"type": "string"},
+                                    "follow_up":     {"type": "string"},
+                                    "discriminates": {"type": "string"},
+                                },
+                                "required": ["question", "follow_up", "discriminates"],
+                            },
+                        },
+                    },
+                    "required": ["section_title", "rationale", "questions"],
+                },
+            },
+            "mandatory_safety_questions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "question": {"type": "string"},
+                        "reason":   {"type": "string"},
+                    },
+                    "required": ["question", "reason"],
+                },
+            },
+            "prior_encounter_flags": {"type": "array", "items": {"type": "string"}},
+            "patient_record_fields": {
+                "type": "object",
+                "properties": {
+                    "past_medical_history": {"type": "array", "items": {"type": "string"}},
+                    "family_history":       {"type": "array", "items": {"type": "string"}},
+                    "social_history": {
+                        "type": "object",
+                        "properties": {
+                            "occupation":       {"type": "string"},
+                            "living_situation": {"type": "string"},
+                            "tobacco":          {"type": "string"},
+                            "alcohol":          {"type": "string"},
+                        },
+                    },
+                    "current_medications": {"type": "array", "items": {"type": "string"}},
+                    "allergies":           {"type": "array", "items": {"type": "string"}},
+                    "immunisation_flags":  {"type": "array", "items": {"type": "string"}},
+                },
+                "required": [
+                    "past_medical_history", "family_history", "social_history",
+                    "current_medications", "allergies", "immunisation_flags",
+                ],
+            },
+        },
+        "required": [
+            "opening_context", "known_and_verified", "sections",
+            "mandatory_safety_questions", "prior_encounter_flags", "patient_record_fields",
+        ],
+    },
+}
 
 
 # ---------------------------------------------------------------------------
@@ -246,23 +341,6 @@ async def extract_chief_complaint(
     """
     demographics = vault_context.get("demographics", {})
 
-    output_schema = json.dumps({
-        "patient_name":             "name as stated verbally",
-        "age":                      "age as stated e.g. '34' or 'about 40'",
-        "village":                  "village or area as stated",
-        "chief_complaint":          "primary complaint — most distressing or first mentioned — single sentence",
-        "additional_complaints":    ["any secondary complaint explicitly mentioned — empty list if none"],
-        "duration":                 "how long this has been present — patient's own words or null",
-        "severity_if_mentioned":    "mild|moderate|severe or null if not mentioned",
-        "spontaneous_history": [
-            "anything the patient volunteered beyond the direct opening questions"
-        ],
-        "red_flags_mentioned": [
-            "any alarming symptom explicitly mentioned — e.g. blood, cannot walk, chest pain"
-        ],
-        "language_of_consultation": "English|Bengali|Hindi|mixed"
-    }, indent=2)
-
     prompt = "\n\n".join([
         "Extract the chief complaint from this brief nurse-patient consultation "
         "opening. The recording is approximately 30 seconds — the nurse asked "
@@ -277,19 +355,19 @@ async def extract_chief_complaint(
             "- duration: patient's own words — do not interpret or convert\n"
             "- spontaneous_history: anything volunteered beyond the direct questions\n"
             "- red_flags_mentioned: only what the patient explicitly stated\n"
-            "- This is ~30 seconds. Most fields will be null. Do not infer.\n\n"
-            f"Return ONLY valid JSON matching this schema:\n{output_schema}\n\n"
-            "JSON only. No explanation. No markdown."
+            "- This is ~30 seconds. Most fields will be null. Do not infer."
         ),
     ])
 
     response = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=600,
+        tools=[_TOOL_CHIEF_COMPLAINT],
+        tool_choice={"type": "tool", "name": "submit_chief_complaint"},
         messages=[{"role": "user", "content": prompt}]
     )
 
-    return parse_llm_json(response.content[0].text)
+    return response.content[0].input
 
 
 # ---------------------------------------------------------------------------
@@ -484,42 +562,6 @@ async def generate_questionnaire(
             "  'Any new allergies or reactions to medicines?'"
         )
 
-    output_schema = json.dumps({
-        "opening_context": "one sentence for the nurse — what to focus on",
-        "known_and_verified": [
-            "field already in record — just confirm e.g. 'Still taking metformin?'"
-        ],
-        "sections": [{
-            "section_title": "section name",
-            "rationale":     "why included — which conditions it probes",
-            "questions": [{
-                "question":      "exact nurse-readable question",
-                "follow_up":     "if yes / if abnormal — what to ask next",
-                "discriminates": "brief clinical note for nurse (not read to patient)"
-            }]
-        }],
-        "mandatory_safety_questions": [{
-            "question": "must-ask question",
-            "reason":   "why mandatory"
-        }],
-        "prior_encounter_flags": [
-            "specific thing to verify from prior records"
-        ],
-        "patient_record_fields": {
-            "past_medical_history": ["condition name — collect if missing"],
-            "family_history":       ["condition — relationship"],
-            "social_history": {
-                "occupation":       "as stated",
-                "living_situation": "as stated",
-                "tobacco":          "yes|no|unknown",
-                "alcohol":          "yes|no|unknown"
-            },
-            "current_medications": ["drug — dose — reason"],
-            "allergies":           ["allergen — reaction type"],
-            "immunisation_flags":  ["vaccination to verify"]
-        }
-    }, indent=2)
-
     prompt = "\n\n".join(filter(bool, [
         (
             "You are generating a structured interview questionnaire for a nurse "
@@ -572,19 +614,19 @@ async def generate_questionnaire(
             "  e.g. 'Confirm still taking metformin 500mg' — short, one per known field\n\n"
             "patient_record_fields: populate with questions to ASK — "
             "answers will come from the phase 2 transcript. "
-            "Leave fields empty ([]) if already recorded and no update expected.\n\n"
-            f"Return ONLY valid JSON matching this schema:\n{output_schema}\n\n"
-            "JSON only. No explanation. No markdown."
+            "Leave fields empty ([]) if already recorded and no update expected."
         ),
     ]))
 
     response = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=2000,
+        tools=[_TOOL_QUESTIONNAIRE],
+        tool_choice={"type": "tool", "name": "submit_questionnaire"},
         messages=[{"role": "user", "content": prompt}]
     )
 
-    questionnaire = parse_llm_json(response.content[0].text)
+    questionnaire = response.content[0].input
 
     # Inject fixed background history section for first/partial visits.
     # The LLM generates the chief complaint section; this ensures complete

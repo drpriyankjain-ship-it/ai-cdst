@@ -176,15 +176,147 @@ def validate_differential(ddx: list[dict]) -> list[dict]:
     return validated
 
 
-def parse_llm_json(raw: str) -> list[dict]:
-    """Strip markdown fences and parse JSON. Raises on invalid JSON."""
-    raw = raw.strip()
-    if raw.startswith("```"):
-        parts = raw.split("```")
-        raw = parts[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    return json.loads(raw.strip())
+# ---------------------------------------------------------------------------
+# Tool schemas — force structured JSON output from every LLM call
+# ---------------------------------------------------------------------------
+
+_TOOL_MEDICAL_CONCEPTS = {
+    "name": "submit_medical_concepts",
+    "description": "Submit structured medical concepts extracted from the phase 2 transcript",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "chief_complaint":  {"type": "string"},
+            "symptoms": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name":      {"type": "string"},
+                        "duration":  {"type": ["string", "null"]},
+                        "severity":  {"type": ["string", "null"]},
+                        "character": {"type": ["string", "null"]},
+                    },
+                    "required": ["name"],
+                },
+            },
+            "negatives":        {"type": "array", "items": {"type": "string"}},
+            "relevant_history": {"type": "array", "items": {"type": "string"}},
+            "risk_factors":     {"type": "array", "items": {"type": "string"}},
+            "vitals_reported": {
+                "type": "object",
+                "properties": {
+                    "temperature_c":    {"type": ["number", "null"]},
+                    "pulse_bpm":        {"type": ["number", "null"]},
+                    "systolic_bp_mmhg": {"type": ["number", "null"]},
+                    "spo2_pct":         {"type": ["number", "null"]},
+                    "rr_per_min":       {"type": ["number", "null"]},
+                    "bgl_mmol":         {"type": ["number", "null"]},
+                    "gcs":              {"type": ["number", "null"]},
+                },
+            },
+            "red_flags":          {"type": "array", "items": {"type": "string"}},
+            "pregnancy_status":   {"type": ["string", "null"]},
+            "lmp":                {"type": ["string", "null"]},
+            "uncertain_findings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "topic":            {"type": "string"},
+                        "patient_response": {"type": "string"},
+                    },
+                    "required": ["topic", "patient_response"],
+                },
+            },
+            "past_medical_history": {"type": "array", "items": {"type": "string"}},
+            "current_medications":  {"type": "array", "items": {"type": "string"}},
+            "allergies_reported":   {"type": "array", "items": {"type": "string"}},
+        },
+        "required": [
+            "chief_complaint", "symptoms", "negatives", "relevant_history",
+            "risk_factors", "vitals_reported", "red_flags", "pregnancy_status",
+            "lmp", "uncertain_findings", "past_medical_history",
+            "current_medications", "allergies_reported",
+        ],
+    },
+}
+
+_DDX_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "rank":                 {"type": "integer"},
+        "disease":              {"type": "string"},
+        "icd10_code":           {"type": "string"},
+        "probability":          {"type": "string", "enum": ["high", "moderate", "low"]},
+        "supporting_features":  {"type": "array", "items": {"type": "string"}},
+        "against":              {"type": "array", "items": {"type": "string"}},
+        "must_not_miss":        {"type": "boolean"},
+        "regionally_specific":  {"type": "boolean"},
+        "reasoning":            {"type": "string"},
+        "discriminating_tests": {"type": "array", "items": {"type": "string"}},
+        "referral_required":    {"type": "boolean"},
+    },
+    "required": [
+        "rank", "disease", "icd10_code", "probability",
+        "supporting_features", "against", "must_not_miss",
+        "regionally_specific", "reasoning", "discriminating_tests",
+        "referral_required",
+    ],
+}
+
+_TOOL_DIFFERENTIAL = {
+    "name": "submit_differential",
+    "description": "Submit the ranked differential diagnosis list",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "differential": {"type": "array", "items": _DDX_ITEM_SCHEMA},
+        },
+        "required": ["differential"],
+    },
+}
+
+_TOOL_CLARIFYING_QS = {
+    "name": "submit_clarifying_questions",
+    "description": "Submit the gap analysis and clarifying questions for the nurse",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "clinical_summary": {"type": "string"},
+            "key_uncertainty":  {"type": "string"},
+            "clarifying_questions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "question":              {"type": "string"},
+                        "discriminates_between": {"type": "array", "items": {"type": "string"}},
+                        "if_yes_favours":        {"type": "string"},
+                        "if_no_favours":         {"type": "string"},
+                        "priority":              {"type": "integer"},
+                    },
+                    "required": ["question", "discriminates_between", "if_yes_favours", "if_no_favours", "priority"],
+                },
+            },
+            "bedside_observations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "observation":           {"type": "string"},
+                        "tool_required":         {"type": "string"},
+                        "discriminates_between": {"type": "array", "items": {"type": "string"}},
+                        "finding_and_meaning":   {"type": "string"},
+                        "priority":              {"type": "integer"},
+                    },
+                    "required": ["observation", "tool_required", "discriminates_between", "finding_and_meaning", "priority"],
+                },
+            },
+        },
+        "required": ["clinical_summary", "key_uncertainty", "clarifying_questions", "bedside_observations"],
+    },
+}
 
 
 # ---------------------------------------------------------------------------
@@ -207,55 +339,6 @@ async def extract_medical_concepts(
     """
     demographics     = vault_context.get("demographics", {})
     prior_encounters = vault_context.get("patient_record", {}).get("encounters", [])
-
-    output_schema = json.dumps({
-        "chief_complaint": "single sentence summary",
-        "symptoms": [{
-            "name":      "symptom name",
-            "duration":  "e.g. 2 weeks",
-            "severity":  "mild|moderate|severe",
-            "character": "descriptive qualifier if stated"
-        }],
-        "negatives":        ["symptom explicitly denied"],
-        "relevant_history": ["pertinent positives from history"],
-        "risk_factors":     ["risk factors mentioned"],
-        "vitals_reported": {
-            "temperature_c":    "numeric °C only e.g. 38.5 — null if not mentioned",
-            "pulse_bpm":        "numeric bpm only e.g. 112 — null if not mentioned",
-            "systolic_bp_mmhg": "numeric systolic mmHg only e.g. 85 — null if not mentioned",
-            "spo2_pct":         "numeric SpO2 percent only e.g. 94 — null if not mentioned",
-            "rr_per_min":       "numeric breaths/min only e.g. 28 — null if not mentioned",
-            "bgl_mmol":         "blood glucose numeric mmol/L e.g. 11.2 — null if not mentioned",
-            "gcs":              "numeric Glasgow Coma Scale 3-15 e.g. 13 — null if not mentioned"
-        },
-        "red_flags": [
-            "verbatim alarming finding explicitly stated e.g. 'cannot walk', "
-            "'vomiting blood', 'fitting', 'rigidity', 'unconscious', 'cannot breathe'"
-        ],
-        "pregnancy_status": (
-            "pregnant | not_pregnant | postpartum | unknown"
-            " — extract from transcript; use 'unknown' if patient is female "
-            "of reproductive age (12-50) but pregnancy/LMP was not discussed "
-            "or patient was unsure; use null for males or age outside 12-50"
-        ),
-        "lmp": (
-            "last menstrual period as stated verbally e.g. '3 weeks ago', "
-            "'15th of last month' — null if not mentioned"
-        ),
-        "uncertain_findings": [{
-            "topic":            "symptom or finding name",
-            "patient_response": "verbatim or close paraphrase of the ambiguous answer"
-        }],
-        "past_medical_history": [
-            "condition name as stated e.g. 'type 2 diabetes', 'pulmonary TB 2022'"
-        ],
-        "current_medications": [
-            "drug name and dose as stated e.g. 'metformin 500mg twice daily'"
-        ],
-        "allergies_reported": [
-            "allergen and reaction as stated e.g. 'penicillin — rash'"
-        ]
-    }, indent=2)
 
     prior_text = (
         json.dumps(prior_encounters[-3:], indent=2)
@@ -299,24 +382,19 @@ async def extract_medical_concepts(
             "- current_medications: list drugs the patient says they are currently taking,\n"
             "  with dose and frequency if stated. Empty list [] if none.\n"
             "- allergies_reported: list allergens with reaction as stated\n"
-            "  (e.g. 'penicillin — rash'). Empty list [] if none.\n\n"
-            f"Return ONLY valid JSON matching this schema:\n{output_schema}\n\n"
-            "JSON only. No explanation. No markdown."
+            "  (e.g. 'penicillin — rash'). Empty list [] if none."
         ),
     ])
 
     response = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=1000,
+        tools=[_TOOL_MEDICAL_CONCEPTS],
+        tool_choice={"type": "tool", "name": "submit_medical_concepts"},
         messages=[{"role": "user", "content": prompt}]
     )
 
-    raw = response.content[0].text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    return json.loads(raw.strip())
+    return response.content[0].input
 
 
 # ---------------------------------------------------------------------------
@@ -348,20 +426,6 @@ async def generate_differential(
     district_code = vault_context.get("gps", {}).get("district_code", "WB_UNKNOWN")
     state_name    = state_from_district_code(district_code)
 
-    schema_example = json.dumps([{
-        "rank":                 1,
-        "disease":              "Full clinical disease name",
-        "icd10_code":           "e.g. G61.0",
-        "probability":          "high|moderate|low",
-        "supporting_features":  ["feature supporting this diagnosis"],
-        "against":              ["feature arguing against this diagnosis"],
-        "must_not_miss":        True,
-        "regionally_specific":  False,
-        "reasoning":            "One sentence clinical rationale",
-        "discriminating_tests": ["nerve conduction studies", "CSF analysis", "tone assessment both legs"],
-        "referral_required":    True,
-    }], indent=2)
-
     instructions = (
         "INSTRUCTIONS:\n"
         "- Generate 4-6 differential diagnoses ranked by probability\n"
@@ -379,10 +443,7 @@ async def generate_differential(
         "  distinguish this diagnosis from others in the differential.\n"
         "  Include all relevant tests — bedside, laboratory, or imaging.\n"
         "- icd10_code: most specific applicable ICD-10 code\n"
-        "- Base reasoning ONLY on features present — never assume unstated findings\n\n"
-        f"Return ONLY a JSON array. Every entry must contain all 11 fields:\n"
-        f"{schema_example}\n\n"
-        "No explanation. No markdown. JSON array only."
+        "- Base reasoning ONLY on features present — never assume unstated findings"
     )
 
     prompt = "\n\n".join([
@@ -398,11 +459,12 @@ async def generate_differential(
     response = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=2000,
+        tools=[_TOOL_DIFFERENTIAL],
+        tool_choice={"type": "tool", "name": "submit_differential"},
         messages=[{"role": "user", "content": prompt}]
     )
 
-    ddx = parse_llm_json(response.content[0].text)
-    return validate_differential(ddx)
+    return validate_differential(response.content[0].input["differential"])
 
 
 # ---------------------------------------------------------------------------
@@ -574,24 +636,6 @@ async def generate_clarifying_questions(
 
     needs_lmp_question, status_unknown = _pregnancy_relevance(ddx, concepts, vault_context)
 
-    output_schema = json.dumps({
-        "clinical_summary": "one sentence of what is known",
-        "key_uncertainty":  "the most important unresolved diagnostic question",
-        "clarifying_questions": [{
-            "question":              "exact question text",
-            "discriminates_between": ["disease A", "disease B"],
-            "if_yes_favours":        "disease or pattern",
-            "if_no_favours":         "disease or pattern",
-            "priority":              1
-        }],
-        "bedside_observations": [{
-            "observation":           "specific nurse action",
-            "tool_required":         "tool from available list",
-            "discriminates_between": ["disease A", "disease B"],
-            "finding_and_meaning":   "if finding X → suggests Y; if finding Z → suggests W",
-            "priority":              1
-        }]
-    }, indent=2)
 
     # Build the pregnancy instruction block (injected only when needed)
     if needs_lmp_question:
@@ -620,9 +664,7 @@ async def generate_clarifying_questions(
             "- Questions must be phrased simply enough for any patient to understand\n"
             "- Observations must use ONLY tools from the available list below\n"
             "- Never suggest labs, imaging, LP, ECG, or any hospital-level investigation\n"
-            f"AVAILABLE BEDSIDE TOOLS:\n{json.dumps(available_tools, indent=2)}\n"
-            f"Return ONLY valid JSON matching this schema:\n{output_schema}\n\n"
-            "JSON only. No explanation. No markdown."
+            f"AVAILABLE BEDSIDE TOOLS:\n{json.dumps(available_tools, indent=2)}"
         ),
         pregnancy_instruction,
         language_instruction,
@@ -651,15 +693,12 @@ async def generate_clarifying_questions(
     response = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=1500,
+        tools=[_TOOL_CLARIFYING_QS],
+        tool_choice={"type": "tool", "name": "submit_clarifying_questions"},
         messages=[{"role": "user", "content": prompt}]
     )
 
-    raw = response.content[0].text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    result = json.loads(raw.strip())
+    result = response.content[0].input
 
     # Safety net: if needs_lmp_question and the LLM somehow omitted it,
     # insert the LMP question deterministically at priority 1.

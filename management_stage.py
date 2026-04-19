@@ -89,18 +89,267 @@ class Vault:
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Tool schemas — force structured JSON output from every LLM call
 # ---------------------------------------------------------------------------
 
-def parse_llm_json(raw: str) -> dict | list:
-    """Strip markdown fences and parse JSON."""
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    return json.loads(raw.strip())
+_TOOL_CLARIFYING_FINDINGS = {
+    "name": "submit_clarifying_findings",
+    "description": "Submit structured findings extracted from the phase 3 clarifying transcript",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "answers_to_clarifying_questions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "question": {"type": "string"},
+                        "answer":   {"type": "string"},
+                    },
+                    "required": ["question", "answer"],
+                },
+            },
+            "bedside_examination_findings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "observation": {"type": "string"},
+                        "result":      {"type": "string"},
+                    },
+                    "required": ["observation", "result"],
+                },
+            },
+            "new_symptoms": {"type": "array", "items": {"type": "string"}},
+            "vitals_found": {
+                "type": "object",
+                "properties": {
+                    "temperature_c":    {"type": ["number", "null"]},
+                    "pulse_bpm":        {"type": ["number", "null"]},
+                    "systolic_bp_mmhg": {"type": ["number", "null"]},
+                    "spo2_pct":         {"type": ["number", "null"]},
+                    "rr_per_min":       {"type": ["number", "null"]},
+                    "bgl_mmol":         {"type": ["number", "null"]},
+                    "gcs":              {"type": ["number", "null"]},
+                    "weight_kg":        {"type": ["number", "null"]},
+                    "rdt_result":       {"type": ["string", "null"]},
+                },
+            },
+        },
+        "required": [
+            "answers_to_clarifying_questions", "bedside_examination_findings",
+            "new_symptoms", "vitals_found",
+        ],
+    },
+}
 
+_PRESCRIPTION_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "drug":         {"type": "string"},
+        "dose":         {"type": "string"},
+        "route":        {"type": "string"},
+        "frequency":    {"type": "string"},
+        "duration":     {"type": "string"},
+        "instructions": {"type": "string"},
+        "dose_basis":   {"type": "string"},
+        "stg_source":   {"type": ["string", "null"]},
+        "for_problem":  {"type": "integer"},
+    },
+    "required": ["drug", "dose", "route", "frequency", "duration", "for_problem"],
+}
+
+_TOOL_PROBLEM_LIST = {
+    "name": "submit_problem_list",
+    "description": "Submit the problem-oriented management plan with provisional diagnosis and prescriptions",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "problem_list": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "problem_number": {"type": "integer"},
+                        "problem_title":  {"type": "string"},
+                        "type":           {"type": "string", "enum": ["acute_new", "established", "incidental", "deferred"]},
+                        "assessment":     {"type": "object"},
+                        "plan": {
+                            "type": "object",
+                            "properties": {
+                                "prescription":        {"type": "array", "items": _PRESCRIPTION_ITEM_SCHEMA},
+                                "investigations":      {"type": "array", "items": {"type": "string"}},
+                                "non_pharmacological": {"type": "array", "items": {"type": "string"}},
+                                "management_notes":    {"type": ["string", "null"]},
+                            },
+                            "required": ["prescription", "investigations", "non_pharmacological"],
+                        },
+                    },
+                    "required": ["problem_number", "problem_title", "type", "assessment", "plan"],
+                },
+            },
+            "non_pharmacological_shared": {"type": "array", "items": {"type": "string"}},
+            "formulary_substitutions":    {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["problem_list", "non_pharmacological_shared", "formulary_substitutions"],
+    },
+}
+
+_TOOL_RISK_ASSESSMENT = {
+    "name": "submit_risk_assessment",
+    "description": "Submit the five-dimension risk assessment",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "diagnostic_uncertainty": {
+                "type": "object",
+                "properties": {
+                    "must_not_miss_still_in_play": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "diagnosis":             {"type": "string"},
+                                "why_still_possible":    {"type": "string"},
+                                "consequence_if_missed": {"type": "string"},
+                                "ruling_out_action":     {"type": "string"},
+                            },
+                            "required": ["diagnosis", "why_still_possible", "consequence_if_missed", "ruling_out_action"],
+                        },
+                    },
+                    "confidence_in_provisional": {"type": "string", "enum": ["high", "moderate", "low"]},
+                    "acute_problem_confidence":  {"type": "string", "enum": ["high", "moderate", "low"]},
+                    "uncertainty_mitigable":     {"type": "boolean"},
+                },
+                "required": ["must_not_miss_still_in_play", "confidence_in_provisional", "acute_problem_confidence", "uncertainty_mitigable"],
+            },
+            "iatrogenic_risk": {
+                "type": "object",
+                "properties": {
+                    "risks": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "risk":        {"type": "string"},
+                                "affected_by": {"type": "string"},
+                                "severity":    {"type": "string", "enum": ["low", "moderate", "high"]},
+                                "mitigation":  {"type": "string"},
+                            },
+                            "required": ["risk", "affected_by", "severity", "mitigation"],
+                        },
+                    },
+                    "allergy_check":     {"type": "string"},
+                    "interaction_check": {"type": "string"},
+                },
+                "required": ["risks", "allergy_check", "interaction_check"],
+            },
+            "delay_risk": {
+                "type": "object",
+                "properties": {
+                    "time_sensitive":         {"type": "boolean"},
+                    "safe_delay_window":      {"type": "string"},
+                    "rationale":              {"type": "string"},
+                    "if_delayed_consequence": {"type": "string"},
+                },
+                "required": ["time_sensitive", "safe_delay_window", "rationale", "if_delayed_consequence"],
+            },
+            "complication_watch": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "complication":  {"type": "string"},
+                        "warning_signs": {"type": "array", "items": {"type": "string"}},
+                        "nurse_action":  {"type": "string"},
+                        "timeframe":     {"type": "string"},
+                    },
+                    "required": ["complication", "warning_signs", "nurse_action", "timeframe"],
+                },
+            },
+            "mitigation_plan": {
+                "type": "object",
+                "properties": {
+                    "mitigable_risks":     {"type": "array", "items": {"type": "string"}},
+                    "unmitigable_risks":   {"type": "array", "items": {"type": "string"}},
+                    "home_monitoring":     {"type": "array", "items": {"type": "string"}},
+                    "return_criteria":     {"type": "array", "items": {"type": "string"}},
+                    "overall_risk_tier":   {"type": "string", "enum": ["LOW", "HIGH"]},
+                    "risk_tier_rationale": {"type": "string"},
+                },
+                "required": [
+                    "mitigable_risks", "unmitigable_risks", "home_monitoring",
+                    "return_criteria", "overall_risk_tier", "risk_tier_rationale",
+                ],
+            },
+        },
+        "required": ["diagnostic_uncertainty", "iatrogenic_risk", "delay_risk", "complication_watch", "mitigation_plan"],
+    },
+}
+
+_TOOL_TRIAGE_HANDOFF = {
+    "name": "submit_triage_handoff",
+    "description": "Submit the triage decision, patient instructions, and doctor handoff package",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "triage": {
+                "type": "object",
+                "properties": {
+                    "tier":      {"type": "string", "enum": ["LOW", "HIGH"]},
+                    "rationale": {"type": "string"},
+                    "action":    {"type": "string"},
+                    "referral": {
+                        "type": "object",
+                        "properties": {
+                            "required": {"type": "boolean"},
+                            "urgency":  {"type": "string"},
+                            "facility": {"type": "string"},
+                            "reason":   {"type": "string"},
+                        },
+                        "required": ["required", "urgency", "facility", "reason"],
+                    },
+                },
+                "required": ["tier", "rationale", "action", "referral"],
+            },
+            "patient_instructions": {
+                "type": "object",
+                "properties": {
+                    "diagnosis_explained": {"type": "string"},
+                    "treatment_summary":   {"type": "string"},
+                    "do_list":             {"type": "array", "items": {"type": "string"}},
+                    "dont_list":           {"type": "array", "items": {"type": "string"}},
+                    "return_criteria":     {"type": "array", "items": {"type": "string"}},
+                    "follow_up":           {"type": "string"},
+                },
+                "required": ["diagnosis_explained", "treatment_summary", "do_list", "dont_list", "return_criteria", "follow_up"],
+            },
+            "doctor_handoff": {
+                "type": "object",
+                "properties": {
+                    "one_liner":                 {"type": "string"},
+                    "clinical_summary":          {"type": "string"},
+                    "differential_table":        {"type": "string"},
+                    "prescription_issued":       {"type": "string"},
+                    "key_risks_flagged":         {"type": "array", "items": {"type": "string"}},
+                    "questions_for_doctor":      {"type": "array", "items": {"type": "string"}},
+                    "authorization_required_by": {"type": "string"},
+                },
+                "required": [
+                    "one_liner", "clinical_summary", "differential_table",
+                    "prescription_issued", "key_risks_flagged",
+                    "questions_for_doctor", "authorization_required_by",
+                ],
+            },
+        },
+        "required": ["triage", "patient_instructions", "doctor_handoff"],
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def load_formulary() -> dict:
     with open(FORMULARY_PATH) as f:
@@ -186,33 +435,6 @@ async def extract_clarifying_findings(
     clarifying_qs    = vault_context.get("clarifying_questions", {})
     prior_concepts   = vault_context.get("extracted_concepts", {})
 
-    output_schema = json.dumps({
-        "answers_to_clarifying_questions": [
-            {
-                "question": "question that was asked",
-                "answer":   "patient's answer"
-            }
-        ],
-        "bedside_examination_findings": [
-            {
-                "observation": "what the nurse observed or measured",
-                "result":      "finding value or description"
-            }
-        ],
-        "new_symptoms":  ["any symptom mentioned in phase 3 not in phase 2"],
-        "vitals_found": {
-            "temperature_c":    "numeric °C only e.g. 38.5 — null if not measured",
-            "pulse_bpm":        "numeric bpm only e.g. 112 — null if not measured",
-            "systolic_bp_mmhg": "numeric systolic mmHg only e.g. 85 — null if not measured",
-            "spo2_pct":         "numeric SpO2 percent only e.g. 94 — null if not measured",
-            "rr_per_min":       "numeric breaths/min only e.g. 28 — null if not measured",
-            "bgl_mmol":         "blood glucose numeric mmol/L e.g. 11.2 — null if not measured",
-            "gcs":              "numeric Glasgow Coma Scale 3-15 — null if not assessed",
-            "weight_kg":        "numeric kg only e.g. 42.5 — null if not measured",
-            "rdt_result":       "positive_pf | positive_pv | negative | not_done"
-        }
-    }, indent=2)
-
     prompt = "\n\n".join([
         "Extract structured clinical findings from the phase 3 clarifying questions transcript.",
         f"PHASE 2 EXTRACTED CONCEPTS:\n{json.dumps(prior_concepts, indent=2)}",
@@ -225,9 +447,7 @@ async def extract_clarifying_findings(
             "- Only extract what is explicitly in the transcript\n"
             "- vitals_found: return NUMERIC JSON numbers only — strip all units.\n"
             "  e.g. temperature 38.5°C → 38.5; SpO2 94% → 94; BP 90/60 → 90 (systolic only).\n"
-            "  Null for any vital not measured in this phase.\n\n"
-            f"Return ONLY valid JSON matching this schema:\n{output_schema}\n\n"
-            "JSON only. No explanation. No markdown."
+            "  Null for any vital not measured in this phase."
         ),
     ])
 
@@ -235,10 +455,12 @@ async def extract_clarifying_findings(
         model=CLAUDE_MODEL,
         max_tokens=1200,
         system="You are a clinical data extraction tool. Extract only what is explicitly stated in the transcript. Do not infer or interpret.",
+        tools=[_TOOL_CLARIFYING_FINDINGS],
+        tool_choice={"type": "tool", "name": "submit_clarifying_findings"},
         messages=[{"role": "user", "content": prompt}]
     )
 
-    return parse_llm_json(response.content[0].text)
+    return response.content[0].input
 
 
 # ---------------------------------------------------------------------------
@@ -274,43 +496,6 @@ async def generate_provisional_diagnosis_and_rx(
     concepts         = vault_context.get("extracted_concepts", {})
     prior_encounters      = vault_context.get("patient_record", {}).get("encounters", [])
     additional_complaints = vault_context.get("chief_complaint", {}).get("additional_complaints", [])
-
-    output_schema = json.dumps({
-        "problem_list": [
-            {
-                "problem_number": 1,
-                "problem_title":  "brief problem title e.g. 'Acute febrile illness, probable pneumonia'",
-                "type":           "acute_new|established|incidental|deferred",
-                "assessment": {
-                    "note": (
-                        "shape varies by type — acute_new: provisional_diagnosis, icd10_code, "
-                        "confidence, rationale, key_features_supporting, remaining_uncertainty | "
-                        "established: condition, icd10_code, current_status, adherence_issue | "
-                        "incidental: finding, probable_cause, icd10_code, severity | "
-                        "deferred: finding, icd10_code, risk_level"
-                    )
-                },
-                "plan": {
-                    "prescription": [{
-                        "drug":         "generic name",
-                        "dose":         "amount with units",
-                        "route":        "oral|IM|IV|topical|other",
-                        "frequency":    "e.g. twice daily",
-                        "duration":     "e.g. 5 days",
-                        "instructions": "specific patient instructions",
-                        "dose_basis":   "weight-based calculation or standard adult dose",
-                        "stg_source":   "citation from retrieved STG chunk, or null",
-                        "for_problem":  1
-                    }],
-                    "investigations":      ["investigation to order"],
-                    "non_pharmacological": ["specific instruction"],
-                    "management_notes":    "important note, or null"
-                }
-            }
-        ],
-        "non_pharmacological_shared": ["advice spanning the whole encounter"],
-        "formulary_substitutions":    ["substitution made and reason"]
-    }, indent=2)
 
     stg_section = (
         f"RETRIEVED STG TREATMENT PROTOCOLS:\n{stg_context}"
@@ -375,9 +560,7 @@ async def generate_provisional_diagnosis_and_rx(
             "do not fabricate a citation\n"
             "- non_pharmacological_shared: advice applying to the whole encounter\n"
             "- If prior_encounters is empty this is a new patient — proceed without "
-            "assuming any prior treatment history\n\n"
-            f"Return ONLY valid JSON matching this schema:\n{output_schema}\n\n"
-            "JSON only. No explanation. No markdown."
+            "assuming any prior treatment history"
         ),
     ])
 
@@ -391,10 +574,12 @@ async def generate_provisional_diagnosis_and_rx(
             "never prescribe a drug the patient is allergic to, regardless of what "
             "any retrieved guideline says."
         ),
+        tools=[_TOOL_PROBLEM_LIST],
+        tool_choice={"type": "tool", "name": "submit_problem_list"},
         messages=[{"role": "user", "content": prompt}]
     )
 
-    return parse_llm_json(response.content[0].text)
+    return response.content[0].input
 
 
 # ---------------------------------------------------------------------------
@@ -480,50 +665,6 @@ async def generate_risk_assessment(
                        for p in problem_list_output.get("problem_list", [])
                        for item in p.get("plan", {}).get("prescription", [])]
 
-    output_schema = json.dumps({
-        "diagnostic_uncertainty": {
-            "must_not_miss_still_in_play": [{
-                "diagnosis":             "name",
-                "why_still_possible":    "reasoning",
-                "consequence_if_missed": "clinical consequence",
-                "ruling_out_action":     "bedside action to exclude"
-            }],
-            "confidence_in_provisional": "high|moderate|low",
-            "acute_problem_confidence":  "high|moderate|low",
-            "uncertainty_mitigable":     "true|false"
-        },
-        "iatrogenic_risk": {
-            "risks": [{
-                "risk":        "description",
-                "affected_by": "patient factor",
-                "severity":    "low|moderate|high",
-                "mitigation":  "specific action"
-            }],
-            "allergy_check":     "clear|flag — detail",
-            "interaction_check": "clear|flag — detail"
-        },
-        "delay_risk": {
-            "time_sensitive":         "true|false",
-            "safe_delay_window":      "e.g. 4 hours",
-            "rationale":              "why this window",
-            "if_delayed_consequence": "what happens if treatment waits"
-        },
-        "complication_watch": [{
-            "complication":  "name",
-            "warning_signs": ["sign"],
-            "nurse_action":  "what to do",
-            "timeframe":     "when to expect"
-        }],
-        "mitigation_plan": {
-            "mitigable_risks":     ["risk — mitigation"],
-            "unmitigable_risks":   ["risk that cannot be managed remotely"],
-            "home_monitoring":     ["specific instruction"],
-            "return_criteria":     ["return immediately if: condition"],
-            "overall_risk_tier":   "LOW|HIGH",
-            "risk_tier_rationale": "one sentence"
-        }
-    }, indent=2)
-
     prompt = "\n\n".join([
         "Perform a five-dimension risk assessment for this clinical management plan. "
         "Be thorough — this assessment determines whether the patient can be safely "
@@ -574,19 +715,19 @@ async def generate_risk_assessment(
             "   - Set overall_risk_tier to HIGH if ANY unmitigable risk exists, "
             "or if safe_delay_window is less than 2 hours\n"
             "   - Set overall_risk_tier to LOW only if all risks are mitigable "
-            "and delay window is safe\n\n"
-            f"Return ONLY valid JSON matching this schema:\n{output_schema}\n\n"
-            "JSON only. No explanation. No markdown."
+            "and delay window is safe"
         ),
     ])
 
     response = await client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=2500,
+        tools=[_TOOL_RISK_ASSESSMENT],
+        tool_choice={"type": "tool", "name": "submit_risk_assessment"},
         messages=[{"role": "user", "content": prompt}]
     )
 
-    return parse_llm_json(response.content[0].text)
+    return response.content[0].input
 
 
 # ---------------------------------------------------------------------------
@@ -666,37 +807,6 @@ async def generate_triage_and_handoff(
         "mitigation_plan", {}
     ).get("overall_risk_tier", "HIGH")   # default to HIGH if missing
 
-    output_schema = json.dumps({
-        "triage": {
-            "tier":      "LOW|HIGH",
-            "rationale": "one sentence",
-            "action":    "specific nurse instruction",
-            "referral": {
-                "required": "true|false",
-                "urgency":  "immediate|within 2 hours|within 24 hours|not required",
-                "facility": "PHC|CHC|district hospital|tertiary",
-                "reason":   "clinical reason"
-            }
-        },
-        "patient_instructions": {
-            "diagnosis_explained": "plain language for patient/family",
-            "treatment_summary":   "plain language drug instructions",
-            "do_list":             ["action"],
-            "dont_list":           ["prohibition"],
-            "return_criteria":     ["return if: plain language condition"],
-            "follow_up":           "when and where"
-        },
-        "doctor_handoff": {
-            "one_liner":             "age/sex + complaint + Dx + Rx",
-            "clinical_summary":      "structured summary",
-            "differential_table":    "top 3 Dx with confidence and key features",
-            "prescription_issued":   "drugs — pending authorization",
-            "key_risks_flagged":     ["risk"],
-            "questions_for_doctor":  ["question"],
-            "authorization_required_by": "ISO timestamp"
-        }
-    }, indent=2)
-
     hours_to_auth = 4 if risk_tier == "LOW" else 0
     auth_deadline = (
         "IMMEDIATE — do not proceed without doctor contact"
@@ -754,19 +864,19 @@ async def generate_triage_and_handoff(
             "- doctor_handoff fields must always be written in English only, "
             "regardless of the consultation language — clinical handoff to a doctor "
             "must not be translated or romanised\n"
-            f"- authorization_required_by: use exactly this value: {auth_deadline}\n\n"
-            f"Return ONLY valid JSON matching this schema:\n{output_schema}\n\n"
-            "JSON only. No explanation. No markdown."
+            f"- authorization_required_by: use exactly this value: {auth_deadline}"
         ),
     ]))
 
     response = await client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=2000,
+        tools=[_TOOL_TRIAGE_HANDOFF],
+        tool_choice={"type": "tool", "name": "submit_triage_handoff"},
         messages=[{"role": "user", "content": prompt}]
     )
 
-    return parse_llm_json(response.content[0].text)
+    return response.content[0].input
 
 
 # ---------------------------------------------------------------------------
