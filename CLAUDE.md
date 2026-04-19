@@ -287,15 +287,17 @@ Call 3 (~1.8s): Five-dimension risk assessment — no RAG, pure LLM reasoning:
 4. Complication watch — what to monitor for
 5. Mitigation plan — what resolves each risk; what cannot be mitigated remotely
 
-`acute_problem_confidence` (high|moderate|low) added to diagnostic_uncertainty —
-read by the rule engine without parsing the full problem list structure.
+Diagnostic confidence (`high|moderate|low`) is extracted directly from Call 2's
+`problem_list[first_acute].assessment.confidence` in Python and passed to the rule
+engine as `acute_confidence` — not re-derived from Call 3 to avoid LLM relay errors.
 
 overall_risk_tier = HIGH if ANY unmitigable risk exists, or delay window < 2 hours.
 
 Call 4 (~1.2s, streaming): Triage decision, patient instructions in plain language,
-doctor handoff package. `prescription_issued` copies ALL drugs from ALL problems
-verbatim with `for_problem` attribution — exact drug, dose, route, frequency, duration.
-`treatment_summary` translates ALL prescribed drugs into plain language.
+doctor handoff package. `prescription_issued` is built in Python from Call 2's
+`problem_list` — not LLM-generated — so the authoritative drug record cannot be
+paraphrased or have items dropped. Contains every drug with `for_problem` attribution,
+dose, route, frequency, duration. `treatment_summary` translates all drugs into plain language.
 
 **Rule engine** runs deterministically after Call 4. Can only escalate LOW → HIGH,
 never downgrade. This logic has been extracted into a separate, data-driven configuration

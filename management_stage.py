@@ -330,15 +330,13 @@ _TOOL_TRIAGE_HANDOFF = {
                     "one_liner":                 {"type": "string"},
                     "clinical_summary":          {"type": "string"},
                     "differential_table":        {"type": "string"},
-                    "prescription_issued":       {"type": "string"},
                     "key_risks_flagged":         {"type": "array", "items": {"type": "string"}},
                     "questions_for_doctor":      {"type": "array", "items": {"type": "string"}},
                     "authorization_required_by": {"type": "string"},
                 },
                 "required": [
                     "one_liner", "clinical_summary", "differential_table",
-                    "prescription_issued", "key_risks_flagged",
-                    "questions_for_doctor", "authorization_required_by",
+                    "key_risks_flagged", "questions_for_doctor", "authorization_required_by",
                 ],
             },
         },
@@ -751,6 +749,33 @@ async def generate_risk_assessment(
 # Call 4 — Triage decision + patient instructions + doctor handoff
 # ---------------------------------------------------------------------------
 
+def _build_prescription_issued(all_drugs: list) -> str:
+    """
+    Serialise the full prescription list to a canonical string for the doctor handoff.
+    Built in Python from Call 2 output — not re-derived by the LLM — so the
+    authoritative record cannot be paraphrased, truncated, or have items dropped.
+    """
+    if not all_drugs:
+        return "No drugs prescribed."
+    lines = []
+    for item in all_drugs:
+        parts = [
+            item.get("drug", ""),
+            item.get("dose", ""),
+            item.get("route", ""),
+            item.get("frequency", ""),
+            f"for {item['duration']}" if item.get("duration") else "",
+        ]
+        line = " | ".join(p for p in parts if p)
+        prob = item.get("for_problem")
+        if prob is not None:
+            line += f" [problem #{prob}]"
+        if item.get("instructions"):
+            line += f" — {item['instructions']}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 async def generate_triage_and_handoff(
     problem_list_output: dict,
     risk_assessment: dict,
@@ -803,9 +828,10 @@ async def generate_triage_and_handoff(
     ddx           = vault_context.get("differential_table", [])
     district_code = vault_context.get("gps", {}).get("district_code", "WB_UNKNOWN")
     state_name    = state_from_district_code(district_code)
-    all_drugs     = [item
-                     for p in problem_list_output.get("problem_list", [])
-                     for item in p.get("plan", {}).get("prescription", [])]
+    all_drugs            = [item
+                            for p in problem_list_output.get("problem_list", [])
+                            for item in p.get("plan", {}).get("prescription", [])]
+    prescription_issued  = _build_prescription_issued(all_drugs)
 
     lang = (
         vault_context.get("chief_complaint", {}).get("language_of_consultation", "English")
@@ -837,6 +863,7 @@ async def generate_triage_and_handoff(
         f"PATIENT:\n{json.dumps(demographics, indent=2)}",
         f"PROBLEM LIST:\n{json.dumps(problem_list_output, indent=2)}",
         f"ALL PRESCRIBED DRUGS (across all problems):\n{json.dumps(all_drugs, indent=2)}",
+        f"PRESCRIPTION RECORD (pre-formatted — use verbatim for treatment_summary):\n{prescription_issued}",
         f"RISK ASSESSMENT:\n{json.dumps(risk_assessment, indent=2)}",
         f"FULL DIFFERENTIAL:\n{json.dumps(ddx[:3], indent=2)}",
         f"RISK TIER FROM ASSESSMENT: {risk_tier}",
@@ -855,8 +882,7 @@ async def generate_triage_and_handoff(
             "PATIENT INSTRUCTIONS:\n"
             "- diagnosis_explained: plain language only — no medical jargon; "
             "explain what is wrong and why the treatment helps\n"
-            "- treatment_summary: translate ALL PRESCRIBED DRUGS (across all problems) "
-            "into plain language. "
+            "- treatment_summary: translate the PRESCRIPTION RECORD into plain language. "
             "Include every drug — name, dose, how many times a day, for how many days, "
             "and any specific instructions (with food, avoid alcohol, etc.). "
             "Do NOT omit or summarise any drug. Do NOT paraphrase doses.\n"
@@ -867,10 +893,6 @@ async def generate_triage_and_handoff(
             "- one_liner: '[age][sex], [chief complaint] x [duration], "
             "N problems: #1 [acute Dx], #2 [condition], ..., "
             "prescribed [all drugs with doses], risk tier [LOW/HIGH]'\n"
-            "- prescription_issued: copy ALL drugs from ALL PRESCRIBED DRUGS verbatim — "
-            "drug name, dose, route, frequency, duration, for_problem attribution. "
-            "One drug per line. Do not paraphrase, summarise, or omit any drug from any problem. "
-            "This is the authoritative record the doctor will review and approve.\n"
             "- clinical_summary: structured summary covering all problems in the problem list — "
             "full reasoning for acute_new; one-line status for established/incidental/deferred; "
             "key findings from all three phases\n"
@@ -887,13 +909,21 @@ async def generate_triage_and_handoff(
 
     response = await client.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=2000,
+        max_tokens=3000,
+        system=(
+            "You are a clinical decision support system generating triage decisions "
+            "and doctor handoff packages for nurse-managed consultations in rural India. "
+            "Patient safety takes precedence over all other considerations — "
+            "never downgrade a risk tier, and never omit a flagged risk from the handoff."
+        ),
         tools=[_TOOL_TRIAGE_HANDOFF],
         tool_choice={"type": "tool", "name": "submit_triage_handoff"},
         messages=[{"role": "user", "content": prompt}]
     )
 
-    return response.content[0].input
+    result = response.content[0].input
+    result.setdefault("doctor_handoff", {})["prescription_issued"] = prescription_issued
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1344,7 +1374,13 @@ async def stream_management(
     Yields text tokens as they arrive from the model.
     """
     demographics    = vault_context.get("demographics", {})
-    known_allergies = demographics.get("known_allergies", [])
+    concepts        = vault_context.get("extracted_concepts", {})
+    known_allergies = list({
+        a.lower() for a in [
+            *demographics.get("known_allergies", []),
+            *(concepts.get("allergies_reported", []) or []),
+        ]
+    })
     ddx             = vault_context.get("differential_table", [])
     rag_diagnoses   = [d.get("disease", "") for d in ddx if d.get("disease")]
     state_name      = state_from_district_code(
