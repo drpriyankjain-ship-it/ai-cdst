@@ -34,7 +34,7 @@ import anthropic
 import asyncpg
 import asyncio
 from sentence_transformers import SentenceTransformer
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from epi_utils import state_from_district_code
@@ -49,6 +49,7 @@ BEDSIDE_TOOLS_PATH = "data/bedside_tools.json"
 FORMULARY_PATH     = "data/formulary_wb.json"
 ESCALATION_RULES_PATH = "data/escalation_rules.json"
 RAG_TOP_K          = 8    # STG chunks per diagnosis for treatment retrieval
+STAGE_TIMEOUT_SECS = 120  # hard ceiling for the full pipeline; orchestrator should wrap with asyncio.wait_for
 
 client   = anthropic.AsyncAnthropic()
 embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
@@ -218,10 +219,9 @@ _TOOL_RISK_ASSESSMENT = {
                         },
                     },
                     "confidence_in_provisional": {"type": "string", "enum": ["high", "moderate", "low"]},
-                    "acute_problem_confidence":  {"type": "string", "enum": ["high", "moderate", "low"]},
                     "uncertainty_mitigable":     {"type": "boolean"},
                 },
-                "required": ["must_not_miss_still_in_play", "confidence_in_provisional", "acute_problem_confidence", "uncertainty_mitigable"],
+                "required": ["must_not_miss_still_in_play", "confidence_in_provisional", "uncertainty_mitigable"],
             },
             "iatrogenic_risk": {
                 "type": "object",
@@ -453,7 +453,7 @@ async def extract_clarifying_findings(
 
     response = await client.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=1200,
+        max_tokens=2000,
         system="You are a clinical data extraction tool. Extract only what is explicitly stated in the transcript. Do not infer or interpret.",
         tools=[_TOOL_CLARIFYING_FINDINGS],
         tool_choice={"type": "tool", "name": "submit_clarifying_findings"},
@@ -566,7 +566,7 @@ async def generate_provisional_diagnosis_and_rx(
 
     response = await client.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=3000,
+        max_tokens=5000,
         system=(
             "You are a clinical decision support system generating provisional diagnoses "
             "and prescriptions for nurse-managed consultations in rural India. "
@@ -657,8 +657,21 @@ async def generate_risk_assessment(
     """
     demographics    = vault_context.get("demographics", {})
     ddx             = vault_context.get("differential_table", [])
-    known_allergies = demographics.get("known_allergies", [])
-    current_meds    = demographics.get("current_medications", [])
+    concepts        = vault_context.get("extracted_concepts", {})
+    # Merge patient-record allergies/medications with any collected this session.
+    # For new patients the patient record is empty; session data lives in extracted_concepts.
+    known_allergies = list({
+        a.lower() for a in [
+            *demographics.get("known_allergies", []),
+            *(concepts.get("allergies_reported", []) or []),
+        ]
+    })
+    current_meds = list({
+        m for m in [
+            *demographics.get("current_medications", []),
+            *(concepts.get("current_medications", []) or []),
+        ]
+    })
     acute_problems  = [p for p in problem_list_output.get("problem_list", [])
                        if p.get("type") == "acute_new"]
     all_drugs       = [item
@@ -685,9 +698,7 @@ async def generate_risk_assessment(
             "   - Which must-not-miss diagnoses remain possible despite clarifying findings?\n"
             "   - What is the consequence of treating for the provisional Dx if one of "
             "these is actually present?\n"
-            "   - Can this uncertainty be resolved with available bedside tools?\n"
-            "   - Set acute_problem_confidence to match the confidence of the first acute_new "
-            "problem's assessment. This is the field the rule engine reads.\n\n"
+            "   - Can this uncertainty be resolved with available bedside tools?\n\n"
             "2. IATROGENIC RISK\n"
             "   - Assess ALL drugs from ALL PRESCRIBED DRUGS (across all problems)\n"
             "   - What are the specific risks of each prescribed drug in this patient?\n"
@@ -722,6 +733,12 @@ async def generate_risk_assessment(
     response = await client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=2500,
+        system=(
+            "You are a clinical decision support system performing risk assessment "
+            "for nurse-managed consultations in rural India. "
+            "Patient safety takes precedence over all other considerations — "
+            "when in doubt about any risk dimension, escalate rather than downgrade."
+        ),
         tools=[_TOOL_RISK_ASSESSMENT],
         tool_choice={"type": "tool", "name": "submit_risk_assessment"},
         messages=[{"role": "user", "content": prompt}]
@@ -899,11 +916,12 @@ def _to_float(val) -> float | None:
 
 def run_rule_engine(
     problem_list_output: dict,
-    risk_assessment: dict,
-    triage_output:   dict,
+    triage_output:       dict,
     demographics:    dict,
-    vitals:          dict | None = None,
-    red_flags:       list | None = None,
+    vitals:              dict | None = None,
+    red_flags:           list | None = None,
+    extracted_concepts:  dict | None = None,
+    acute_confidence:    str  | None = None,
 ) -> dict:
     """
     Deterministic rule engine. Runs after all LLM calls.
@@ -949,7 +967,8 @@ def run_rule_engine(
     age       = demographics.get("age", 99)
     sex       = demographics.get("sex", "").upper()
     pregnancy = demographics.get("pregnancy_status", "").lower()
-    weight_kg = demographics.get("weight_kg")
+    vitals_weight = vitals.get("weight_kg") if vitals else None
+    weight_kg = vitals_weight if vitals_weight is not None else demographics.get("weight_kg")
 
     escalation_rules = ESCALATION_RULES
 
@@ -1087,7 +1106,16 @@ def run_rule_engine(
         )
 
     # --- 6. Allergy conflict check ---
-    known_allergies = [a.lower() for a in demographics.get("known_allergies", [])]
+    # Merge allergies from patient record (known_allergies) and any newly reported
+    # this session (extracted_concepts.allergies_reported). For new patients the
+    # patient record is empty — allergies only exist in extracted_concepts.
+    reported_allergies = (extracted_concepts or {}).get("allergies_reported", [])
+    known_allergies = list({
+        a.lower() for a in [
+            *demographics.get("known_allergies", []),
+            *(reported_allergies if isinstance(reported_allergies, list) else []),
+        ]
+    })
     for drug in rx_drugs:
         for allergy in known_allergies:
             if allergy in drug or drug in allergy:
@@ -1097,11 +1125,9 @@ def run_rule_engine(
                 )
 
     # --- 7. Diagnostic confidence hard stop ---
-    confidence = risk_assessment.get("diagnostic_uncertainty", {}).get(
-        "acute_problem_confidence",
-        next((p["assessment"].get("confidence", "high")
-              for p in problems if p.get("type") == "acute_new"), "high")
-    )
+    # acute_confidence is extracted directly from Call 2 output in the orchestrator —
+    # not re-derived from the risk assessment to avoid LLM relay errors.
+    confidence = acute_confidence or "high"
     if confidence == "low":
         triggers.append(
             "LOW DIAGNOSTIC CONFIDENCE: provisional diagnosis confidence is low — "
@@ -1153,6 +1179,35 @@ async def run_management_stage(
     ddx           = vault_context.get("differential_table", [])
     formulary     = load_formulary()
 
+    try:
+        return await _run_pipeline(
+            session_id, transcript_segment, vault, vault_context,
+            demographics, ddx, formulary, db_conn,
+        )
+    except Exception as e:
+        print(f"[{session_id}] Management stage failed: {type(e).__name__}: {e}")
+        try:
+            await vault.update({
+                "management_stage_status":    "failed",
+                "management_stage_error":     f"{type(e).__name__}: {e}",
+                "management_stage_failed_at": datetime.now().isoformat(),
+            })
+        except Exception:
+            pass  # vault write itself failed — original exception still re-raised
+        raise
+
+
+async def _run_pipeline(
+    session_id:         str,
+    transcript_segment: str,
+    vault:              Vault,
+    vault_context:      dict,
+    demographics:       dict,
+    ddx:                list,
+    formulary:          dict,
+    db_conn:            asyncpg.Connection,
+) -> dict:
+    """Inner pipeline — separated so run_management_stage can wrap it with error handling."""
     # All DDx diagnoses + established conditions for RAG retrieval.
     # Provisional diagnosis is determined in Call 2 using RAG — any DDx entry
     # could become the provisional, so retrieve STG for all of them.
@@ -1161,15 +1216,12 @@ async def run_management_stage(
     established       = [c for c in known_conditions if c] if isinstance(known_conditions, list) else []
     rag_diagnoses     = all_ddx_diagnoses + established
 
-    # Call 1 + RAG in parallel
+    # Call 1 + RAG in parallel — pass coroutines directly so gather cancels both on failure
     print(f"[{session_id}] Call 1: extracting clarifying findings + RAG retrieval")
-    call1_task = asyncio.create_task(
-        extract_clarifying_findings(transcript_segment, vault_context)
+    clarifying_findings, stg_context = await asyncio.gather(
+        extract_clarifying_findings(transcript_segment, vault_context),
+        retrieve_treatment_protocols(db_conn, rag_diagnoses),
     )
-    rag_task = asyncio.create_task(
-        retrieve_treatment_protocols(db_conn, rag_diagnoses)
-    )
-    clarifying_findings, stg_context = await asyncio.gather(call1_task, rag_task)
     await vault.update({"clarifying_findings": clarifying_findings})
 
     # Call 2 — problem list (provisional Dx + all problems + prescriptions)
@@ -1178,6 +1230,14 @@ async def run_management_stage(
         clarifying_findings, vault_context, stg_context, formulary
     )
     await vault.update({"problem_list": problem_list_output})
+
+    # Extract acute problem confidence directly from Call 2 — passed to rule engine
+    # so the rule engine reads a deterministic Python value, not an LLM relay.
+    first_acute = next(
+        (p for p in problem_list_output.get("problem_list", []) if p.get("type") == "acute_new"),
+        None,
+    )
+    acute_confidence = (first_acute or {}).get("assessment", {}).get("confidence", "high")
 
     # Call 3 — risk assessment
     print(f"[{session_id}] Call 3: five-dimension risk assessment")
@@ -1203,8 +1263,10 @@ async def run_management_stage(
             vitals[key] = val
     red_flags = vault_context.get("extracted_concepts", {}).get("red_flags", [])
     rule_result = run_rule_engine(
-        problem_list_output, risk_assessment, triage_output, demographics,
+        problem_list_output, triage_output, demographics,
         vitals=vitals, red_flags=red_flags,
+        extracted_concepts=vault_context.get("extracted_concepts", {}),
+        acute_confidence=acute_confidence,
     )
 
     # Merge rule engine tier into triage output
@@ -1251,9 +1313,16 @@ async def management_endpoint(req: ManagementRequest):
     """
     conn = await asyncpg.connect(dsn="postgresql://localhost/cdst")
     try:
-        return await run_management_stage(
-            req.session_id, req.transcript_segment, conn
+        return await asyncio.wait_for(
+            run_management_stage(req.session_id, req.transcript_segment, conn),
+            timeout=STAGE_TIMEOUT_SECS,
         )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Management stage timed out")
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Management stage failed: {type(e).__name__}: {e}")
     finally:
         await conn.close()
 
@@ -1282,6 +1351,10 @@ async def stream_management(
         vault_context.get("gps", {}).get("district_code", "WB_UNKNOWN")
     )
     formulary = load_formulary()
+
+    known_conditions = demographics.get("known_conditions", [])
+    if isinstance(known_conditions, list):
+        rag_diagnoses += [c for c in known_conditions if c]
 
     clarifying_findings, stg_context = await asyncio.gather(
         extract_clarifying_findings(transcript_segment, vault_context),
