@@ -55,7 +55,7 @@ from epi_utils import (
     load_baseline_diseases,
     load_epi_prior,
 )
-from llm_client import gemini
+from llm_client import gemini, generate_with_retry, parse_json_response, response_text
 from model_config import MODEL_H1_CHIEF_COMPLAINT, MODEL_H2_QUESTIONNAIRE
 
 
@@ -344,7 +344,7 @@ async def extract_chief_complaint(
         ),
     ])
 
-    response = await gemini.aio.models.generate_content(
+    response = await generate_with_retry(
         model=MODEL_H1_CHIEF_COMPLAINT,
         contents=prompt,
         config=types.GenerateContentConfig(
@@ -354,7 +354,7 @@ async def extract_chief_complaint(
         )
     )
 
-    return json.loads(response.text)
+    return parse_json_response(response_text(response))
 
 
 # ---------------------------------------------------------------------------
@@ -605,7 +605,7 @@ async def generate_questionnaire(
         ),
     ]))
 
-    response = await gemini.aio.models.generate_content(
+    response = await generate_with_retry(
         model=MODEL_H2_QUESTIONNAIRE,
         contents=prompt,
         config=types.GenerateContentConfig(
@@ -615,7 +615,7 @@ async def generate_questionnaire(
         )
     )
 
-    questionnaire = json.loads(response.text)
+    questionnaire = parse_json_response(response_text(response))
 
     # Inject fixed background history section for first/partial visits.
     # The LLM generates the chief complaint section; this ensures complete

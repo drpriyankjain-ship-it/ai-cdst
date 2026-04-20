@@ -9,13 +9,11 @@ Tiers:
   TIER_STANDARD — gap analysis, risk assessment, questionnaire generation
   TIER_BEST     — DDx generation (D2) and prescription (M2) — patient-safety critical
 
-NOTE: Update the model ID strings below to the actual Gemini 3 model IDs
-once they are published. Current values are placeholders using Gemini 2.5.
 """
 
 TIER_FAST     = "gemini-2.5-flash"
-TIER_STANDARD = "gemini-2.5-pro"
-TIER_BEST     = "gemini-2.5-pro"    # update to Gemini 3.1 pro
+TIER_STANDARD = "gemini-2.5-flash"
+TIER_BEST     = "gemini-2.5-pro"
 
 # ── History Stage ────────────────────────────────────────────────────────────
 MODEL_H1_CHIEF_COMPLAINT = TIER_FAST       # extract_chief_complaint — simple extraction

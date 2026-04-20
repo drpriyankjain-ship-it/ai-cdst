@@ -247,7 +247,7 @@ async def transcribe_audio(audio_path: str) -> str:
 
     params = {
         "model":      "nova-3",
-        "language":   "en-US",
+        "language":   "bn",
         "diarize":    "true",
         "punctuate":  "true",
     }
@@ -279,7 +279,8 @@ async def transcribe_audio(audio_path: str) -> str:
     transcript = _build_diarized_transcript(words) if words else fallback
 
     if not transcript.strip():
-        print("ERROR: Deepgram returned an empty transcript. Check audio file.")
+        print("ERROR: Deepgram returned an empty transcript.")
+        print("DEBUG response:", json.dumps(result, indent=2)[:2000])
         sys.exit(1)
 
     speaker_ids = {w.get("speaker") for w in words if "speaker" in w}
@@ -287,17 +288,64 @@ async def transcribe_audio(audio_path: str) -> str:
         f"Transcription complete — {len(words)} words, "
         f"{len(speaker_ids)} speaker(s) detected"
     )
+
+    # Save raw transcript so user can translate externally if needed
+    raw_path = Path(audio_path).with_suffix(".bengali_transcript.txt")
+    raw_path.write_text(transcript, encoding="utf-8")
+    print(f"Bengali transcript saved to: {raw_path}")
+
     return transcript
 
 
 # ── Interactive phase splitting ────────────────────────────────────────────────
 
+def _split_on_markers(text: str) -> tuple[str, str, str] | None:
+    """
+    If the transcript contains #MARKER A#, #MARKER B#, #MARKER C# lines,
+    split on them automatically. Returns None if markers are not found.
+    """
+    import re
+    marker_a = re.compile(r"^#\s*MARKER\s*A\s*#", re.IGNORECASE)
+    marker_b = re.compile(r"^#\s*MARKER\s*B\s*#", re.IGNORECASE)
+    marker_c = re.compile(r"^#\s*MARKER\s*C\s*#", re.IGNORECASE)
+
+    lines = text.splitlines()
+    a_idx = b_idx = c_idx = None
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if marker_a.match(s):
+            a_idx = i
+        elif marker_b.match(s):
+            b_idx = i
+        elif marker_c.match(s):
+            c_idx = i
+
+    if a_idx is None or b_idx is None:
+        return None
+
+    phase_1 = "\n".join(lines[:a_idx]).strip()
+    phase_2 = "\n".join(lines[a_idx + 1:b_idx]).strip()
+    end     = c_idx if c_idx is not None else len(lines)
+    phase_3 = "\n".join(lines[b_idx + 1:end]).strip()
+    return phase_1, phase_2, phase_3
+
+
 def prompt_phase_splits(full_transcript: str) -> tuple[str, str, str]:
     """
-    Print the numbered transcript and ask the user to mark phase boundaries.
-    Returns (phase_1, phase_2, phase_3) text strings.
+    Split transcript into three phases.
+    If #MARKER A# / #MARKER B# are present, splits automatically.
+    Otherwise falls back to interactive line-number prompts.
     """
-    lines = _wrap_lines(full_transcript)
+    auto = _split_on_markers(full_transcript)
+    if auto:
+        phase_1, phase_2, phase_3 = auto
+        print("\nPhase markers detected — splitting automatically.")
+        print(f"  Phase 1: {len(phase_1.splitlines())} lines")
+        print(f"  Phase 2: {len(phase_2.splitlines())} lines")
+        print(f"  Phase 3: {len(phase_3.splitlines())} lines")
+        return phase_1, phase_2, phase_3
+
+    lines = _transcript_lines(full_transcript)
     total = len(lines)
 
     print("\n" + "=" * 70)
@@ -652,23 +700,34 @@ async def run_track2(
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="CDST pipeline validation")
-    parser.add_argument("audio_file", help="Path to the interview audio file")
+    parser.add_argument("audio_file", nargs="?", help="Path to the interview audio file")
     parser.add_argument(
         "--track", choices=["1", "2", "both"], default="both",
         help="Which validation track to run (default: both)"
     )
     parser.add_argument("--out", default=None, help="Output JSON report path")
+    parser.add_argument(
+        "--transcript", default=None,
+        help="Path to a pre-translated English transcript (.txt) — skips Deepgram entirely"
+    )
     args = parser.parse_args()
 
-    if not os.path.exists(args.audio_file):
-        print(f"ERROR: Audio file not found: {args.audio_file}")
-        sys.exit(1)
+    if args.transcript:
+        if not os.path.exists(args.transcript):
+            print(f"ERROR: Transcript file not found: {args.transcript}")
+            sys.exit(1)
+        full_transcript = Path(args.transcript).read_text(encoding="utf-8").strip()
+        print(f"Loaded transcript from {args.transcript} ({len(full_transcript)} chars)")
+    else:
+        if not args.audio_file:
+            print("ERROR: Provide an audio file or --transcript <file>")
+            sys.exit(1)
+        if not os.path.exists(args.audio_file):
+            print(f"ERROR: Audio file not found: {args.audio_file}")
+            sys.exit(1)
+        full_transcript = await transcribe_audio(args.audio_file)
 
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = args.out or f"validation_output_{ts}.json"
-
-    # ── Transcribe ────────────────────────────────────────────────────────────
-    full_transcript = await transcribe_audio(args.audio_file)
+    audio_label = args.audio_file or args.transcript
 
     # ── Phase splits ──────────────────────────────────────────────────────────
     phase_1, phase_2, phase_3 = prompt_phase_splits(full_transcript)
@@ -676,7 +735,7 @@ async def main() -> None:
     # ── Build report skeleton ─────────────────────────────────────────────────
     report: dict = {
         "meta": {
-            "audio_file":      args.audio_file,
+            "audio_file":      audio_label,
             "district":        f"{DISTRICT_NAME} ({DISTRICT_CODE})",
             "season":          "pre_monsoon",
             "month":           MONTH,

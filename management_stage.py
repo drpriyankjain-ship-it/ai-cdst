@@ -32,13 +32,18 @@ from typing import AsyncIterator
 
 import asyncpg
 import asyncio
-from sentence_transformers import SentenceTransformer
+try:
+    from sentence_transformers import SentenceTransformer as _SentenceTransformer
+    _embedder_available = True
+except ImportError:
+    _SentenceTransformer = None
+    _embedder_available = False
 from fastapi import FastAPI, HTTPException
 from google.genai import types
 from pydantic import BaseModel
 
 from epi_utils import state_from_district_code
-from llm_client import gemini
+from llm_client import gemini, generate_with_retry, parse_json_response, response_text
 from model_config import (
     MODEL_M1_FINDINGS, MODEL_M2_PRESCRIPTION,
     MODEL_M3_RISK, MODEL_M4_TRIAGE,
@@ -55,7 +60,15 @@ ESCALATION_RULES_PATH = "data/escalation_rules.json"
 RAG_TOP_K          = 8    # STG chunks per diagnosis for treatment retrieval
 STAGE_TIMEOUT_SECS = 120  # hard ceiling for the full pipeline; orchestrator should wrap with asyncio.wait_for
 
-embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+_embedder = None
+
+def _get_embedder():
+    global _embedder
+    if _embedder is None:
+        if not _embedder_available:
+            raise RuntimeError("sentence-transformers not installed; pip install sentence-transformers")
+        _embedder = _SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+    return _embedder
 
 with open(ESCALATION_RULES_PATH) as _f:
     ESCALATION_RULES: dict = json.load(_f)
@@ -367,7 +380,7 @@ async def retrieve_treatment_protocols(
             f"treatment protocol dose duration route contraindications "
             f"referral criteria {diagnosis} NHM India STG"
         )
-        query_embedding = (await asyncio.to_thread(embedder.encode, query)).tolist()
+        query_embedding = (await asyncio.to_thread(_get_embedder().encode, query)).tolist()
 
         rows = await conn.fetch(
             """
@@ -436,7 +449,7 @@ async def extract_clarifying_findings(
         ),
     ])
 
-    response = await gemini.aio.models.generate_content(
+    response = await generate_with_retry(
         model=MODEL_M1_FINDINGS,
         contents=prompt,
         config=types.GenerateContentConfig(
@@ -447,7 +460,7 @@ async def extract_clarifying_findings(
         )
     )
 
-    return json.loads(response.text)
+    return parse_json_response(response_text(response))
 
 
 # ---------------------------------------------------------------------------
@@ -551,7 +564,7 @@ async def generate_provisional_diagnosis_and_rx(
         ),
     ])
 
-    response = await gemini.aio.models.generate_content(
+    response = await generate_with_retry(
         model=MODEL_M2_PRESCRIPTION,
         contents=prompt,
         config=types.GenerateContentConfig(
@@ -568,7 +581,7 @@ async def generate_provisional_diagnosis_and_rx(
         )
     )
 
-    return json.loads(response.text)
+    return parse_json_response(response_text(response))
 
 
 # ---------------------------------------------------------------------------
@@ -719,7 +732,7 @@ async def generate_risk_assessment(
         ),
     ])
 
-    response = await gemini.aio.models.generate_content(
+    response = await generate_with_retry(
         model=MODEL_M3_RISK,
         contents=prompt,
         config=types.GenerateContentConfig(
@@ -735,7 +748,7 @@ async def generate_risk_assessment(
         )
     )
 
-    return json.loads(response.text)
+    return parse_json_response(response_text(response))
 
 
 # ---------------------------------------------------------------------------
@@ -900,7 +913,7 @@ async def generate_triage_and_handoff(
         ),
     ]))
 
-    response = await gemini.aio.models.generate_content(
+    response = await generate_with_retry(
         model=MODEL_M4_TRIAGE,
         contents=prompt,
         config=types.GenerateContentConfig(
@@ -916,7 +929,7 @@ async def generate_triage_and_handoff(
         )
     )
 
-    result = json.loads(response.text)
+    result = parse_json_response(response_text(response))
     result.setdefault("doctor_handoff", {})["prescription_issued"] = prescription_issued
     return result
 
