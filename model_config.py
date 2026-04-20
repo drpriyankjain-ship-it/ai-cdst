@@ -11,9 +11,9 @@ Tiers:
 
 """
 
-TIER_FAST     = "gemini-2.5-flash"
-TIER_STANDARD = "gemini-2.5-flash"
-TIER_BEST     = "gemini-2.5-pro"
+TIER_FAST     = "gemini-3-flash-preview"
+TIER_STANDARD = "gemini-3-flash-preview"
+TIER_BEST     = "gemini-3-pro-preview"
 
 # ── History Stage ────────────────────────────────────────────────────────────
 MODEL_H1_CHIEF_COMPLAINT = TIER_FAST       # extract_chief_complaint — simple extraction
