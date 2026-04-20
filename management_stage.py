@@ -166,7 +166,7 @@ _PRESCRIPTION_ITEM_SCHEMA = {
         "duration":     {"type": "string"},
         "instructions": {"type": "string"},
         "dose_basis":   {"type": "string"},
-        "stg_source":   {"type": ["string", "null"]},
+        "stg_source":   {"type": "string", "nullable": True},
         "for_problem":  {"type": "integer"},
     },
     "required": ["drug", "dose", "route", "frequency", "duration", "for_problem"],
@@ -577,7 +577,7 @@ async def generate_provisional_diagnosis_and_rx(
             ),
             response_mime_type="application/json",
             response_schema=_SCHEMA_PROBLEM_LIST,
-            max_output_tokens=5000,
+            max_output_tokens=10000,
         )
     )
 

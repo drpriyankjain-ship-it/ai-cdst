@@ -611,7 +611,7 @@ async def generate_questionnaire(
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             response_schema=_SCHEMA_QUESTIONNAIRE,
-            max_output_tokens=2000,
+            max_output_tokens=8000,
         )
     )
 

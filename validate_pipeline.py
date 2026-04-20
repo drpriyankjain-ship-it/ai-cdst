@@ -728,6 +728,7 @@ async def main() -> None:
         full_transcript = await transcribe_audio(args.audio_file)
 
     audio_label = args.audio_file or args.transcript
+    out_path = args.out or f"validation_output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
 
     # ── Phase splits ──────────────────────────────────────────────────────────
     phase_1, phase_2, phase_3 = prompt_phase_splits(full_transcript)
@@ -768,7 +769,7 @@ async def main() -> None:
     # ── Save report ───────────────────────────────────────────────────────────
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, ensure_ascii=False)
-    print(f"\nReport saved → {out_path}")
+    print(f"\nReport saved -> {out_path}")
 
     # ── Terminal summary ──────────────────────────────────────────────────────
     if "highlights" in report:

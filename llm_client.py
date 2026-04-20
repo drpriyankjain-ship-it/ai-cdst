@@ -70,6 +70,6 @@ async def generate_with_retry(model: str, contents, config=None):
         except APIError as e:
             if e.code not in _RETRY_STATUSES or attempt == _MAX_RETRIES - 1:
                 raise
-            log.warning("Gemini %s on attempt %d — retrying in %.0fs", e.status_code, attempt + 1, delay)
+            log.warning("Gemini %s on attempt %d — retrying in %.0fs", e.code, attempt + 1, delay)
             await asyncio.sleep(delay)
             delay *= 2
