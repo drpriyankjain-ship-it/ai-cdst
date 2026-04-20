@@ -859,6 +859,11 @@ async def session_websocket(websocket: WebSocket):
                 state.ring_buffer.append((t, audio_bytes))
                 await state.dg.send(audio_bytes)
 
+            elif msg_type == "inject_transcript" and os.getenv("VALIDATION_MODE"):
+                text = raw.get("text", "")
+                await state.append_transcript(text, is_final=True)
+                log.info("[%s] Injected transcript (%d chars)", state.session_id, len(text))
+
             elif msg_type == "marker":
                 marker = raw.get("marker", "")
                 t      = float(raw.get("t", 0.0))

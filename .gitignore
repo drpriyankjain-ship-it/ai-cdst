@@ -1,0 +1,5 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+validation_output_*.json

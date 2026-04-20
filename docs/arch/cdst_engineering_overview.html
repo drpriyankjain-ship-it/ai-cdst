@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CDST — Engineering Overview</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #0f1117;
+    color: #e8eaf0;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Nav bar ── */
+  nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 24px;
+    background: #181c27;
+    border-bottom: 1px solid #252a3a;
+    flex-shrink: 0;
+  }
+  .nav-title { font-size: 13px; color: #6b7280; letter-spacing: 0.05em; }
+  .nav-controls { display: flex; gap: 10px; align-items: center; }
+  .nav-controls button {
+    background: #252a3a; border: 1px solid #353c55; color: #c4c9d8;
+    padding: 5px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;
+    transition: background 0.15s;
+  }
+  .nav-controls button:hover { background: #2e3450; }
+  .nav-controls button:disabled { opacity: 0.3; cursor: default; }
+  #slide-counter { font-size: 13px; color: #6b7280; min-width: 48px; text-align: center; }
+
+  /* ── Slide container ── */
+  #deck { flex: 1; overflow: hidden; position: relative; }
+  .slide {
+    position: absolute; inset: 0;
+    display: none;
+    padding: 40px 56px;
+    overflow-y: auto;
+  }
+  .slide.active { display: flex; flex-direction: column; }
+
+  /* ── Slide chrome ── */
+  .slide-label {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.12em;
+    text-transform: uppercase; margin-bottom: 10px;
+  }
+  .slide h1 {
+    font-size: 28px; font-weight: 700; line-height: 1.2;
+    margin-bottom: 6px;
+  }
+  .slide .subtitle {
+    font-size: 14px; color: #8b91a8; margin-bottom: 28px;
+    padding-bottom: 18px; border-bottom: 1px solid #252a3a;
+  }
+
+  /* ── Accent colours ── */
+  .accent-blue  { color: #60a5fa; }
+  .accent-green { color: #4ade80; }
+  .accent-amber { color: #fbbf24; }
+  .accent-red   { color: #f87171; }
+  .accent-violet{ color: #a78bfa; }
+  .accent-teal  { color: #2dd4bf; }
+
+  /* ── Grid ── */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; flex: 1; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; flex: 1; }
+  .grid-4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 12px; flex: 1; }
+
+  /* ── Card ── */
+  .card {
+    background: #181c27; border: 1px solid #252a3a; border-radius: 10px;
+    padding: 18px 20px;
+  }
+  .card h3 { font-size: 13px; font-weight: 700; margin-bottom: 10px; }
+  .card p, .card li { font-size: 13px; color: #9ca3af; line-height: 1.65; }
+  .card ul { list-style: none; padding: 0; }
+  .card ul li::before { content: "→ "; color: #4b5563; }
+
+  /* ── Flow diagram (Slide 2) ── */
+  .flow-row {
+    display: flex; align-items: stretch; gap: 0; flex: 1;
+  }
+  .flow-box {
+    flex: 1; background: #181c27; border: 1px solid #252a3a; border-radius: 10px;
+    padding: 16px 14px; display: flex; flex-direction: column;
+  }
+  .flow-box h3 { font-size: 12px; font-weight: 700; margin-bottom: 8px; }
+  .flow-box p  { font-size: 12px; color: #9ca3af; line-height: 1.6; }
+  .flow-arrow {
+    width: 28px; flex-shrink: 0; display: flex; align-items: center;
+    justify-content: center; color: #374151; font-size: 20px;
+  }
+
+  /* ── Stage cards (Slide 3) ── */
+  .stage-card {
+    background: #181c27; border-radius: 10px; padding: 18px 20px;
+    display: flex; flex-direction: column; gap: 8px;
+    border: 1px solid #252a3a;
+  }
+  .stage-badge {
+    display: inline-block; font-size: 10px; font-weight: 700;
+    letter-spacing: 0.1em; text-transform: uppercase;
+    padding: 2px 8px; border-radius: 4px; margin-bottom: 4px;
+  }
+  .call-row {
+    background: #0f1117; border-radius: 6px; padding: 8px 12px;
+    font-size: 12px; color: #9ca3af; line-height: 1.5;
+  }
+  .call-row strong { color: #e8eaf0; }
+
+  /* ── Principle rows (Slide 4) ── */
+  .principle {
+    display: flex; align-items: flex-start; gap: 14px;
+    padding: 12px 16px;
+    background: #181c27; border-radius: 8px; border: 1px solid #1e2433;
+    margin-bottom: 10px;
+  }
+  .principle-icon { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
+  .principle-text h4 { font-size: 13px; font-weight: 700; margin-bottom: 3px; }
+  .principle-text p  { font-size: 12px; color: #8b91a8; line-height: 1.5; }
+
+  /* ── Status table (Slide 5) ── */
+  .status-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px; flex: 1;
+  }
+  .status-item {
+    display: flex; align-items: flex-start; gap: 10px;
+    background: #181c27; border: 1px solid #252a3a; border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; margin-top: 3px; }
+  .dot-green  { background: #22c55e; box-shadow: 0 0 6px #22c55e80; }
+  .dot-amber  { background: #f59e0b; box-shadow: 0 0 6px #f59e0b80; }
+  .dot-gray   { background: #374151; }
+  .status-item-text h4 { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+  .status-item-text p  { font-size: 11px; color: #6b7280; line-height: 1.4; }
+
+  /* ── Open questions (Slide 6) ── */
+  .q-card {
+    background: #181c27; border-left: 3px solid #fbbf24;
+    border-radius: 0 8px 8px 0; padding: 14px 18px; margin-bottom: 10px;
+  }
+  .q-card .owner {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.1em;
+    text-transform: uppercase; margin-bottom: 4px;
+  }
+  .q-card h4 { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+  .q-card p  { font-size: 12px; color: #8b91a8; line-height: 1.5; }
+
+  .eng-card {
+    border-left-color: #60a5fa;
+  }
+
+  /* ── Slide 1 title card ── */
+  .title-hero {
+    flex: 1; display: flex; flex-direction: column; justify-content: center;
+    gap: 28px;
+  }
+  .title-hero h1 {
+    font-size: 38px; font-weight: 800; line-height: 1.1;
+    background: linear-gradient(135deg, #60a5fa 0%, #a78bfa 60%, #2dd4bf 100%);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .title-hero .tagline { font-size: 15px; color: #8b91a8; max-width: 540px; line-height: 1.6; }
+  .meta-row { display: flex; gap: 18px; flex-wrap: wrap; }
+  .meta-chip {
+    font-size: 12px; padding: 4px 12px; border-radius: 20px;
+    background: #181c27; border: 1px solid #252a3a; color: #9ca3af;
+  }
+
+  /* ── Keyboard hint ── */
+  .key-hint {
+    font-size: 11px; color: #374151;
+    text-align: center; padding: 6px 0;
+    flex-shrink: 0;
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <span class="nav-title">CDST — Engineering Overview &nbsp;·&nbsp; 2026-04-19</span>
+  <div class="nav-controls">
+    <button id="btn-prev" onclick="go(-1)" disabled>← Prev</button>
+    <span id="slide-counter">1 / 6</span>
+    <button id="btn-next" onclick="go(1)">Next →</button>
+  </div>
+</nav>
+
+<div id="deck">
+
+  <!-- ═══════════════════════════════════════════ SLIDE 1 ═══ -->
+  <div class="slide active" id="s1">
+    <div class="title-hero">
+      <div>
+        <div class="slide-label accent-blue">Clinical Decision Support Tool</div>
+        <h1>CDST<br>Engineering Overview</h1>
+        <p class="tagline">
+          AI-assisted triage, prescription, and doctor handoff for nurses working
+          in remote rural West Bengal — designed for zero-connectivity gaps, patient
+          safety first.
+        </p>
+      </div>
+      <div class="meta-row">
+        <span class="meta-chip">FastAPI · Python</span>
+        <span class="meta-chip">Gemini API (Google)</span>
+        <span class="meta-chip">Deepgram STT</span>
+        <span class="meta-chip">Postgres + pgvector</span>
+        <span class="meta-chip">React Native</span>
+        <span class="meta-chip">Target: 23 WB districts</span>
+      </div>
+      <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; max-width:600px;">
+        <div class="card" style="text-align:center; padding:14px;">
+          <div style="font-size:22px; font-weight:800; color:#60a5fa;">3</div>
+          <div style="font-size:11px; color:#6b7280; margin-top:2px;">Pipeline stages</div>
+        </div>
+        <div class="card" style="text-align:center; padding:14px;">
+          <div style="font-size:22px; font-weight:800; color:#4ade80;">9</div>
+          <div style="font-size:11px; color:#6b7280; margin-top:2px;">LLM calls total</div>
+        </div>
+        <div class="card" style="text-align:center; padding:14px;">
+          <div style="font-size:22px; font-weight:800; color:#fbbf24;">&lt;8s</div>
+          <div style="font-size:11px; color:#6b7280; margin-top:2px;">Full pipeline (Stage 3)</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ SLIDE 2 ═══ -->
+  <div class="slide" id="s2">
+    <div class="slide-label accent-violet">System Architecture</div>
+    <h1>Session Flow</h1>
+    <p class="subtitle">One WebSocket per consultation. Three button presses. Three pipeline stages fire at precise moments.</p>
+
+    <div style="flex:1; display:flex; flex-direction:column; gap:14px;">
+
+      <div style="display:grid; grid-template-columns:1fr 40px 1fr 40px 1fr 40px 1fr; gap:0; align-items:stretch;">
+
+        <div class="flow-box" style="border-color:#3b4fd8;">
+          <h3 class="accent-violet">Mobile App (RN)</h3>
+          <p>Nurse presses Start. Streams base64 Opus audio chunks. Sends 3 marker events. Receives streamed tokens + stage_complete payloads.</p>
+        </div>
+        <div class="flow-arrow">⟶</div>
+        <div class="flow-box" style="border-color:#1d4ed8;">
+          <h3 class="accent-blue">Orchestrator</h3>
+          <p>FastAPI WebSocket server. Owns full session lifecycle. Manages Vault, Deepgram connection, ring buffer for reconnect, and asyncio task dispatch.</p>
+        </div>
+        <div class="flow-arrow">⟶</div>
+        <div class="flow-box" style="border-color:#065f46;">
+          <h3 class="accent-green">Deepgram STT</h3>
+          <p>Streaming WebSocket. Returns real-time interim + final transcripts. Finals appended to Vault incrementally (no full rewrites).</p>
+        </div>
+        <div class="flow-arrow">⟶</div>
+        <div class="flow-box" style="border-color:#78350f;">
+          <h3 class="accent-amber">Postgres + pgvector</h3>
+          <p>sessions (Vault JSONB), patient_records, stg_chunks (384-dim embeddings), confirmed_encounters. IVFFlat index for ANN search.</p>
+        </div>
+      </div>
+
+      <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px;">
+        <div class="card" style="border-color:#2d1f6e;">
+          <h3 class="accent-violet">▲ Marker A — ~30s</h3>
+          <ul>
+            <li>Name, age, village, chief complaint captured</li>
+            <li>History Stage fires</li>
+            <li>Questionnaire first token in &lt;1.5s</li>
+            <li>Two async tasks: stream + structured JSON</li>
+          </ul>
+        </div>
+        <div class="card" style="border-color:#14532d;">
+          <h3 class="accent-green">▲ Marker B — ~3-4 min</h3>
+          <ul>
+            <li>Structured interview complete</li>
+            <li>Diagnosis Stage fires</li>
+            <li>Differential streams in &lt;1.5s</li>
+            <li>Clarifying questions generated after DDx</li>
+          </ul>
+        </div>
+        <div class="card" style="border-color:#78350f;">
+          <h3 class="accent-amber">▲ Marker C — ~5-6 min</h3>
+          <ul>
+            <li>Clarifying phase complete</li>
+            <li>Management Stage fires</li>
+            <li>Full pipeline ~7-8s incl. rule engine</li>
+            <li>Triage decision + doctor handoff</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="card" style="background:#0f1117; padding:12px 18px;">
+        <h3 style="font-size:12px; margin-bottom:6px; color:#6b7280;">RECONNECT RESILIENCE</h3>
+        <p style="font-size:12px; color:#9ca3af;">
+          Server keeps a 60s ring buffer (600-element deque). On reconnect, <code style="background:#1e2433; padding:1px 5px; border-radius:3px; font-size:11px;">SessionState.from_vault()</code> rebuilds state from Postgres. Client flushes buffered audio to a fresh Deepgram connection. No audio is lost.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ SLIDE 3 ═══ -->
+  <div class="slide" id="s3">
+    <div class="slide-label accent-green">Pipeline Detail</div>
+    <h1>The Three Stages</h1>
+    <p class="subtitle">Each stage is a fixed sequential pipeline with bounded LLM calls — no loops, no agents yet.</p>
+
+    <div class="grid-3" style="align-items:start;">
+
+      <div class="stage-card" style="border-color:#312e81;">
+        <span class="stage-badge" style="background:#1e1b4b; color:#a78bfa;">History Stage</span>
+        <div style="font-size:12px; color:#6b7280; margin-bottom:8px;">2 calls · no RAG · target: &lt;1.5s first token</div>
+        <div class="call-row"><strong>Call 1</strong> ~700ms · Extract chief complaint from 30s transcript. Schema has many null fields by design — only complaint + duration known at this point.</div>
+        <div class="call-row" style="margin-top:6px;"><strong>Call 2</strong> ~1.3s · streaming · Build contextualised questionnaire. New patient = full intake (PMH, FH, SH, meds, allergies). Returning patient = short verification pass for changed fields only. Outputs <code style="font-size:11px; background:#181c27; padding:1px 4px; border-radius:3px;">patient_record_fields</code> schema for Diagnosis Stage.</div>
+        <div style="margin-top:8px; font-size:11px; color:#4b5563;">Two async tasks fire simultaneously: streaming questionnaire to nurse + structured JSON write to Vault.</div>
+      </div>
+
+      <div class="stage-card" style="border-color:#14532d;">
+        <span class="stage-badge" style="background:#052e16; color:#4ade80;">Diagnosis Stage</span>
+        <div style="font-size:12px; color:#6b7280; margin-bottom:8px;">3 calls · no RAG · full pipeline ~5-6s</div>
+        <div class="call-row"><strong>Call 1</strong> ~900ms · Extract structured medical concepts. Negatives captured explicitly. Ambiguous answers → <code style="font-size:11px; background:#181c27; padding:1px 4px; border-radius:3px;">uncertain_findings</code> (not collapsed into positives).</div>
+        <div class="call-row" style="margin-top:6px;"><strong>Call 2</strong> ~3.2s · streaming · Ranked differential (4-6 conditions). Two-layer epi prior: Layer 1 = common WB presentations string; Layer 2 = district + season lookup from <code style="font-size:11px; background:#181c27; padding:1px 4px; border-radius:3px;">epi_prior_wb.json</code>. 34 must-not-miss diagnoses flagged from JSON regardless of rank. 11-field canonical schema, always validated.</div>
+        <div class="call-row" style="margin-top:6px;"><strong>Call 3</strong> ~1.4s · Gap analysis + clarifying questions constrained to <code style="font-size:11px; background:#181c27; padding:1px 4px; border-radius:3px;">bedside_tools.json</code>. <code style="font-size:11px; background:#181c27; padding:1px 4px; border-radius:3px;">uncertain_findings</code> surfaced as priority re-asks.</div>
+      </div>
+
+      <div class="stage-card" style="border-color:#78350f;">
+        <span class="stage-badge" style="background:#431407; color:#fbbf24;">Management Stage</span>
+        <div style="font-size:12px; color:#6b7280; margin-bottom:8px;">4 calls · RAG in Call 2 · full pipeline ~7-8s</div>
+        <div class="call-row"><strong>Call 1 + RAG</strong> parallel · ~900ms · Extract clarifying findings. RAG retrieves STG chunks for all DDx diagnoses simultaneously (top-8 per diagnosis, max 16 chunks).</div>
+        <div class="call-row" style="margin-top:6px;"><strong>Call 2</strong> ~2.5s · streaming · <strong>Problem list</strong>: all clinical issues (acute / established / incidental / deferred). Every Rx item carries <code style="font-size:11px; background:#181c27; padding:1px 4px; border-radius:3px;">for_problem</code> attribution. STG citation required per drug. Formulary JSON injected directly.</div>
+        <div class="call-row" style="margin-top:6px;"><strong>Call 3</strong> ~1.8s · 5-dimension risk assessment: diagnostic uncertainty, iatrogenic risk, delay risk, complication watch, mitigation plan.</div>
+        <div class="call-row" style="margin-top:6px;"><strong>Call 4</strong> ~1.2s · Triage decision + patient instructions. <code style="font-size:11px; background:#181c27; padding:1px 4px; border-radius:3px;">prescription_issued</code> built in Python from Call 2 output — LLM never re-derives the drug list.</div>
+        <div style="margin-top:8px; font-size:11px; color:#4b5563;">Deterministic rule engine runs after Call 4. Can only escalate LOW→HIGH, never downgrade. Config-driven via <code style="font-size:11px; background:#181c27; padding:1px 4px; border-radius:3px;">escalation_rules.json</code> — MO-maintained without code deploys.</div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ SLIDE 4 ═══ -->
+  <div class="slide" id="s4">
+    <div class="slide-label accent-teal">Design Decisions</div>
+    <h1>Key Architecture Principles</h1>
+    <p class="subtitle">Deliberate choices — not defaults. Each has a specific patient safety or operational reason.</p>
+
+    <div style="flex:1; display:grid; grid-template-columns:1fr 1fr; gap:12px; align-content:start;">
+
+      <div class="principle">
+        <div class="principle-icon">🔌</div>
+        <div class="principle-text">
+          <h4 class="accent-blue">Continuous WebSocket, not file uploads</h4>
+          <p>Button presses are timestamp markers on a live stream. Eliminates STT startup latency for Stages 2 and 3. The 1.5s first-token target is only achievable this way.</p>
+        </div>
+      </div>
+
+      <div class="principle">
+        <div class="principle-icon">🚫</div>
+        <div class="principle-text">
+          <h4 class="accent-green">No RAG in History or Diagnosis</h4>
+          <p>LLM general clinical knowledge is reliable for differential generation. RAG belongs only in Management where it governs drug selection — a hallucinated dose causes patient harm.</p>
+        </div>
+      </div>
+
+      <div class="principle">
+        <div class="principle-icon">⚙️</div>
+        <div class="principle-text">
+          <h4 class="accent-amber">Deterministic rule engine for safety decisions</h4>
+          <p>Rules are versioned, MO-maintained, auditable, and deploy independently via <code style="font-size:11px; background:#0f1117; padding:1px 4px; border-radius:3px;">escalation_rules.json</code>. Can only escalate LOW→HIGH. LLM never has final safety authority.</p>
+        </div>
+      </div>
+
+      <div class="principle">
+        <div class="principle-icon">🔒</div>
+        <div class="principle-text">
+          <h4 class="accent-violet">Prescription built in Python, not LLM relay</h4>
+          <p><code style="font-size:11px; background:#0f1117; padding:1px 4px; border-radius:3px;">prescription_issued</code> is assembled from Call 2's problem_list in Python. LLM cannot paraphrase, reorder, or drop drugs when building the handoff package.</p>
+        </div>
+      </div>
+
+      <div class="principle">
+        <div class="principle-icon">🏗️</div>
+        <div class="principle-text">
+          <h4 class="accent-teal">Problem-oriented schema, not single-diagnosis</h4>
+          <p>Management Stage outputs a problem_list covering all clinical issues. Enables correct attribution per drug, handles multi-morbidity, and matches how clinicians actually think.</p>
+        </div>
+      </div>
+
+      <div class="principle">
+        <div class="principle-icon">📦</div>
+        <div class="principle-text">
+          <h4 class="accent-red">Layer 3 epi prior gated by 3-step confirmation</h4>
+          <p>Provisional diagnoses never write back. Gate 1: RDT result. Gate 2: treatment response. Gate 3: doctor agreement. Confidence weight 0.5 → 1.0. Prevents hallucinated data poisoning the prior.</p>
+        </div>
+      </div>
+
+      <div class="principle">
+        <div class="principle-icon">📋</div>
+        <div class="principle-text">
+          <h4 style="color:#e8eaf0;">Vault is append-only after session close</h4>
+          <p>The JSONB session document is the immutable clinical audit trail. Stages write incrementally during the session. Never modified after close — medicolegally important.</p>
+        </div>
+      </div>
+
+      <div class="principle">
+        <div class="principle-icon">🛡️</div>
+        <div class="principle-text">
+          <h4 style="color:#e8eaf0;">Formulary as JSON, not vector store</h4>
+          <p>The essential medicines list is small, structured, and clinic-specific. Direct prompt injection is faster and more controllable than retrieval. Per-clinic stock flags verified at onboarding.</p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ SLIDE 5 ═══ -->
+  <div class="slide" id="s5">
+    <div class="slide-label accent-amber">Build Status</div>
+    <h1>What's Built vs What's Next</h1>
+    <p class="subtitle">Backend pipeline is production-ready for pilot. Mobile, auth, and downstream flows are the remaining surface.</p>
+
+    <div class="status-grid">
+
+      <div>
+        <div style="font-size:11px; font-weight:700; letter-spacing:0.1em; text-transform:uppercase; color:#22c55e; margin-bottom:10px;">● Complete</div>
+
+        <div class="status-item"><div class="dot dot-green"></div><div class="status-item-text"><h4>Orchestrator (orchestrator.py)</h4><p>Full WebSocket session lifecycle, Vault, Deepgram, reconnect, all stage dispatch</p></div></div>
+        <div class="status-item"><div class="dot dot-green"></div><div class="status-item-text"><h4>History Stage (history_stage.py)</h4><p>2-call pipeline, patient record context, streaming questionnaire, new vs returning patient logic</p></div></div>
+        <div class="status-item"><div class="dot dot-green"></div><div class="status-item-text"><h4>Diagnosis Stage (diagnosis_stage.py)</h4><p>3-call pipeline, uncertain_findings, 11-field validated DDx schema, must_not_miss.json</p></div></div>
+        <div class="status-item"><div class="dot dot-green"></div><div class="status-item-text"><h4>Management Stage (management_stage.py)</h4><p>4-call pipeline, RAG, problem_list, risk assessment, Python-built prescription, rule engine</p></div></div>
+        <div class="status-item"><div class="dot dot-green"></div><div class="status-item-text"><h4>epi_utils.py + model_config.py + llm_client.py</h4><p>Shared Gemini client, per-call model tiers, epi prior lookup (all 23 WB districts)</p></div></div>
+        <div class="status-item"><div class="dot dot-green"></div><div class="status-item-text"><h4>Postgres schema (db/schema.sql)</h4><p>sessions, stg_chunks, patient_records, confirmed_encounters</p></div></div>
+        <div class="status-item"><div class="dot dot-green"></div><div class="status-item-text"><h4>STG ingest pipeline (scripts/ingest_stg.py)</h4><p>Chunk → embed → pgvector. Safe to re-run, dedup by content fingerprint</p></div></div>
+        <div class="status-item"><div class="dot dot-green"></div><div class="status-item-text"><h4>Data files (all 4)</h4><p>epi_prior_wb.json, bedside_tools.json, formulary_wb.json, must_not_miss.json, escalation_rules.json</p></div></div>
+      </div>
+
+      <div>
+        <div style="font-size:11px; font-weight:700; letter-spacing:0.1em; text-transform:uppercase; color:#f59e0b; margin-bottom:10px;">○ Not yet built</div>
+
+        <div class="status-item"><div class="dot dot-gray"></div><div class="status-item-text"><h4>React Native mobile app</h4><p>Audio capture, WebSocket client, marker buttons, streaming token display, stage_complete UI</p></div></div>
+        <div class="status-item"><div class="dot dot-gray"></div><div class="status-item-text"><h4>Doctor review interface</h4><p>Review queue sorted by urgency, one-tap approve / modify / reject, prescription edit flow</p></div></div>
+        <div class="status-item"><div class="dot dot-gray"></div><div class="status-item-text"><h4>Notification system</h4><p>HIGH-risk FCM/SMS push to doctor (stub in orchestrator). LOW-risk async queue.</p></div></div>
+        <div class="status-item"><div class="dot dot-gray"></div><div class="status-item-text"><h4>STG corpus embedding</h4><p>NHM STG volumes, NVBDCP malaria ACT protocol (CRITICAL for Rx), kala-azar, TB guidelines — none ingested yet</p></div></div>
+        <div class="status-item"><div class="dot dot-gray"></div><div class="status-item-text"><h4>Patient identity flow</h4><p>How nurse looks up / creates patient record at session start — unresolved (see Slide 6)</p></div></div>
+        <div class="status-item"><div class="dot dot-gray"></div><div class="status-item-text"><h4>Confirmation pipeline (Layer 3 gate)</h4><p>RDT result intake, treatment response follow-up, confirmed_encounters writer</p></div></div>
+        <div class="status-item"><div class="dot dot-amber"></div><div class="status-item-text"><h4>Management Stage → agentic (planned ADR)</h4><p>Currently fixed pipeline. ADR 001 flags this as the natural evolution once fixed pipeline is validated.</p></div></div>
+        <div class="status-item"><div class="dot dot-gray"></div><div class="status-item-text"><h4>Site Administrator Portal</h4><p>MO sign-off UI for clinical config files (escalation_rules.json, must_not_miss.json, formulary)</p></div></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ SLIDE 6 ═══ -->
+  <div class="slide" id="s6">
+    <div class="slide-label accent-red">Blockers &amp; Open Questions</div>
+    <h1>What We Need Answered</h1>
+    <p class="subtitle">Three questions block downstream build. Two are product/clinical decisions — one is an STG ingest execution task.</p>
+
+    <div style="flex:1; display:grid; grid-template-columns:1fr 1fr; gap:18px;">
+
+      <div>
+        <div style="font-size:11px; font-weight:700; letter-spacing:0.1em; text-transform:uppercase; color:#fbbf24; margin-bottom:10px;">Product / Clinical Lead</div>
+
+        <div class="q-card">
+          <div class="owner" style="color:#fbbf24;">Patient Identity</div>
+          <h4>How does the nurse look up or create a patient at session start?</h4>
+          <p>Search by name / village? Physical patient ID card? Auto-create with later dedup? Blocks orchestrator patient-load logic and the mobile registration flow.</p>
+        </div>
+
+        <div class="q-card" style="margin-top:10px;">
+          <div class="owner" style="color:#fbbf24;">Standing Orders — Most Consequential Clinical Question</div>
+          <h4>Can the nurse dispense before the doctor reviews (LOW risk)?</h4>
+          <p>If yes → nurse operates under standing orders and the triage output is framed as a treatment plan. If no → output is framed as a draft pending auth. Determines the entire authorization flow design and the doctor-review interface.</p>
+        </div>
+
+        <div class="q-card" style="margin-top:10px;">
+          <div class="owner" style="color:#fbbf24;">Post-Management Nurse UI</div>
+          <h4>Can the nurse add notes or flag disagreement before the case goes to the doctor?</h4>
+          <p>Affects Management Stage output schema and what fields the doctor review interface must surface.</p>
+        </div>
+      </div>
+
+      <div>
+        <div style="font-size:11px; font-weight:700; letter-spacing:0.1em; text-transform:uppercase; color:#60a5fa; margin-bottom:10px;">Engineering Execution</div>
+
+        <div class="q-card eng-card">
+          <div class="owner" style="color:#60a5fa;">STG Corpus — Blocking RAG in Management Stage</div>
+          <h4>No STG documents have been ingested into pgvector yet</h4>
+          <p>Priority order: NHM STG all volumes → NVBDCP malaria ACT protocol (CRITICAL — Rx depends on this) → NHM kala-azar guidelines → RNTCP/NTP TB guidelines. Run <code style="font-size:11px; background:#0f1117; padding:1px 4px; border-radius:3px;">scripts/ingest_stg.py</code> against each. Similarity threshold 0.55, top-8 per diagnosis.</p>
+        </div>
+
+        <div class="q-card eng-card" style="margin-top:10px;">
+          <div class="owner" style="color:#60a5fa;">Per-Clinic Formulary Verification</div>
+          <h4>formulary_wb.json reflects MoHFW Annexures — not real stock</h4>
+          <p>Before any pilot site goes live, a Medical Officer must verify actual SHC-HWC stock against the formulary. The MO_REVIEW_CHECKLIST.md covers this step.</p>
+        </div>
+
+        <div class="q-card eng-card" style="margin-top:10px;">
+          <div class="owner" style="color:#60a5fa;">Multi-Complaint Differential (Known Gap)</div>
+          <h4>Diagnosis Stage generates one DDx for the primary complaint only</h4>
+          <p>Multi-morbidity patients with two simultaneous acute complaints are handled by the problem_list in Management, but Diagnosis Stage DDx only covers the primary. Logged in ADR 003. Low priority for pilot but needs resolution before scale.</p>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="key-hint">← → arrow keys to navigate</div>
+
+<script>
+  const slides = document.querySelectorAll('.slide');
+  let cur = 0;
+
+  function go(delta) {
+    slides[cur].classList.remove('active');
+    cur = Math.max(0, Math.min(slides.length - 1, cur + delta));
+    slides[cur].classList.add('active');
+    document.getElementById('slide-counter').textContent = (cur + 1) + ' / ' + slides.length;
+    document.getElementById('btn-prev').disabled = cur === 0;
+    document.getElementById('btn-next').disabled = cur === slides.length - 1;
+  }
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') go(1);
+    if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')   go(-1);
+  });
+</script>
+</body>
+</html>
