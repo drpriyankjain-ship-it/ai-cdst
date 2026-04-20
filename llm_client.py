@@ -19,6 +19,15 @@ _RETRY_STATUSES = {503, 429}
 _MAX_RETRIES    = 5
 _BASE_DELAY     = 10.0  # seconds — give Gemini time to recover from overload
 
+_usage_log: list[dict] = []
+
+
+def pop_usage_log() -> list[dict]:
+    """Drain and return all usage entries accumulated since the last call."""
+    global _usage_log
+    entries, _usage_log = _usage_log, []
+    return entries
+
 
 def response_text(response) -> str:
     """Extract full text from a Gemini response, concatenating all parts."""
@@ -64,9 +73,17 @@ async def generate_with_retry(model: str, contents, config=None):
     delay = _BASE_DELAY
     for attempt in range(_MAX_RETRIES):
         try:
-            return await gemini.aio.models.generate_content(
+            response = await gemini.aio.models.generate_content(
                 model=model, contents=contents, config=config
             )
+            u = getattr(response, "usage_metadata", None)
+            if u:
+                _usage_log.append({
+                    "model":         model,
+                    "input_tokens":  getattr(u, "prompt_token_count",      0) or 0,
+                    "output_tokens": getattr(u, "candidates_token_count",  0) or 0,
+                })
+            return response
         except APIError as e:
             if e.code not in _RETRY_STATUSES or attempt == _MAX_RETRIES - 1:
                 raise

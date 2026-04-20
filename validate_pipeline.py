@@ -65,6 +65,7 @@ from management_stage import (
     run_rule_engine,
     load_formulary,
 )
+from llm_client import pop_usage_log
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -157,7 +158,7 @@ def print_summary(report: dict) -> None:
         print("Rule engine triggers : none")
 
     if h.get("stg_rag_warning"):
-        print(f"\n⚠  {h['stg_rag_warning']}")
+        print(f"\n[!] {h['stg_rag_warning']}")
 
     print("\nTop differential:")
     for dx in report["call_outputs"]["D2_differential_table"][:3]:
@@ -400,6 +401,21 @@ def prompt_phase_splits(full_transcript: str) -> tuple[str, str, str]:
 
 # ── Track 1: Direct LLM validation ───────────────────────────────────────────
 
+def _perf_entry(elapsed: float, usage_entries: list) -> dict:
+    inp = sum(e.get("input_tokens", 0)  for e in usage_entries)
+    out = sum(e.get("output_tokens", 0) for e in usage_entries)
+    return {"elapsed_s": round(elapsed, 1), "input_tokens": inp, "output_tokens": out, "total_tokens": inp + out}
+
+
+def _sum_perf(entries: list[dict]) -> dict:
+    return {
+        "elapsed_s":     round(sum(e["elapsed_s"]     for e in entries), 1),
+        "input_tokens":  sum(e["input_tokens"]         for e in entries),
+        "output_tokens": sum(e["output_tokens"]        for e in entries),
+        "total_tokens":  sum(e["total_tokens"]         for e in entries),
+    }
+
+
 async def run_track1(
     phase_1: str,
     phase_2: str,
@@ -434,12 +450,15 @@ async def run_track1(
 
     call_outputs    = {}
     vault_snapshots = {}
+    call_perf       = {}
 
     # ── H1 ────────────────────────────────────────────────────────────────────
     print("H1  extract_chief_complaint …", end=" ", flush=True)
-    t0 = time.perf_counter()
+    stage_t0 = t0 = time.perf_counter()
     h1 = await extract_chief_complaint(phase_1, vault)
-    print(f"{time.perf_counter() - t0:.1f}s")
+    elapsed = time.perf_counter() - t0
+    print(f"{elapsed:.1f}s")
+    call_perf["H1"] = _perf_entry(elapsed, pop_usage_log())
     call_outputs["H1_chief_complaint"] = h1
     vault.update({"chief_complaint": h1})
 
@@ -448,7 +467,9 @@ async def run_track1(
     t0 = time.perf_counter()
     h2 = await generate_questionnaire(h1, vault, baseline, epi, patient_record={})
     h2 = validate_questionnaire(h2)
-    print(f"{time.perf_counter() - t0:.1f}s")
+    elapsed = time.perf_counter() - t0
+    print(f"{elapsed:.1f}s")
+    call_perf["H2"] = _perf_entry(elapsed, pop_usage_log())
     call_outputs["H2_questionnaire"] = h2
     vault.update({
         "questionnaire":           h2,
@@ -456,12 +477,15 @@ async def run_track1(
         "history_stage_completed_at": now_iso(),
     })
     vault_snapshots["after_history_stage"] = copy.deepcopy(vault)
+    history_elapsed = time.perf_counter() - stage_t0
 
     # ── D1 ────────────────────────────────────────────────────────────────────
     print("D1  extract_medical_concepts …", end=" ", flush=True)
-    t0 = time.perf_counter()
+    stage_t0 = t0 = time.perf_counter()
     d1 = await extract_medical_concepts(phase_2, vault)
-    print(f"{time.perf_counter() - t0:.1f}s")
+    elapsed = time.perf_counter() - t0
+    print(f"{elapsed:.1f}s")
+    call_perf["D1"] = _perf_entry(elapsed, pop_usage_log())
     call_outputs["D1_extracted_concepts"] = d1
     vault.update({"extracted_concepts": d1})
 
@@ -469,7 +493,9 @@ async def run_track1(
     print("D2  generate_differential …", end=" ", flush=True)
     t0 = time.perf_counter()
     d2 = await generate_differential(d1, vault, baseline, epi)
-    print(f"{time.perf_counter() - t0:.1f}s")
+    elapsed = time.perf_counter() - t0
+    print(f"{elapsed:.1f}s")
+    call_perf["D2"] = _perf_entry(elapsed, pop_usage_log())
     call_outputs["D2_differential_table"] = d2
     vault.update({"differential_table": d2})
 
@@ -477,7 +503,9 @@ async def run_track1(
     print("D3  generate_clarifying_questions …", end=" ", flush=True)
     t0 = time.perf_counter()
     d3 = await generate_clarifying_questions(d2, d1, vault)
-    print(f"{time.perf_counter() - t0:.1f}s")
+    elapsed = time.perf_counter() - t0
+    print(f"{elapsed:.1f}s")
+    call_perf["D3"] = _perf_entry(elapsed, pop_usage_log())
     call_outputs["D3_clarifying_questions"] = d3
     vault.update({
         "clarifying_questions":       d3,
@@ -485,12 +513,15 @@ async def run_track1(
         "diagnosis_stage_completed_at": now_iso(),
     })
     vault_snapshots["after_diagnosis_stage"] = copy.deepcopy(vault)
+    diagnosis_elapsed = time.perf_counter() - stage_t0
 
     # ── M1 ────────────────────────────────────────────────────────────────────
     print("M1  extract_clarifying_findings …", end=" ", flush=True)
-    t0 = time.perf_counter()
+    stage_t0 = t0 = time.perf_counter()
     m1 = await extract_clarifying_findings(phase_3, vault)
-    print(f"{time.perf_counter() - t0:.1f}s")
+    elapsed = time.perf_counter() - t0
+    print(f"{elapsed:.1f}s")
+    call_perf["M1"] = _perf_entry(elapsed, pop_usage_log())
     call_outputs["M1_clarifying_findings"] = m1
     vault.update({"clarifying_findings": m1})
 
@@ -498,7 +529,9 @@ async def run_track1(
     print("M2  generate_provisional_diagnosis_and_rx …", end=" ", flush=True)
     t0 = time.perf_counter()
     m2 = await generate_provisional_diagnosis_and_rx(m1, vault, stg_context="", formulary=formulary)
-    print(f"{time.perf_counter() - t0:.1f}s")
+    elapsed = time.perf_counter() - t0
+    print(f"{elapsed:.1f}s")
+    call_perf["M2"] = _perf_entry(elapsed, pop_usage_log())
     call_outputs["M2_problem_list"] = m2
     vault.update({"problem_list": m2})
 
@@ -506,7 +539,9 @@ async def run_track1(
     print("M3  generate_risk_assessment …", end=" ", flush=True)
     t0 = time.perf_counter()
     m3 = await generate_risk_assessment(m2, m1, vault)
-    print(f"{time.perf_counter() - t0:.1f}s")
+    elapsed = time.perf_counter() - t0
+    print(f"{elapsed:.1f}s")
+    call_perf["M3"] = _perf_entry(elapsed, pop_usage_log())
     call_outputs["M3_risk_assessment"] = m3
     vault.update({"risk_assessment": m3})
 
@@ -514,9 +549,12 @@ async def run_track1(
     print("M4  generate_triage_and_handoff …", end=" ", flush=True)
     t0 = time.perf_counter()
     m4 = await generate_triage_and_handoff(m2, m3, vault)
-    print(f"{time.perf_counter() - t0:.1f}s")
+    elapsed = time.perf_counter() - t0
+    print(f"{elapsed:.1f}s")
+    call_perf["M4"] = _perf_entry(elapsed, pop_usage_log())
     call_outputs["M4_triage_output"] = m4
     vault.update({"triage_output": m4})
+    management_elapsed = time.perf_counter() - stage_t0
 
     # ── Rule engine ───────────────────────────────────────────────────────────
     print("Rule engine …", end=" ", flush=True)
@@ -558,10 +596,26 @@ async def run_track1(
         "stg_rag_warning":      "STG not ingested — M2 prescription not STG-grounded",
     }
 
+    def _stage(elapsed, keys):
+        s = _sum_perf([call_perf[k] for k in keys])
+        s["elapsed_s"] = round(elapsed, 1)
+        return s
+
+    perf = {
+        "calls": call_perf,
+        "stages": {
+            "history":    _stage(history_elapsed,    ["H1", "H2"]),
+            "diagnosis":  _stage(diagnosis_elapsed,  ["D1", "D2", "D3"]),
+            "management": _stage(management_elapsed, ["M1", "M2", "M3", "M4"]),
+        },
+        "total": _sum_perf(list(call_perf.values())),
+    }
+
     return {
         "call_outputs":    call_outputs,
         "vault_snapshots": vault_snapshots,
         "highlights":      highlights,
+        "perf":            perf,
     }
 
 
