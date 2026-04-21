@@ -5,7 +5,6 @@ Shared Gemini client instance imported by all three stage files.
 API key is read from the GEMINI_API_KEY environment variable.
 """
 
-import asyncio
 import logging
 
 from google import genai
@@ -15,9 +14,7 @@ log = logging.getLogger(__name__)
 
 gemini = genai.Client()
 
-_RETRY_STATUSES = {503, 429}
-_MAX_RETRIES    = 5
-_BASE_DELAY     = 10.0  # seconds — give Gemini time to recover from overload
+_CASCADE_STATUSES = {503, 404, 429}  # cascade to next model on these; raise immediately on others
 
 _usage_log: list[dict] = []
 
@@ -68,10 +65,10 @@ def parse_json_response(text: str) -> dict | list:
     raise _json.JSONDecodeError("Cannot parse JSON from Gemini response — see DEBUG above", t, 0)
 
 
-async def generate_with_retry(model: str, contents, config=None):
-    """Async generate_content with exponential backoff on 503/429."""
-    delay = _BASE_DELAY
-    for attempt in range(_MAX_RETRIES):
+async def generate_with_cascade(models: list[str], contents, config=None):
+    """Try each model in order; cascade to the next on 503/404/429."""
+    last_err = None
+    for model in models:
         try:
             response = await gemini.aio.models.generate_content(
                 model=model, contents=contents, config=config
@@ -80,13 +77,35 @@ async def generate_with_retry(model: str, contents, config=None):
             if u:
                 _usage_log.append({
                     "model":         model,
-                    "input_tokens":  getattr(u, "prompt_token_count",      0) or 0,
-                    "output_tokens": getattr(u, "candidates_token_count",  0) or 0,
+                    "input_tokens":  getattr(u, "prompt_token_count",     0) or 0,
+                    "output_tokens": getattr(u, "candidates_token_count", 0) or 0,
                 })
+            if model != models[0]:
+                log.warning("Cascade: used %s (primary %s unavailable)", model, models[0])
             return response
         except APIError as e:
-            if e.code not in _RETRY_STATUSES or attempt == _MAX_RETRIES - 1:
+            if e.code not in _CASCADE_STATUSES:
                 raise
-            log.warning("Gemini %s on attempt %d — retrying in %.0fs", e.code, attempt + 1, delay)
-            await asyncio.sleep(delay)
-            delay *= 2
+            last_err = e
+            log.warning("Gemini %s on %s — cascading to next model", e.code, model)
+    raise last_err
+
+
+async def stream_with_cascade(models: list[str], contents, config=None):
+    """Try each model in order for streaming; cascade only if no tokens have been yielded yet."""
+    last_err = None
+    for model in models:
+        try:
+            started = False
+            async for chunk in gemini.aio.models.generate_content_stream(
+                model=model, contents=contents, config=config
+            ):
+                started = True
+                yield chunk
+            return
+        except APIError as e:
+            if started or e.code not in _CASCADE_STATUSES:
+                raise
+            last_err = e
+            log.warning("Gemini %s on %s (pre-stream) — cascading to next model", e.code, model)
+    raise last_err

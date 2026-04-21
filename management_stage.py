@@ -43,7 +43,7 @@ from google.genai import types
 from pydantic import BaseModel
 
 from epi_utils import state_from_district_code
-from llm_client import gemini, generate_with_retry, parse_json_response, response_text
+from llm_client import gemini, generate_with_cascade, stream_with_cascade, parse_json_response, response_text
 from model_config import (
     MODEL_M1_FINDINGS, MODEL_M2_PRESCRIPTION,
     MODEL_M3_RISK, MODEL_M4_TRIAGE,
@@ -449,8 +449,8 @@ async def extract_clarifying_findings(
         ),
     ])
 
-    response = await generate_with_retry(
-        model=MODEL_M1_FINDINGS,
+    response = await generate_with_cascade(
+        models=MODEL_M1_FINDINGS,
         contents=prompt,
         config=types.GenerateContentConfig(
             system_instruction="You are a clinical data extraction tool. Extract only what is explicitly stated in the transcript. Do not infer or interpret.",
@@ -564,8 +564,8 @@ async def generate_provisional_diagnosis_and_rx(
         ),
     ])
 
-    response = await generate_with_retry(
-        model=MODEL_M2_PRESCRIPTION,
+    response = await generate_with_cascade(
+        models=MODEL_M2_PRESCRIPTION,
         contents=prompt,
         config=types.GenerateContentConfig(
             system_instruction=(
@@ -732,8 +732,8 @@ async def generate_risk_assessment(
         ),
     ])
 
-    response = await generate_with_retry(
-        model=MODEL_M3_RISK,
+    response = await generate_with_cascade(
+        models=MODEL_M3_RISK,
         contents=prompt,
         config=types.GenerateContentConfig(
             system_instruction=(
@@ -830,7 +830,11 @@ async def generate_triage_and_handoff(
       }
     }
     """
-    demographics  = vault_context.get("demographics", {})
+    demographics  = dict(vault_context.get("demographics", {}))
+    cc = vault_context.get("chief_complaint", {})
+    if not demographics.get("age")  and cc.get("age"):           demographics["age"]  = cc["age"]
+    if not demographics.get("sex")  and cc.get("sex"):           demographics["sex"]  = cc["sex"]
+    if not demographics.get("name") and cc.get("patient_name"):  demographics["name"] = cc["patient_name"]
     ddx           = vault_context.get("differential_table", [])
     district_code = vault_context.get("gps", {}).get("district_code", "WB_UNKNOWN")
     state_name    = state_from_district_code(district_code)
@@ -913,8 +917,8 @@ async def generate_triage_and_handoff(
         ),
     ]))
 
-    response = await generate_with_retry(
-        model=MODEL_M4_TRIAGE,
+    response = await generate_with_cascade(
+        models=MODEL_M4_TRIAGE,
         contents=prompt,
         config=types.GenerateContentConfig(
             system_instruction=(
@@ -1420,8 +1424,8 @@ async def stream_management(
         "4) Key instructions for the nurse"
     )
 
-    async for chunk in gemini.aio.models.generate_content_stream(
-        model=MODEL_M4_TRIAGE,
+    async for chunk in stream_with_cascade(
+        MODEL_M4_TRIAGE,
         contents=stream_prompt,
         config=types.GenerateContentConfig(max_output_tokens=1500),
     ):

@@ -34,7 +34,7 @@ from epi_utils import (
     load_baseline_diseases,
     load_epi_prior,
 )
-from llm_client import gemini, generate_with_retry, parse_json_response, response_text
+from llm_client import gemini, generate_with_cascade, stream_with_cascade, parse_json_response, response_text
 from model_config import MODEL_D1_CONCEPTS, MODEL_D2_DIFFERENTIAL, MODEL_D3_CLARIFYING
 
 
@@ -373,8 +373,8 @@ async def extract_medical_concepts(
         ),
     ])
 
-    response = await generate_with_retry(
-        model=MODEL_D1_CONCEPTS,
+    response = await generate_with_cascade(
+        models=MODEL_D1_CONCEPTS,
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -445,8 +445,8 @@ async def generate_differential(
         instructions,
     ])
 
-    response = await generate_with_retry(
-        model=MODEL_D2_DIFFERENTIAL,
+    response = await generate_with_cascade(
+        models=MODEL_D2_DIFFERENTIAL,
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -493,8 +493,8 @@ async def stream_differential(
         epi_layer if epi_layer else "",
     ])
 
-    async for chunk in gemini.aio.models.generate_content_stream(
-        model=MODEL_D2_DIFFERENTIAL,
+    async for chunk in stream_with_cascade(
+        MODEL_D2_DIFFERENTIAL,
         contents=prompt,
         config=types.GenerateContentConfig(max_output_tokens=1500),
     ):
@@ -681,8 +681,8 @@ async def generate_clarifying_questions(
         instructions,
     ])
 
-    response = await generate_with_retry(
-        model=MODEL_D3_CLARIFYING,
+    response = await generate_with_cascade(
+        models=MODEL_D3_CLARIFYING,
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",

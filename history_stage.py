@@ -55,7 +55,7 @@ from epi_utils import (
     load_baseline_diseases,
     load_epi_prior,
 )
-from llm_client import gemini, generate_with_retry, parse_json_response, response_text
+from llm_client import gemini, generate_with_cascade, stream_with_cascade, parse_json_response, response_text
 from model_config import MODEL_H1_CHIEF_COMPLAINT, MODEL_H2_QUESTIONNAIRE
 
 
@@ -344,8 +344,8 @@ async def extract_chief_complaint(
         ),
     ])
 
-    response = await generate_with_retry(
-        model=MODEL_H1_CHIEF_COMPLAINT,
+    response = await generate_with_cascade(
+        models=MODEL_H1_CHIEF_COMPLAINT,
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -605,8 +605,8 @@ async def generate_questionnaire(
         ),
     ]))
 
-    response = await generate_with_retry(
-        model=MODEL_H2_QUESTIONNAIRE,
+    response = await generate_with_cascade(
+        models=MODEL_H2_QUESTIONNAIRE,
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -694,8 +694,8 @@ async def stream_questionnaire(
         ),
     ]))
 
-    async for chunk in gemini.aio.models.generate_content_stream(
-        model=MODEL_H2_QUESTIONNAIRE,
+    async for chunk in stream_with_cascade(
+        MODEL_H2_QUESTIONNAIRE,
         contents=prompt,
         config=types.GenerateContentConfig(max_output_tokens=1500),
     ):
