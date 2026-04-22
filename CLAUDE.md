@@ -47,13 +47,19 @@ cdst/
 │   │   ├── cdst_full_pipeline.html           # Full system architecture diagram
 │   │   ├── continuous_stream_pipeline.html   # Audio streaming architecture diagram
 │   │   └── rag_brief.md                      # Engineering brief for RAG setup
-│   └── clinical/
-│       ├── MO_REVIEW_CHECKLIST.md            # Site onboarding checklist for Medical Officers
-│       ├── bedside_tools_crosscheck.md       # Guideline citations for bedside_tools.json
-│       ├── high_risk_escalation_rules.md     # Human-readable guide to escalation_rules.json
-│       └── source-materials/                 # Raw source PDFs (MoHFW guidelines, STG volumes)
+│   ├── clinical/
+│   │   ├── MO_REVIEW_CHECKLIST.md            # Site onboarding checklist for Medical Officers
+│   │   ├── bedside_tools_crosscheck.md       # Guideline citations for bedside_tools.json
+│   │   ├── high_risk_escalation_rules.md     # Human-readable guide to escalation_rules.json
+│   │   └── source-materials/                 # Raw source PDFs (MoHFW guidelines, STG volumes)
+│   └── validation/
+│       ├── run_NNN_<patient>_<date>.md       # Per-run narrative notes
+│       ├── validation_1_english.txt          # Test transcript (english, patient FKP1192)
+│       └── validation_output_<timestamp>.json # Raw JSON output from validate_pipeline.py runs
 ├── scripts/
 │   └── ingest_stg.py           # STG embedding pipeline (chunk → embed → pgvector)
+├── evals/
+│   └── validate_pipeline.py    # End-to-end pipeline eval harness — run against transcripts in docs/validation/
 └── CLAUDE.md                   # This file
 ```
 
