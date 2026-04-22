@@ -103,6 +103,7 @@ CREATE TABLE stg_chunks (
     chunk_id        SERIAL PRIMARY KEY,
     source          TEXT NOT NULL,          -- e.g. "NHM_STG_2023_malaria"
     disease         TEXT,                   -- primary disease tag for filtering
+    section         TEXT,                   -- e.g. "dosing", "diagnosis", "contraindications"
     content         TEXT NOT NULL,
     embedding       vector(384),            -- MiniLM-L6-v2 dimension
     created_at      TIMESTAMPTZ DEFAULT now()
@@ -116,13 +117,33 @@ CREATE INDEX ON stg_chunks (disease);
 
 
 -- ============================================================
+-- updated_at triggers
+-- ============================================================
+CREATE OR REPLACE FUNCTION set_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER sessions_updated_at
+    BEFORE UPDATE ON sessions
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TRIGGER patient_records_updated_at
+    BEFORE UPDATE ON patient_records
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+
+-- ============================================================
 -- Audio retention cleanup
 -- A scheduled job (cron or pg_cron) runs this daily to identify
 -- sessions whose audio retention window has expired.
 -- The job deletes from object storage then nulls the audio URL.
 -- ============================================================
 CREATE INDEX ON sessions
-    ((data->>'session_ended_at'))
+    ((data->'audio'->>'retain_until'))
     WHERE data ? 'audio';
 
 -- Convenience: find all sessions with audio expiring today or earlier
