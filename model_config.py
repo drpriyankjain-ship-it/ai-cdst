@@ -18,9 +18,9 @@ adequately and keeps stage latency under ~8s. Promote to TIER_BEST if quality
 regressions are observed across a validation run set.
 """
 
-TIER_FAST     = ["gemini-2.5-flash-lite"]
-TIER_STANDARD = ["gemini-2.5-flash", "gemini-2.5-pro"]
-TIER_BEST     = ["gemini-2.5-pro", "gemini-2.5-flash"]
+TIER_FAST     = ["gemini-3.1-flash-lite-preview", "gemini-2.5-flash-lite"]
+TIER_STANDARD = ["gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-pro"]
+TIER_BEST     = ["gemini-3.1-pro-preview", "gemini-2.5-pro", "gemini-2.5-flash"]
 
 # ── History Stage ────────────────────────────────────────────────────────────
 MODEL_H1_CHIEF_COMPLAINT = TIER_FAST       # extract_chief_complaint — extraction only
