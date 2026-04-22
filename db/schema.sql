@@ -222,3 +222,75 @@ CREATE TABLE confirmed_encounters (
 -- WHERE district_code = $1 AND month = $2
 -- GROUP BY disease
 -- ORDER BY weighted_count DESC;
+
+
+-- ============================================================
+-- Clinics / facilities
+-- One row per physical facility. Drives formulary selection,
+-- epi prior lookup, and HIGH risk doctor routing.
+-- ============================================================
+CREATE TABLE clinics (
+    clinic_id       TEXT PRIMARY KEY,           -- e.g. "C-042"
+    name            TEXT NOT NULL,
+    facility_type   TEXT NOT NULL CHECK (facility_type IN ('SHC', 'HWC', 'PHC', 'CHC')),
+    district_code   TEXT NOT NULL,              -- must match keys in epi_prior_*.json
+    district        TEXT NOT NULL,              -- human-readable district name
+    state_code      TEXT NOT NULL,              -- e.g. 'WB', 'MH' — selects epi prior file
+    formulary_file  TEXT NOT NULL,              -- filename in data/ e.g. 'formulary_wb_shc.json'
+    lat             NUMERIC(9,6),
+    lng             NUMERIC(9,6),
+    active          BOOLEAN NOT NULL DEFAULT true,
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    updated_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX ON clinics (district_code);
+CREATE INDEX ON clinics (state_code);
+
+CREATE TRIGGER clinics_updated_at
+    BEFORE UPDATE ON clinics
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+
+-- ============================================================
+-- Users — nurses, doctors, admins
+-- Single table; role discriminates behaviour.
+-- Auth is owned here (password_hash). To migrate to Firebase Auth
+-- later: add firebase_uid TEXT UNIQUE, drop password_hash, swap
+-- the login endpoint. Nothing else in the system changes.
+-- ============================================================
+CREATE TABLE users (
+    user_id         TEXT PRIMARY KEY,           -- e.g. "N-001", "D-007"
+    role            TEXT NOT NULL CHECK (role IN ('nurse', 'doctor', 'admin')),
+    name            TEXT NOT NULL,
+    phone           TEXT,                       -- required for nurses and doctors; optional for admins
+    CONSTRAINT phone_required_for_clinical_roles CHECK (role = 'admin' OR phone IS NOT NULL),
+    email           TEXT UNIQUE,
+    password_hash   TEXT NOT NULL,              -- bcrypt; replace with firebase_uid to migrate auth
+    clinic_id       TEXT REFERENCES clinics(clinic_id),  -- nurses: home clinic; null for doctors/admins
+    fcm_token       TEXT,                       -- updated by device on each login
+    language_pref   TEXT NOT NULL DEFAULT 'en', -- output language for stage responses (e.g. 'en', 'bn')
+    active          BOOLEAN NOT NULL DEFAULT true,
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    updated_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX ON users (clinic_id);
+CREATE INDEX ON users (role);
+
+CREATE TRIGGER users_updated_at
+    BEFORE UPDATE ON users
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+
+-- ============================================================
+-- Doctor–clinic assignments
+-- One doctor may cover multiple clinics (common in rural settings
+-- where one MO covers several SHCs). Used by the orchestrator to
+-- route HIGH risk notifications to the right doctor.
+-- ============================================================
+CREATE TABLE doctor_clinic_assignments (
+    doctor_id       TEXT NOT NULL REFERENCES users(user_id),
+    clinic_id       TEXT NOT NULL REFERENCES clinics(clinic_id),
+    PRIMARY KEY (doctor_id, clinic_id)
+);
