@@ -376,9 +376,8 @@ _SCHEMA_TRIAGE_HANDOFF = {
         "triage": {
             "type": "object",
             "properties": {
-                "tier":      {"type": "string", "enum": ["LOW", "HIGH"]},
-                "rationale": {"type": "string"},
-                "action":    {"type": "string"},
+                # tier, action, rationale are injected deterministically from the rule engine
+                # after M3 and M4 complete in parallel — not LLM-generated.
                 "referral": {
                     "type": "object",
                     "properties": {
@@ -390,7 +389,7 @@ _SCHEMA_TRIAGE_HANDOFF = {
                     "required": ["required", "urgency", "facility", "reason"],
                 },
             },
-            "required": ["tier", "rationale", "action", "referral"],
+            "required": ["referral"],
         },
         "patient_instructions": {
             "type": "object",
@@ -407,16 +406,16 @@ _SCHEMA_TRIAGE_HANDOFF = {
         "doctor_handoff": {
             "type": "object",
             "properties": {
-                "one_liner":                 {"type": "string"},
-                "clinical_summary":          {"type": "string"},
-                "differential_table":        {"type": "string"},
-                "key_risks_flagged":         {"type": "array", "items": {"type": "string"}},
-                "questions_for_doctor":      {"type": "array", "items": {"type": "string"}},
-                "authorization_required_by": {"type": "string"},
+                "one_liner":            {"type": "string"},
+                "clinical_summary":     {"type": "string"},
+                "differential_table":   {"type": "string"},
+                "key_risks_flagged":    {"type": "array", "items": {"type": "string"}},
+                "questions_for_doctor": {"type": "array", "items": {"type": "string"}},
+                # authorization_required_by injected from rule engine post-hoc
             },
             "required": [
                 "one_liner", "clinical_summary", "differential_table",
-                "key_risks_flagged", "questions_for_doctor", "authorization_required_by",
+                "key_risks_flagged", "questions_for_doctor",
             ],
         },
     },
@@ -863,7 +862,6 @@ def _build_prescription_issued(all_drugs: list) -> str:
 
 async def generate_triage_and_handoff(
     problem_list_output: dict,
-    risk_assessment: dict,
     vault_context: dict,
 ) -> dict:
     """
@@ -935,39 +933,24 @@ async def generate_triage_and_handoff(
         f"(not medical terminology)."
     )
 
-    risk_tier = risk_assessment.get(
-        "mitigation_plan", {}
-    ).get("overall_risk_tier", "HIGH")   # default to HIGH if missing
-
-    hours_to_auth = 4 if risk_tier == "LOW" else 0
-    auth_deadline = (
-        "IMMEDIATE — do not proceed without doctor contact"
-        if hours_to_auth == 0
-        else (datetime.now() + timedelta(hours=hours_to_auth)).strftime("%H:%M %d %b")
-    )
-
     prompt = "\n\n".join(filter(None, [
-        "Generate the triage decision, patient instructions, and doctor handoff "
-        "package based on the risk assessment below.",
+        "Generate the triage referral assessment, patient instructions, and doctor handoff "
+        "package for this consultation.",
         f"PATIENT:\n{json.dumps(demographics, indent=2)}",
         f"PROBLEM LIST:\n{json.dumps(problem_list_output, indent=2)}",
         f"ALL PRESCRIBED DRUGS (across all problems):\n{json.dumps(all_drugs, indent=2)}",
         f"PRESCRIPTION RECORD (pre-formatted — use verbatim for treatment_summary):\n{prescription_issued}",
-        f"RISK ASSESSMENT:\n{json.dumps(risk_assessment, indent=2)}",
         f"FULL DIFFERENTIAL:\n{json.dumps(ddx[:3], indent=2)}",
-        f"RISK TIER FROM ASSESSMENT: {risk_tier}",
-        f"AUTHORIZATION DEADLINE: {auth_deadline}",
         language_instruction or None,
         (
             "INSTRUCTIONS:\n\n"
-            "TRIAGE:\n"
-            "- tier must match overall_risk_tier from the risk assessment — do not change it\n"
-            "- action must be a specific, unambiguous instruction to the nurse\n"
-            "- if HIGH: state explicitly whether the nurse should call the doctor now "
-            "or refer the patient immediately, and to which facility\n"
-            "- referral facility: the nurse is already at a PHC/sub-centre — "
-            "use the lowest appropriate higher-level facility "
-            "(CHC before district hospital before tertiary)\n\n"
+            "TRIAGE REFERRAL:\n"
+            "- Assess whether this patient needs referral to a higher facility based on the clinical picture\n"
+            "- required: true only if higher-level facility care is clinically necessary\n"
+            "- facility: the nurse is at a PHC/sub-centre — use the lowest appropriate level "
+            "(CHC before district hospital before tertiary); use 'not required' if no referral needed\n"
+            "- urgency: estimate based on acuity (immediate / within 2 hours / within 24 hours / not required)\n"
+            "- reason: specific clinical reason for referral (or 'not required')\n\n"
             "PATIENT INSTRUCTIONS:\n"
             "- diagnosis_explained: plain language only — no medical jargon; "
             "explain what is wrong and why the treatment helps\n"
@@ -980,19 +963,17 @@ async def generate_triage_and_handoff(
             "- follow_up: specific timeframe and named location\n\n"
             "DOCTOR HANDOFF:\n"
             "- one_liner: '[age][sex], [chief complaint] x [duration], "
-            "N problems: #1 [acute Dx], #2 [condition], ..., "
-            "prescribed [all drugs with doses], risk tier [LOW/HIGH]'\n"
+            "N problems: #1 [acute Dx], #2 [condition], ..., prescribed [all drugs with doses]'\n"
             "- clinical_summary: structured summary covering all problems in the problem list — "
             "full reasoning for acute_new; one-line status for established/incidental/deferred; "
             "key findings from all three phases\n"
-            "- key_risks_flagged: list every risk from the risk assessment "
-            "that requires doctor attention or judgment\n"
+            "- key_risks_flagged: clinical risks requiring doctor attention or judgment "
+            "(include drug interactions, diagnostic uncertainties, high-risk features)\n"
             "- questions_for_doctor: genuine clinical uncertainties needing "
             "doctor judgment — not administrative questions\n"
             "- doctor_handoff fields must always be written in English only, "
             "regardless of the consultation language — clinical handoff to a doctor "
             "must not be translated or romanised\n"
-            f"- authorization_required_by: use exactly this value: {auth_deadline}"
         ),
     ]))
 
@@ -1360,18 +1341,13 @@ async def _run_pipeline(
     )
     acute_confidence = (first_acute or {}).get("assessment", {}).get("confidence", "high")
 
-    # Call 3 — risk assessment
-    print(f"[{session_id}] Call 3: five-dimension risk assessment")
-    risk_assessment = await generate_risk_assessment(
-        problem_list_output, clarifying_findings, vault_context
+    # Calls 3 and 4 — parallel: risk assessment and triage/handoff both depend only on M2
+    print(f"[{session_id}] Calls 3+4: risk assessment and triage handoff (parallel)")
+    risk_assessment, triage_output = await asyncio.gather(
+        generate_risk_assessment(problem_list_output, clarifying_findings, vault_context),
+        generate_triage_and_handoff(problem_list_output, vault_context),
     )
     await vault.update({"risk_assessment": risk_assessment})
-
-    # Call 4 — triage + handoff
-    print(f"[{session_id}] Call 4: triage decision and doctor handoff")
-    triage_output = await generate_triage_and_handoff(
-        problem_list_output, risk_assessment, vault_context
-    )
 
     # Rule engine gate
     print(f"[{session_id}] Rule engine: deterministic safety check")
@@ -1390,9 +1366,30 @@ async def _run_pipeline(
         acute_confidence=acute_confidence,
     )
 
-    # Merge rule engine tier into triage output
-    triage_output["triage"]["tier"]          = rule_result["final_risk_tier"]
-    triage_output["triage"]["rule_engine"]   = rule_result
+    # Inject deterministic fields into triage output from rule engine + M3.
+    # tier, action, rationale, and the authorization deadline are not LLM-generated —
+    # they are safety-critical decisions that must come from auditable deterministic sources.
+    final_tier    = rule_result["final_risk_tier"]
+    hours_to_auth = 0 if final_tier == "HIGH" else 4
+    auth_deadline = (
+        "IMMEDIATE — do not proceed without doctor contact"
+        if hours_to_auth == 0
+        else (datetime.now() + timedelta(hours=hours_to_auth)).strftime("%H:%M %d %b")
+    )
+    triage_output.setdefault("triage", {})
+    triage_output["triage"]["tier"]       = final_tier
+    triage_output["triage"]["action"]     = (
+        "Call the referring doctor immediately. Do not dispense any medication "
+        "until you have spoken to the doctor."
+        if final_tier == "HIGH" else
+        "Proceed with the prescribed treatment plan. "
+        "The doctor will review this case within 4 hours."
+    )
+    triage_output["triage"]["rationale"]  = (
+        risk_assessment.get("mitigation_plan", {}).get("risk_tier_rationale", "")
+    )
+    triage_output["triage"]["rule_engine"] = rule_result
+    triage_output.setdefault("doctor_handoff", {})["authorization_required_by"] = auth_deadline
 
     await vault.update({
         "triage_output":                   triage_output,

@@ -32,7 +32,7 @@ import subprocess
 import sys
 import textwrap
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Load .env from the repo root before anything else reads os.environ
@@ -535,24 +535,23 @@ async def run_track1(
     call_outputs["M2_problem_list"] = m2
     vault.update({"problem_list": m2})
 
-    # ── M3 ────────────────────────────────────────────────────────────────────
+    # ── M3 + M4 parallel ─────────────────────────────────────────────────────
+    # Both depend only on M2. tier/action/rationale/deadline injected from rule engine.
     print("M3  generate_risk_assessment …", end=" ", flush=True)
+    print("M4  generate_triage_and_handoff … (parallel)", end=" ", flush=True)
     t0 = time.perf_counter()
-    m3 = await generate_risk_assessment(m2, m1, vault)
+    m3, m4 = await asyncio.gather(
+        generate_risk_assessment(m2, m1, vault),
+        generate_triage_and_handoff(m2, vault),
+    )
     elapsed = time.perf_counter() - t0
-    print(f"{elapsed:.1f}s")
+    m3_elapsed = m4_elapsed = elapsed  # wall-clock for parallel block; individual not separately measured
+    print(f"{elapsed:.1f}s (wall)")
     call_perf["M3"] = _perf_entry(elapsed, pop_usage_log())
+    call_perf["M4"] = _perf_entry(elapsed, [])
     call_outputs["M3_risk_assessment"] = m3
+    call_outputs["M4_triage_output"]   = m4
     vault.update({"risk_assessment": m3})
-
-    # ── M4 ────────────────────────────────────────────────────────────────────
-    print("M4  generate_triage_and_handoff …", end=" ", flush=True)
-    t0 = time.perf_counter()
-    m4 = await generate_triage_and_handoff(m2, m3, vault)
-    elapsed = time.perf_counter() - t0
-    print(f"{elapsed:.1f}s")
-    call_perf["M4"] = _perf_entry(elapsed, pop_usage_log())
-    call_outputs["M4_triage_output"] = m4
     vault.update({"triage_output": m4})
     management_elapsed = time.perf_counter() - stage_t0
 
@@ -571,8 +570,27 @@ async def run_track1(
         extracted_concepts=d1,
         acute_confidence=acute_confidence,
     )
-    final_tier = rule_result["final_risk_tier"]
-    m4.setdefault("triage", {})["tier"] = final_tier
+    final_tier    = rule_result["final_risk_tier"]
+    hours_to_auth = 0 if final_tier == "HIGH" else 4
+    auth_deadline = (
+        "IMMEDIATE — do not proceed without doctor contact"
+        if hours_to_auth == 0
+        else (datetime.now() + timedelta(hours=hours_to_auth)).strftime("%H:%M %d %b")
+    )
+    m4.setdefault("triage", {})
+    m4["triage"]["tier"]      = final_tier
+    m4["triage"]["action"]    = (
+        "Call the referring doctor immediately. Do not dispense any medication "
+        "until you have spoken to the doctor."
+        if final_tier == "HIGH" else
+        "Proceed with the prescribed treatment plan. "
+        "The doctor will review this case within 4 hours."
+    )
+    m4["triage"]["rationale"] = (
+        m3.get("mitigation_plan", {}).get("risk_tier_rationale", "")
+    )
+    m4["triage"]["rule_engine"] = rule_result
+    m4.setdefault("doctor_handoff", {})["authorization_required_by"] = auth_deadline
     print(f"{final_tier}")
 
     vault.update({

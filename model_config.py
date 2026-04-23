@@ -8,16 +8,18 @@ Each constant is passed directly to generate_with_cascade / stream_with_cascade
 in llm_client.py, which tries models left-to-right on 503/404/429.
 
 Tiers:
-  TIER_FAST     — simple extraction, no complex reasoning (flash-lite)
-  TIER_STANDARD — complex reasoning, latency-sensitive (flash)
+  TIER_FAST              — simple extraction, no complex reasoning (flash-lite)
+  TIER_STANDARD          — complex reasoning, latency-sensitive (flash)
+  TIER_STANDARD_CRITICAL — quality-critical reasoning (flash → pro fallback)
 
-Both tiers use Gemini 3.x as preferred with 2.5 as fallback.
-Pro models are excluded — their thinking overhead is prohibitive for real-time use.
+3.x models are excluded: preview instability (503s), implicit extended thinking
+overhead (3–9× slower than 2.5 equivalents), with no measurable quality gain
+on this pipeline's clinical tasks.
 """
 
-TIER_FAST     = ["gemini-3.1-flash-lite-preview", "gemini-2.5-flash-lite"]
-TIER_STANDARD = ["gemini-3-flash-preview", "gemini-2.5-flash"]
-TIER_STANDARD_CRITICAL = ["gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash"]
+TIER_FAST              = ["gemini-2.5-flash-lite"]
+TIER_STANDARD          = ["gemini-2.5-flash"]
+TIER_STANDARD_CRITICAL = ["gemini-2.5-flash", "gemini-2.5-pro"]
 
 # ── History Stage ────────────────────────────────────────────────────────────
 MODEL_H1_CHIEF_COMPLAINT = TIER_FAST       # extract_chief_complaint — extraction only
