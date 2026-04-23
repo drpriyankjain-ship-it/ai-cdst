@@ -477,6 +477,7 @@ async def generate_differential(
         models=MODEL_D2_DIFFERENTIAL,
         contents=prompt,
         config=types.GenerateContentConfig(
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
             response_mime_type="application/json",
             response_schema=_SCHEMA_DIFFERENTIAL,
             max_output_tokens=8000,
@@ -713,6 +714,7 @@ async def generate_clarifying_questions(
         models=MODEL_D3_CLARIFYING,
         contents=prompt,
         config=types.GenerateContentConfig(
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
             response_mime_type="application/json",
             response_schema=_SCHEMA_CLARIFYING_QS,
             max_output_tokens=4000,

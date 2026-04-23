@@ -646,6 +646,7 @@ async def generate_provisional_diagnosis_and_rx(
         models=MODEL_M2_PRESCRIPTION,
         contents=prompt,
         config=types.GenerateContentConfig(
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
             system_instruction=(
                 "You are a clinical decision support system generating provisional diagnoses "
                 "and prescriptions for nurse-managed consultations in rural India. "
@@ -814,6 +815,7 @@ async def generate_risk_assessment(
         models=MODEL_M3_RISK,
         contents=prompt,
         config=types.GenerateContentConfig(
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
             system_instruction=(
                 "You are a clinical decision support system performing risk assessment "
                 "for nurse-managed consultations in rural India. "

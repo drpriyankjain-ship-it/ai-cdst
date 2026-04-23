@@ -609,6 +609,7 @@ async def generate_questionnaire(
         models=MODEL_H2_QUESTIONNAIRE,
         contents=prompt,
         config=types.GenerateContentConfig(
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
             response_mime_type="application/json",
             response_schema=_SCHEMA_QUESTIONNAIRE,
             max_output_tokens=8000,
