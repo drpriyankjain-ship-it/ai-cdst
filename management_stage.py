@@ -27,6 +27,7 @@ Dependencies:
 """
 
 import json
+import re
 from datetime import datetime, timedelta
 from typing import AsyncIterator
 
@@ -183,7 +184,25 @@ _SCHEMA_PROBLEM_LIST = {
                     "problem_number": {"type": "integer"},
                     "problem_title":  {"type": "string"},
                     "type":           {"type": "string", "enum": ["acute_new", "established", "incidental", "deferred"]},
-                    "assessment":     {"type": "object"},
+                    "assessment": {
+                        "type": "object",
+                        "properties": {
+                            # acute_new
+                            "provisional_diagnosis": {"type": "string", "nullable": True},
+                            "confidence":            {"type": "string", "nullable": True},
+                            "rationale":             {"type": "string", "nullable": True},
+                            # established
+                            "condition":             {"type": "string", "nullable": True},
+                            "current_status":        {"type": "string", "nullable": True},
+                            # incidental / deferred
+                            "finding":               {"type": "string", "nullable": True},
+                            "severity":              {"type": "string", "nullable": True},
+                            "risk_level":            {"type": "string", "nullable": True},
+                            # shared
+                            "icd10_code":            {"type": "string", "nullable": True, "description": "ICD-10 code, e.g. E11.9"},
+                        },
+                        "required": ["icd10_code"],
+                    },
                     "plan": {
                         "type": "object",
                         "properties": {
@@ -203,6 +222,66 @@ _SCHEMA_PROBLEM_LIST = {
     },
     "required": ["problem_list", "non_pharmacological_shared", "formulary_substitutions"],
 }
+
+_ICD10_RE = re.compile(r'^[A-Z]\d{2}(\.\d{0,4})?$')
+_VALID_CONFIDENCE = {"high", "moderate", "low"}
+
+
+def _is_degenerate(s: str) -> bool:
+    """True if a string looks like a token-repetition loop (>80% identical chars, len>20)."""
+    return len(s) > 20 and (len(set(s.replace(".", "").replace(" ", ""))) <= 2)
+
+
+def validate_problem_list(raw: dict) -> dict:
+    """
+    Sanitize M2 output — fix or default degenerate/missing fields.
+    Mirrors the role of validate_differential() for the Diagnosis Stage.
+    """
+    problems = raw.get("problem_list", [])
+    if not isinstance(problems, list):
+        print("[PROBLEM LIST SCHEMA] problem_list is not a list — resetting to empty")
+        raw["problem_list"] = []
+        return raw
+
+    for i, p in enumerate(problems):
+        label = p.get("problem_title", f"problem {i+1}")
+
+        # Top-level required fields
+        p.setdefault("problem_number", i + 1)
+        p.setdefault("problem_title", f"Problem {i+1}")
+        p.setdefault("type", "acute_new")
+        p.setdefault("assessment", {})
+        p.setdefault("plan", {"prescription": [], "investigations": [], "non_pharmacological": []})
+
+        a = p["assessment"]
+
+        # Sanitize icd10_code — truncate repetition loops, default to R69
+        icd = a.get("icd10_code") or ""
+        if _is_degenerate(icd) or not icd:
+            print(f"[PROBLEM LIST SCHEMA] '{label}' degenerate/missing icd10_code '{icd[:30]}' — defaulting to R69")
+            a["icd10_code"] = "R69"
+        else:
+            a["icd10_code"] = icd[:10]  # hard cap — valid ICD-10 codes are ≤7 chars
+
+        # Sanitize confidence
+        conf = a.get("confidence", "")
+        if conf not in _VALID_CONFIDENCE:
+            if conf:
+                print(f"[PROBLEM LIST SCHEMA] '{label}' invalid confidence '{conf}' — defaulting to 'moderate'")
+            a["confidence"] = "moderate"
+
+        # Sanitize other string fields — truncate any repetition loops
+        for field in ("provisional_diagnosis", "condition", "finding", "rationale",
+                      "current_status", "severity", "risk_level"):
+            val = a.get(field)
+            if val and isinstance(val, str) and _is_degenerate(val):
+                print(f"[PROBLEM LIST SCHEMA] '{label}' degenerate '{field}' — clearing")
+                a[field] = None
+
+    raw.setdefault("non_pharmacological_shared", [])
+    raw.setdefault("formulary_substitutions", [])
+    return raw
+
 
 _SCHEMA_RISK_ASSESSMENT = {
     "type": "object",
@@ -537,11 +616,11 @@ async def generate_provisional_diagnosis_and_rx(
             "    established: known condition from patient record or mentioned in transcript\n"
             "    incidental:  finding discovered this visit (not previously known)\n"
             "    deferred:    family history or risk factor noted but not acted on today\n"
-            "- Assessment shape by type:\n"
+            "- Assessment shape by type (be concise — one short phrase or sentence per field):\n"
             "    acute_new:   provisional_diagnosis, icd10_code, confidence (high|moderate|low),\n"
-            "                 rationale (2-3 sentences), key_features_supporting, remaining_uncertainty\n"
-            "    established: condition, icd10_code, current_status, adherence_issue (if relevant)\n"
-            "    incidental:  finding, probable_cause, icd10_code, severity\n"
+            "                 rationale (one sentence only)\n"
+            "    established: condition, icd10_code, current_status\n"
+            "    incidental:  finding, icd10_code, severity\n"
             "    deferred:    finding, icd10_code, risk_level\n"
             "- for_problem is mandatory on every prescription item — set to the problem_number\n"
             "- investigations: management-phase tests to order (not DDx discriminating tests)\n"
@@ -581,7 +660,7 @@ async def generate_provisional_diagnosis_and_rx(
         )
     )
 
-    return parse_json_response(response_text(response))
+    return validate_problem_list(parse_json_response(response_text(response)))
 
 
 # ---------------------------------------------------------------------------

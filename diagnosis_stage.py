@@ -53,6 +53,24 @@ def load_must_not_miss() -> list[str]:
     return [entry["name"] for entry in data["diagnoses"]]
 
 
+# Loaded once at import — used by validate_differential for deterministic flagging.
+try:
+    _MUST_NOT_MISS_LOWER: list[str] = [n.lower() for n in load_must_not_miss()]
+except Exception:
+    _MUST_NOT_MISS_LOWER = []
+    print("[WARN] Could not load must_not_miss.json at import — must_not_miss flags will not be enforced")
+
+
+def _is_must_not_miss(disease_name: str) -> bool:
+    """
+    Deterministic must-not-miss check — case-insensitive substring match in both
+    directions. Catches 'Diabetic Ketoacidosis' ↔ 'diabetic ketoacidosis' and
+    'Septic Shock' ↔ 'sepsis' without requiring exact wording.
+    """
+    d = disease_name.lower()
+    return any(mnm in d or d in mnm for mnm in _MUST_NOT_MISS_LOWER)
+
+
 # ---------------------------------------------------------------------------
 # Vault — Postgres session store
 # ---------------------------------------------------------------------------
@@ -169,6 +187,16 @@ def validate_differential(ddx: list[dict]) -> list[dict]:
                 clean[field] = "moderate"
             else:
                 clean[field] = val
+
+        # Deterministically enforce must_not_miss from the canonical list —
+        # overrides whatever the LLM returned. Model output is only trusted
+        # for the positive direction (it may flag things not on the list that
+        # are clinically appropriate; we never downgrade a model true to false).
+        if _is_must_not_miss(label):
+            if not clean.get("must_not_miss"):
+                print(f"[DDX SCHEMA] '{label}' matched must_not_miss list — overriding to true")
+            clean["must_not_miss"] = True
+
         validated.append(clean)
 
     validated.sort(key=lambda x: x["rank"])
@@ -425,7 +453,7 @@ async def generate_differential(
         "  into the differential when it does not fit the features.\n"
         "- Layer 2 epi prior elevates endemic diseases where the presentation is compatible\n"
         "  — it never overrides the presenting complaint\n"
-        f"- must_not_miss=true regardless of probability for: {', '.join(load_must_not_miss())}\n"
+        "- must_not_miss=true for any diagnosis where missing it could cause rapid deterioration or death\n"
         f"- regionally_specific=true for diseases with elevated {state_name} prevalence\n"
         "- referral_required=true for any diagnosis needing hospital-level care\n"
         "- discriminating_tests: list investigations that would most effectively\n"
