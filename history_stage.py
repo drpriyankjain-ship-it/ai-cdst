@@ -55,7 +55,7 @@ from epi_utils import (
     load_baseline_diseases,
     load_epi_prior,
 )
-from llm_client import gemini
+from llm_client import gemini, generate_with_cascade, stream_with_cascade, parse_json_response, response_text
 from model_config import MODEL_H1_CHIEF_COMPLAINT, MODEL_H2_QUESTIONNAIRE
 
 
@@ -344,8 +344,8 @@ async def extract_chief_complaint(
         ),
     ])
 
-    response = await gemini.aio.models.generate_content(
-        model=MODEL_H1_CHIEF_COMPLAINT,
+    response = await generate_with_cascade(
+        models=MODEL_H1_CHIEF_COMPLAINT,
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -354,7 +354,7 @@ async def extract_chief_complaint(
         )
     )
 
-    return json.loads(response.text)
+    return parse_json_response(response_text(response))
 
 
 # ---------------------------------------------------------------------------
@@ -605,17 +605,18 @@ async def generate_questionnaire(
         ),
     ]))
 
-    response = await gemini.aio.models.generate_content(
-        model=MODEL_H2_QUESTIONNAIRE,
+    response = await generate_with_cascade(
+        models=MODEL_H2_QUESTIONNAIRE,
         contents=prompt,
         config=types.GenerateContentConfig(
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
             response_mime_type="application/json",
             response_schema=_SCHEMA_QUESTIONNAIRE,
-            max_output_tokens=2000,
+            max_output_tokens=8000,
         )
     )
 
-    questionnaire = json.loads(response.text)
+    questionnaire = parse_json_response(response_text(response))
 
     # Inject fixed background history section for first/partial visits.
     # The LLM generates the chief complaint section; this ensures complete
@@ -694,8 +695,8 @@ async def stream_questionnaire(
         ),
     ]))
 
-    async for chunk in gemini.aio.models.generate_content_stream(
-        model=MODEL_H2_QUESTIONNAIRE,
+    async for chunk in stream_with_cascade(
+        MODEL_H2_QUESTIONNAIRE,
         contents=prompt,
         config=types.GenerateContentConfig(max_output_tokens=1500),
     ):

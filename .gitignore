@@ -3,3 +3,9 @@ __pycache__/
 .DS_Store
 .env
 tmp/
+*.pyo
+validation_output_*.json
+list_models.py
+server/.env
+server/uploads/
+server/node_modules/

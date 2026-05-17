@@ -27,18 +27,24 @@ Dependencies:
 """
 
 import json
+import re
 from datetime import datetime, timedelta
 from typing import AsyncIterator
 
 import asyncpg
 import asyncio
-from sentence_transformers import SentenceTransformer
+try:
+    from sentence_transformers import SentenceTransformer as _SentenceTransformer
+    _embedder_available = True
+except ImportError:
+    _SentenceTransformer = None
+    _embedder_available = False
 from fastapi import FastAPI, HTTPException
 from google.genai import types
 from pydantic import BaseModel
 
 from epi_utils import state_from_district_code
-from llm_client import gemini
+from llm_client import gemini, generate_with_cascade, stream_with_cascade, parse_json_response, response_text
 from model_config import (
     MODEL_M1_FINDINGS, MODEL_M2_PRESCRIPTION,
     MODEL_M3_RISK, MODEL_M4_TRIAGE,
@@ -58,13 +64,14 @@ RAG_SECTION_FILTER = ("treatment", "dosing", "contraindications", "referral", "g
 RAG_IVFFLAT_PROBES = 10
 STAGE_TIMEOUT_SECS = 120  # hard ceiling for the full pipeline; orchestrator should wrap with asyncio.wait_for
 
-_embedder: SentenceTransformer | None = None
+_embedder = None
 
-
-def get_embedder() -> SentenceTransformer:
+def _get_embedder():
     global _embedder
     if _embedder is None:
-        _embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+        if not _embedder_available:
+            raise RuntimeError("sentence-transformers not installed; pip install sentence-transformers")
+        _embedder = _SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
     return _embedder
 
 with open(ESCALATION_RULES_PATH) as _f:
@@ -163,7 +170,7 @@ _PRESCRIPTION_ITEM_SCHEMA = {
         "duration":     {"type": "string"},
         "instructions": {"type": "string"},
         "dose_basis":   {"type": "string"},
-        "stg_source":   {"type": ["string", "null"]},
+        "stg_source":   {"type": "string", "nullable": True},
         "for_problem":  {"type": "integer"},
     },
     "required": ["drug", "dose", "route", "frequency", "duration", "for_problem"],
@@ -180,7 +187,25 @@ _SCHEMA_PROBLEM_LIST = {
                     "problem_number": {"type": "integer"},
                     "problem_title":  {"type": "string"},
                     "type":           {"type": "string", "enum": ["acute_new", "established", "incidental", "deferred"]},
-                    "assessment":     {"type": "object"},
+                    "assessment": {
+                        "type": "object",
+                        "properties": {
+                            # acute_new
+                            "provisional_diagnosis": {"type": "string", "nullable": True},
+                            "confidence":            {"type": "string", "nullable": True},
+                            "rationale":             {"type": "string", "nullable": True},
+                            # established
+                            "condition":             {"type": "string", "nullable": True},
+                            "current_status":        {"type": "string", "nullable": True},
+                            # incidental / deferred
+                            "finding":               {"type": "string", "nullable": True},
+                            "severity":              {"type": "string", "nullable": True},
+                            "risk_level":            {"type": "string", "nullable": True},
+                            # shared
+                            "icd10_code":            {"type": "string", "nullable": True, "description": "ICD-10 code, e.g. E11.9"},
+                        },
+                        "required": ["icd10_code"],
+                    },
                     "plan": {
                         "type": "object",
                         "properties": {
@@ -200,6 +225,66 @@ _SCHEMA_PROBLEM_LIST = {
     },
     "required": ["problem_list", "non_pharmacological_shared", "formulary_substitutions"],
 }
+
+_ICD10_RE = re.compile(r'^[A-Z]\d{2}(\.\d{0,4})?$')
+_VALID_CONFIDENCE = {"high", "moderate", "low"}
+
+
+def _is_degenerate(s: str) -> bool:
+    """True if a string looks like a token-repetition loop (>80% identical chars, len>20)."""
+    return len(s) > 20 and (len(set(s.replace(".", "").replace(" ", ""))) <= 2)
+
+
+def validate_problem_list(raw: dict) -> dict:
+    """
+    Sanitize M2 output — fix or default degenerate/missing fields.
+    Mirrors the role of validate_differential() for the Diagnosis Stage.
+    """
+    problems = raw.get("problem_list", [])
+    if not isinstance(problems, list):
+        print("[PROBLEM LIST SCHEMA] problem_list is not a list — resetting to empty")
+        raw["problem_list"] = []
+        return raw
+
+    for i, p in enumerate(problems):
+        label = p.get("problem_title", f"problem {i+1}")
+
+        # Top-level required fields
+        p.setdefault("problem_number", i + 1)
+        p.setdefault("problem_title", f"Problem {i+1}")
+        p.setdefault("type", "acute_new")
+        p.setdefault("assessment", {})
+        p.setdefault("plan", {"prescription": [], "investigations": [], "non_pharmacological": []})
+
+        a = p["assessment"]
+
+        # Sanitize icd10_code — truncate repetition loops, default to R69
+        icd = a.get("icd10_code") or ""
+        if _is_degenerate(icd) or not icd:
+            print(f"[PROBLEM LIST SCHEMA] '{label}' degenerate/missing icd10_code '{icd[:30]}' — defaulting to R69")
+            a["icd10_code"] = "R69"
+        else:
+            a["icd10_code"] = icd[:10]  # hard cap — valid ICD-10 codes are ≤7 chars
+
+        # Sanitize confidence
+        conf = a.get("confidence", "")
+        if conf not in _VALID_CONFIDENCE:
+            if conf:
+                print(f"[PROBLEM LIST SCHEMA] '{label}' invalid confidence '{conf}' — defaulting to 'moderate'")
+            a["confidence"] = "moderate"
+
+        # Sanitize other string fields — truncate any repetition loops
+        for field in ("provisional_diagnosis", "condition", "finding", "rationale",
+                      "current_status", "severity", "risk_level"):
+            val = a.get(field)
+            if val and isinstance(val, str) and _is_degenerate(val):
+                print(f"[PROBLEM LIST SCHEMA] '{label}' degenerate '{field}' — clearing")
+                a[field] = None
+
+    raw.setdefault("non_pharmacological_shared", [])
+    raw.setdefault("formulary_substitutions", [])
+    return raw
+
 
 _SCHEMA_RISK_ASSESSMENT = {
     "type": "object",
@@ -294,9 +379,8 @@ _SCHEMA_TRIAGE_HANDOFF = {
         "triage": {
             "type": "object",
             "properties": {
-                "tier":      {"type": "string", "enum": ["LOW", "HIGH"]},
-                "rationale": {"type": "string"},
-                "action":    {"type": "string"},
+                # tier, action, rationale are injected deterministically from the rule engine
+                # after M3 and M4 complete in parallel — not LLM-generated.
                 "referral": {
                     "type": "object",
                     "properties": {
@@ -308,7 +392,7 @@ _SCHEMA_TRIAGE_HANDOFF = {
                     "required": ["required", "urgency", "facility", "reason"],
                 },
             },
-            "required": ["tier", "rationale", "action", "referral"],
+            "required": ["referral"],
         },
         "patient_instructions": {
             "type": "object",
@@ -325,16 +409,16 @@ _SCHEMA_TRIAGE_HANDOFF = {
         "doctor_handoff": {
             "type": "object",
             "properties": {
-                "one_liner":                 {"type": "string"},
-                "clinical_summary":          {"type": "string"},
-                "differential_table":        {"type": "string"},
-                "key_risks_flagged":         {"type": "array", "items": {"type": "string"}},
-                "questions_for_doctor":      {"type": "array", "items": {"type": "string"}},
-                "authorization_required_by": {"type": "string"},
+                "one_liner":            {"type": "string"},
+                "clinical_summary":     {"type": "string"},
+                "differential_table":   {"type": "string"},
+                "key_risks_flagged":    {"type": "array", "items": {"type": "string"}},
+                "questions_for_doctor": {"type": "array", "items": {"type": "string"}},
+                # authorization_required_by injected from rule engine post-hoc
             },
             "required": [
                 "one_liner", "clinical_summary", "differential_table",
-                "key_risks_flagged", "questions_for_doctor", "authorization_required_by",
+                "key_risks_flagged", "questions_for_doctor",
             ],
         },
     },
@@ -395,7 +479,7 @@ async def retrieve_treatment_protocols(
             f"treatment protocol dose duration route contraindications "
             f"referral criteria {diagnosis} NHM India STG"
         )
-        query_embedding = (await asyncio.to_thread(lambda: get_embedder().encode(query))).tolist()
+        query_embedding = (await asyncio.to_thread(_get_embedder().encode, query)).tolist()
 
         rows = await conn.fetch(
             """
@@ -499,8 +583,8 @@ async def extract_clarifying_findings(
         ),
     ])
 
-    response = await gemini.aio.models.generate_content(
-        model=MODEL_M1_FINDINGS,
+    response = await generate_with_cascade(
+        models=MODEL_M1_FINDINGS,
         contents=prompt,
         config=types.GenerateContentConfig(
             system_instruction="You are a clinical data extraction tool. Extract only what is explicitly stated in the transcript. Do not infer or interpret.",
@@ -510,7 +594,7 @@ async def extract_clarifying_findings(
         )
     )
 
-    return json.loads(response.text)
+    return parse_json_response(response_text(response))
 
 
 # ---------------------------------------------------------------------------
@@ -587,11 +671,11 @@ async def generate_provisional_diagnosis_and_rx(
             "    established: known condition from patient record or mentioned in transcript\n"
             "    incidental:  finding discovered this visit (not previously known)\n"
             "    deferred:    family history or risk factor noted but not acted on today\n"
-            "- Assessment shape by type:\n"
+            "- Assessment shape by type (be concise — one short phrase or sentence per field):\n"
             "    acute_new:   provisional_diagnosis, icd10_code, confidence (high|moderate|low),\n"
-            "                 rationale (2-3 sentences), key_features_supporting, remaining_uncertainty\n"
-            "    established: condition, icd10_code, current_status, adherence_issue (if relevant)\n"
-            "    incidental:  finding, probable_cause, icd10_code, severity\n"
+            "                 rationale (one sentence only)\n"
+            "    established: condition, icd10_code, current_status\n"
+            "    incidental:  finding, icd10_code, severity\n"
             "    deferred:    finding, icd10_code, risk_level\n"
             "- for_problem is mandatory on every prescription item — set to the problem_number\n"
             "- investigations: management-phase tests to order (not DDx discriminating tests)\n"
@@ -617,10 +701,11 @@ async def generate_provisional_diagnosis_and_rx(
         ),
     ])
 
-    response = await gemini.aio.models.generate_content(
-        model=MODEL_M2_PRESCRIPTION,
+    response = await generate_with_cascade(
+        models=MODEL_M2_PRESCRIPTION,
         contents=prompt,
         config=types.GenerateContentConfig(
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
             system_instruction=(
                 "You are a clinical decision support system generating provisional diagnoses "
                 "and prescriptions for nurse-managed consultations in rural India. "
@@ -630,11 +715,11 @@ async def generate_provisional_diagnosis_and_rx(
             ),
             response_mime_type="application/json",
             response_schema=_SCHEMA_PROBLEM_LIST,
-            max_output_tokens=5000,
+            max_output_tokens=10000,
         )
     )
 
-    return json.loads(response.text)
+    return validate_problem_list(parse_json_response(response_text(response)))
 
 
 # ---------------------------------------------------------------------------
@@ -785,10 +870,11 @@ async def generate_risk_assessment(
         ),
     ])
 
-    response = await gemini.aio.models.generate_content(
-        model=MODEL_M3_RISK,
+    response = await generate_with_cascade(
+        models=MODEL_M3_RISK,
         contents=prompt,
         config=types.GenerateContentConfig(
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
             system_instruction=(
                 "You are a clinical decision support system performing risk assessment "
                 "for nurse-managed consultations in rural India. "
@@ -801,7 +887,7 @@ async def generate_risk_assessment(
         )
     )
 
-    return json.loads(response.text)
+    return parse_json_response(response_text(response))
 
 
 # ---------------------------------------------------------------------------
@@ -837,7 +923,6 @@ def _build_prescription_issued(all_drugs: list) -> str:
 
 async def generate_triage_and_handoff(
     problem_list_output: dict,
-    risk_assessment: dict,
     vault_context: dict,
 ) -> dict:
     """
@@ -883,7 +968,11 @@ async def generate_triage_and_handoff(
       }
     }
     """
-    demographics  = vault_context.get("demographics", {})
+    demographics  = dict(vault_context.get("demographics", {}))
+    cc = vault_context.get("chief_complaint", {})
+    if not demographics.get("age")  and cc.get("age"):           demographics["age"]  = cc["age"]
+    if not demographics.get("sex")  and cc.get("sex"):           demographics["sex"]  = cc["sex"]
+    if not demographics.get("name") and cc.get("patient_name"):  demographics["name"] = cc["patient_name"]
     ddx           = vault_context.get("differential_table", [])
     district_code = vault_context.get("gps", {}).get("district_code", "WB_UNKNOWN")
     state_name    = state_from_district_code(district_code)
@@ -905,39 +994,24 @@ async def generate_triage_and_handoff(
         f"(not medical terminology)."
     )
 
-    risk_tier = risk_assessment.get(
-        "mitigation_plan", {}
-    ).get("overall_risk_tier", "HIGH")   # default to HIGH if missing
-
-    hours_to_auth = 4 if risk_tier == "LOW" else 0
-    auth_deadline = (
-        "IMMEDIATE — do not proceed without doctor contact"
-        if hours_to_auth == 0
-        else (datetime.now() + timedelta(hours=hours_to_auth)).strftime("%H:%M %d %b")
-    )
-
     prompt = "\n\n".join(filter(None, [
-        "Generate the triage decision, patient instructions, and doctor handoff "
-        "package based on the risk assessment below.",
+        "Generate the triage referral assessment, patient instructions, and doctor handoff "
+        "package for this consultation.",
         f"PATIENT:\n{json.dumps(demographics, indent=2)}",
         f"PROBLEM LIST:\n{json.dumps(problem_list_output, indent=2)}",
         f"ALL PRESCRIBED DRUGS (across all problems):\n{json.dumps(all_drugs, indent=2)}",
         f"PRESCRIPTION RECORD (pre-formatted — use verbatim for treatment_summary):\n{prescription_issued}",
-        f"RISK ASSESSMENT:\n{json.dumps(risk_assessment, indent=2)}",
         f"FULL DIFFERENTIAL:\n{json.dumps(ddx[:3], indent=2)}",
-        f"RISK TIER FROM ASSESSMENT: {risk_tier}",
-        f"AUTHORIZATION DEADLINE: {auth_deadline}",
         language_instruction or None,
         (
             "INSTRUCTIONS:\n\n"
-            "TRIAGE:\n"
-            "- tier must match overall_risk_tier from the risk assessment — do not change it\n"
-            "- action must be a specific, unambiguous instruction to the nurse\n"
-            "- if HIGH: state explicitly whether the nurse should call the doctor now "
-            "or refer the patient immediately, and to which facility\n"
-            "- referral facility: the nurse is already at a PHC/sub-centre — "
-            "use the lowest appropriate higher-level facility "
-            "(CHC before district hospital before tertiary)\n\n"
+            "TRIAGE REFERRAL:\n"
+            "- Assess whether this patient needs referral to a higher facility based on the clinical picture\n"
+            "- required: true only if higher-level facility care is clinically necessary\n"
+            "- facility: the nurse is at a PHC/sub-centre — use the lowest appropriate level "
+            "(CHC before district hospital before tertiary); use 'not required' if no referral needed\n"
+            "- urgency: estimate based on acuity (immediate / within 2 hours / within 24 hours / not required)\n"
+            "- reason: specific clinical reason for referral (or 'not required')\n\n"
             "PATIENT INSTRUCTIONS:\n"
             "- diagnosis_explained: plain language only — no medical jargon; "
             "explain what is wrong and why the treatment helps\n"
@@ -950,24 +1024,22 @@ async def generate_triage_and_handoff(
             "- follow_up: specific timeframe and named location\n\n"
             "DOCTOR HANDOFF:\n"
             "- one_liner: '[age][sex], [chief complaint] x [duration], "
-            "N problems: #1 [acute Dx], #2 [condition], ..., "
-            "prescribed [all drugs with doses], risk tier [LOW/HIGH]'\n"
+            "N problems: #1 [acute Dx], #2 [condition], ..., prescribed [all drugs with doses]'\n"
             "- clinical_summary: structured summary covering all problems in the problem list — "
             "full reasoning for acute_new; one-line status for established/incidental/deferred; "
             "key findings from all three phases\n"
-            "- key_risks_flagged: list every risk from the risk assessment "
-            "that requires doctor attention or judgment\n"
+            "- key_risks_flagged: clinical risks requiring doctor attention or judgment "
+            "(include drug interactions, diagnostic uncertainties, high-risk features)\n"
             "- questions_for_doctor: genuine clinical uncertainties needing "
             "doctor judgment — not administrative questions\n"
             "- doctor_handoff fields must always be written in English only, "
             "regardless of the consultation language — clinical handoff to a doctor "
             "must not be translated or romanised\n"
-            f"- authorization_required_by: use exactly this value: {auth_deadline}"
         ),
     ]))
 
-    response = await gemini.aio.models.generate_content(
-        model=MODEL_M4_TRIAGE,
+    response = await generate_with_cascade(
+        models=MODEL_M4_TRIAGE,
         contents=prompt,
         config=types.GenerateContentConfig(
             system_instruction=(
@@ -982,7 +1054,7 @@ async def generate_triage_and_handoff(
         )
     )
 
-    result = json.loads(response.text)
+    result = parse_json_response(response_text(response))
     result.setdefault("doctor_handoff", {})["prescription_issued"] = prescription_issued
     return result
 
@@ -1333,18 +1405,13 @@ async def _run_pipeline(
     )
     acute_confidence = (first_acute or {}).get("assessment", {}).get("confidence", "high")
 
-    # Call 3 — risk assessment
-    print(f"[{session_id}] Call 3: five-dimension risk assessment")
-    risk_assessment = await generate_risk_assessment(
-        problem_list_output, clarifying_findings, vault_context
+    # Calls 3 and 4 — parallel: risk assessment and triage/handoff both depend only on M2
+    print(f"[{session_id}] Calls 3+4: risk assessment and triage handoff (parallel)")
+    risk_assessment, triage_output = await asyncio.gather(
+        generate_risk_assessment(problem_list_output, clarifying_findings, vault_context),
+        generate_triage_and_handoff(problem_list_output, vault_context),
     )
     await vault.update({"risk_assessment": risk_assessment})
-
-    # Call 4 — triage + handoff
-    print(f"[{session_id}] Call 4: triage decision and doctor handoff")
-    triage_output = await generate_triage_and_handoff(
-        problem_list_output, risk_assessment, vault_context
-    )
 
     # Rule engine gate
     print(f"[{session_id}] Rule engine: deterministic safety check")
@@ -1363,9 +1430,30 @@ async def _run_pipeline(
         acute_confidence=acute_confidence,
     )
 
-    # Merge rule engine tier into triage output
-    triage_output["triage"]["tier"]          = rule_result["final_risk_tier"]
-    triage_output["triage"]["rule_engine"]   = rule_result
+    # Inject deterministic fields into triage output from rule engine + M3.
+    # tier, action, rationale, and the authorization deadline are not LLM-generated —
+    # they are safety-critical decisions that must come from auditable deterministic sources.
+    final_tier    = rule_result["final_risk_tier"]
+    hours_to_auth = 0 if final_tier == "HIGH" else 4
+    auth_deadline = (
+        "IMMEDIATE — do not proceed without doctor contact"
+        if hours_to_auth == 0
+        else (datetime.now() + timedelta(hours=hours_to_auth)).strftime("%H:%M %d %b")
+    )
+    triage_output.setdefault("triage", {})
+    triage_output["triage"]["tier"]       = final_tier
+    triage_output["triage"]["action"]     = (
+        "Call the referring doctor immediately. Do not dispense any medication "
+        "until you have spoken to the doctor."
+        if final_tier == "HIGH" else
+        "Proceed with the prescribed treatment plan. "
+        "The doctor will review this case within 4 hours."
+    )
+    triage_output["triage"]["rationale"]  = (
+        risk_assessment.get("mitigation_plan", {}).get("risk_tier_rationale", "")
+    )
+    triage_output["triage"]["rule_engine"] = rule_result
+    triage_output.setdefault("doctor_handoff", {})["authorization_required_by"] = auth_deadline
 
     await vault.update({
         "triage_output":                   triage_output,
@@ -1477,8 +1565,8 @@ async def stream_management(
         "4) Key instructions for the nurse"
     )
 
-    async for chunk in gemini.aio.models.generate_content_stream(
-        model=MODEL_M4_TRIAGE,
+    async for chunk in stream_with_cascade(
+        MODEL_M4_TRIAGE,
         contents=stream_prompt,
         config=types.GenerateContentConfig(max_output_tokens=1500),
     ):

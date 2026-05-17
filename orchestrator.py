@@ -582,6 +582,23 @@ async def handle_marker_b(ws: WebSocket, state: SessionState, t: float) -> None:
             concepts = await extract_medical_concepts(phase_2, vault_ctx)
             await vault_update(conn, session_id, {"extracted_concepts": concepts})
 
+            # Backfill pregnancy_status into demographics so the rule engine
+            # (which reads demographics, not extracted_concepts) sees it correctly.
+            extracted_pregnancy = concepts.get("pregnancy_status")
+            if extracted_pregnancy is not None:
+                await vault_set_nested(
+                    conn, session_id, ["demographics", "pregnancy_status"], extracted_pregnancy
+                )
+                if concepts.get("lmp"):
+                    await vault_set_nested(
+                        conn, session_id, ["demographics", "lmp"], concepts["lmp"]
+                    )
+                vault_ctx = await vault_read(conn, session_id)
+                log.info(
+                    "[%s] Pregnancy status backfilled to demographics: %s (LMP: %s)",
+                    session_id, extracted_pregnancy, concepts.get("lmp"),
+                )
+
             # Concurrent: stream differential to nurse + generate structured DDx
             async def do_stream():
                 async for token in stream_differential(concepts, vault_ctx, baseline, epi):
@@ -858,6 +875,11 @@ async def session_websocket(websocket: WebSocket):
                 audio_bytes = base64.b64decode(audio_b64)
                 state.ring_buffer.append((t, audio_bytes))
                 await state.dg.send(audio_bytes)
+
+            elif msg_type == "inject_transcript" and os.getenv("VALIDATION_MODE"):
+                text = raw.get("text", "")
+                await state.append_transcript(text, is_final=True)
+                log.info("[%s] Injected transcript (%d chars)", state.session_id, len(text))
 
             elif msg_type == "marker":
                 marker = raw.get("marker", "")

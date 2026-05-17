@@ -47,13 +47,19 @@ cdst/
 │   │   ├── cdst_full_pipeline.html           # Full system architecture diagram
 │   │   ├── continuous_stream_pipeline.html   # Audio streaming architecture diagram
 │   │   └── rag_brief.md                      # Engineering brief for RAG setup
-│   └── clinical/
-│       ├── MO_REVIEW_CHECKLIST.md            # Site onboarding checklist for Medical Officers
-│       ├── bedside_tools_crosscheck.md       # Guideline citations for bedside_tools.json
-│       ├── high_risk_escalation_rules.md     # Human-readable guide to escalation_rules.json
-│       └── source-materials/                 # Raw source PDFs (MoHFW guidelines, STG volumes)
+│   ├── clinical/
+│   │   ├── MO_REVIEW_CHECKLIST.md            # Site onboarding checklist for Medical Officers
+│   │   ├── bedside_tools_crosscheck.md       # Guideline citations for bedside_tools.json
+│   │   ├── high_risk_escalation_rules.md     # Human-readable guide to escalation_rules.json
+│   │   └── source-materials/                 # Raw source PDFs (MoHFW guidelines, STG volumes)
+│   └── validation/
+│       ├── run_NNN_<patient>_<date>.md       # Per-run narrative notes
+│       ├── validation_1_english.txt          # Test transcript (english, patient FKP1192)
+│       └── validation_output_<timestamp>.json # Raw JSON output from validate_pipeline.py runs
 ├── scripts/
 │   └── ingest_stg.py           # STG embedding pipeline (chunk → embed → pgvector)
+├── evals/
+│   └── validate_pipeline.py    # End-to-end pipeline eval harness — run against transcripts in docs/validation/
 └── CLAUDE.md                   # This file
 ```
 
@@ -87,12 +93,17 @@ transcribes it in real time. The nurse presses three buttons:
 **Marker A** — ~30 seconds in. Patient has stated name, age, village, chief
 complaint, duration. Nothing else is known. History Stage fires.
 Target: questionnaire first token on screen within 1.5s.
+Actual measured: H1 blocks ~0.9s, then H2 streams — first token ~1.2s. ✓
 
 **Marker B** — after 3-4 minute structured interview. Diagnosis Stage fires.
 Target: differential starts streaming within 1.5s. Full pipeline ~5-6s.
+Actual measured: D1 blocks ~4.9s, then D2 streams — first token ~5.2s. Target
+not met; see ADR 005 for options. Full D-stage: ~17s.
 
 **Marker C** — after 1-2 minute clarifying questions phase. Management Stage
 fires. Full pipeline ~7-8s including rule engine.
+Actual measured: M1+RAG blocks ~2.1s, then M2 streams — first token ~2.4s.
+Full M-stage: ~22s (M3+M4 run in parallel — see Management Stage below).
 
 Button presses send a lightweight JSON control message over the same WebSocket:
 `{ "marker": "history_complete", "t": 94.3 }` where t is session-relative seconds.
@@ -171,7 +182,7 @@ Expected claims: `{ "nurse_id": "N-001", "role": "nurse", "clinic_id": "C-042" }
    - `stream_questionnaire()` — tokens streamed to client as `stage_token` messages
    - `generate_questionnaire()` + `validate_questionnaire()` — structured JSON written
      to Vault; `patient_record_stub` also written for Diagnosis Stage to use
-   First token reaches nurse within ~800ms of button press.
+   First token reaches nurse within ~1.2s of button press (H1 ~0.9s + H2 streaming TTFT).
 
 5. **Marker B (diagnosis_complete)** — slices phase 2 transcript (marker A → B).
    Writes to Vault. Fires two concurrent tasks:
@@ -253,8 +264,10 @@ constrained to tools in `bedside_tools.json`. `uncertain_findings` from Call 1
 are surfaced as priority re-ask candidates if discriminating for the differential.
 
 **Must-not-miss diagnoses** are loaded at runtime from `data/must_not_miss.json`
-(34 diagnoses across 8 categories, MO-maintained). Any diagnosis on this list is
-flagged `must_not_miss=true` in the differential regardless of probability ranking.
+(34 diagnoses across 8 categories, MO-maintained). The flag is enforced
+**deterministically** in `validate_differential()` via bidirectional substring
+matching — not by LLM instruction. This ensures the flag is reliably set even
+when model outputs vary across versions or providers.
 
 **Canonical differential schema — 11 fields, always present:**
 `rank`, `disease`, `icd10_code`, `probability`, `supporting_features`, `against`,
@@ -263,7 +276,8 @@ flagged `must_not_miss=true` in the differential regardless of probability ranki
 
 `validate_differential()` runs after every LLM differential call. Missing fields
 get safe defaults and a logged warning. `icd10_code` default is `R69` (illness
-unspecified). This ensures all downstream consumers receive a predictable structure.
+unspecified). The must_not_miss override is one-directional: it can only set
+`true`, never downgrade a model-returned `true` to `false`.
 
 ### Management Stage (management_stage.py)  [fixed pipeline — planned: agentic]
 
@@ -274,7 +288,7 @@ Call 1 (~900ms) + RAG retrieval run in parallel via `asyncio.gather`:
 - RAG retrieves STG chunks for ALL DDx diagnoses + known established conditions
   (provisional diagnosis not yet determined; any DDx entry could be selected)
 
-Call 2 (~2.5s, streaming): Generates a **problem list** — all distinct clinical issues
+Call 2 (~6.5s, streaming): Generates a **problem list** — all distinct clinical issues
 in the encounter: the acute presenting complaint plus any established conditions,
 incidental findings, or deferred items. Each problem has type
 (`acute_new | established | incidental | deferred`), an assessment, and a plan.
@@ -282,27 +296,41 @@ Every prescription item carries a `for_problem` attribution integer.
 STG context from RAG grounds the prescription. Local formulary constrains drug
 selection. `stg_source` must be cited per drug. Output key: `problem_list`.
 
-Call 3 (~1.8s): Five-dimension risk assessment — no RAG, pure LLM reasoning:
-1. Diagnostic uncertainty — what if the acute provisional Dx is wrong?
-2. Iatrogenic risk — risk of ALL prescribed drugs across ALL problems
-3. Delay risk — consequence of waiting for doctor auth
-4. Complication watch — what to monitor for
-5. Mitigation plan — what resolves each risk; what cannot be mitigated remotely
+`validate_problem_list()` runs after Call 2. Sanitizes degenerate ICD-10 strings
+(e.g. repetition loops from constrained generation), truncates oversized fields,
+fills missing required fields with safe defaults, and normalises confidence values.
+Analogous to `validate_differential()` in the Diagnosis Stage.
 
 Diagnostic confidence (`high|moderate|low`) is extracted directly from Call 2's
 `problem_list[first_acute].assessment.confidence` in Python and passed to the rule
 engine as `acute_confidence` — not re-derived from Call 3 to avoid LLM relay errors.
 
-overall_risk_tier = HIGH if ANY unmitigable risk exists, or delay window < 2 hours.
+**Calls 3 and 4 run in parallel via `asyncio.gather`** — both depend only on Call 2.
 
-Call 4 (~1.2s, streaming): Triage decision, patient instructions in plain language,
-doctor handoff package. `prescription_issued` is built in Python from Call 2's
-`problem_list` — not LLM-generated — so the authoritative drug record cannot be
-paraphrased or have items dropped. Contains every drug with `for_problem` attribution,
-dose, route, frequency, duration. `treatment_summary` translates all drugs into plain language.
+Call 3 (~8s): Five-dimension risk assessment — no RAG, pure LLM reasoning:
+1. Diagnostic uncertainty — what if the acute provisional Dx is wrong?
+2. Iatrogenic risk — risk of ALL prescribed drugs across ALL problems
+3. Delay risk — consequence of waiting for doctor auth
+4. Complication watch — what to monitor for
+5. Mitigation plan — what resolves each risk; what cannot be mitigated remotely
+Output: `mitigation_plan.overall_risk_tier` (LOW|HIGH) and `risk_tier_rationale`.
 
-**Rule engine** runs deterministically after Call 4. Can only escalate LOW → HIGH,
-never downgrade. This logic has been extracted into a separate, data-driven configuration
+Call 4 (~7s): Patient instructions in plain language, referral assessment, doctor
+handoff package. Does NOT receive Call 3's risk assessment as input — runs in
+parallel. `prescription_issued` is built in Python from Call 2's `problem_list` —
+not LLM-generated — so the authoritative drug record cannot be paraphrased or have
+items dropped.
+
+**Rule engine** runs deterministically after both Call 3 and Call 4 complete. Can
+only escalate LOW → HIGH, never downgrade. After the rule engine runs, Python
+injects into Call 4's output:
+- `triage.tier` — final tier from rule engine
+- `triage.action` — canonical nurse instruction string (not LLM-generated)
+- `triage.rationale` — from Call 3's `mitigation_plan.risk_tier_rationale`
+- `doctor_handoff.authorization_required_by` — computed from final tier
+
+These fields are injected from deterministic sources rather than LLM-generated
+because they are the primary safety-critical decisions the nurse acts on. This logic has been extracted into a separate, data-driven configuration
 file (`escalation_rules.json`). This allows Medical Officers (MOs) to curate and update
 clinical policies, vital thresholds, red flags, and sensitive scenarios (like pregnancy)
 independently of code deployments.
@@ -479,9 +507,9 @@ the entire authorization flow design.
 
 ## Design discussions and rejected alternatives
 
-The `docs/eng/adr/` folder contains Architecture Decision Records — analyses of options
-considered, paths not taken, and the reasoning behind them. Each ADR is numbered,
-dated, and immutable once written.
+The `docs/decisions/adr/` folder contains Architecture Decision Records — analyses
+of options considered, paths not taken, and the reasoning behind them. Each ADR is
+numbered, dated, and immutable once written.
 
 **Read the relevant ADR before proposing architectural changes to any component
 it covers.** This prevents re-litigating decisions that have already been worked
@@ -491,8 +519,11 @@ through.
 |---|---|
 | [001-agentic-patterns.md](docs/decisions/adr/001-agentic-patterns.md) | Which parts of the pipeline should be agentic vs fixed; trade-offs for this use case |
 | [002-history-intake-approach.md](docs/decisions/adr/002-history-intake-approach.md) | Fixed vs LLM-generated background history questions; Option A implemented, Option C deferred to before field pilots |
+| [003-problem-oriented-management.md](docs/decisions/adr/003-problem-oriented-management.md) | Single-diagnosis vs problem_list with type discriminator; problem_list chosen |
+| [004-model-tier-selection.md](docs/decisions/adr/004-model-tier-selection.md) | Which Gemini model per call; 2.5-flash chosen; 3.x models excluded (implicit thinking overhead) |
+| [005-diagnosis-stage-ttft.md](docs/decisions/adr/005-diagnosis-stage-ttft.md) | D-stage 1.5s TTFT target; speculative streaming deferred to after field pilots |
 
-See [`docs/decisions/adr/README.md`](docs/decisions/adr/README.md) for the ADR index.
+See [`docs/decisions/adr/README.md`](docs/decisions/adr/README.md) for the full ADR index.
 
 ---
 
@@ -528,6 +559,12 @@ explicit discussion:
 
 - **Formulary is a JSON file, not a vector store.** It is small, structured,
   and injected directly into prompts. It must be per-clinic and kept current.
+
+- **Safety-critical output fields are injected from deterministic sources, not relayed by LLM.**
+  `triage.tier`, `triage.action`, `triage.rationale`, `authorization_required_by`, and
+  `must_not_miss` flags are set in Python from the rule engine and `validate_*()` functions —
+  not passed through an LLM call. LLM relay introduces paraphrasing and omission risk on
+  the fields a nurse acts on most directly.
 
 | db/schema.sql | Complete | sessions, stg_chunks, patient_records, confirmed_encounters |
 | data/epi_prior_wb.json | Complete | All 23 WB districts, 4 seasons, sourced from IDSP/NVBDCP |

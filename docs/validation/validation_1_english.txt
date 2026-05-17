@@ -1,0 +1,339 @@
+Interviewer: Patient ID FKP-1192. What is your name?
+
+Patient: Prasant Sinha Mahapatra.
+
+Interviewer: Okay. How old are you?
+
+Patient: 50.
+
+Interviewer: 50. Okay. Do you work?
+
+Patient: I am in teaching.
+
+Interviewer: Okay, school teacher.
+
+Patient: Yes.
+
+Interviewer: Why have you come to the doctor today?
+
+Patient: For pressure.
+
+Interviewer: For pressure. How long have you had pressure?
+
+Patient: Two years.
+
+Interviewer: Two years for pressure. You take medicine regularly, right?
+
+Patient: Yes.
+
+Interviewer: Okay.
+
+#MARKER A#
+
+Interviewer: So you have been taking medicine for pressure for two years, right?
+
+Patient: Yes.
+
+Interviewer: Okay. And do you have any dizziness?
+
+Patient: My head spins sometimes.
+
+Interviewer: Sometimes your head spins. You have a problem with dizziness. Has it ever happened that you fell down because of dizziness?
+
+Patient: No, that hasn't happened.
+
+Interviewer: Never happened. Okay. So, along with pressure, do you have any other problems?
+
+Patient: I have... I have a thyroid problem.
+
+Interviewer: Oh, you have a thyroid problem too. How long have you had that?
+
+Patient: Also about two years.
+
+Interviewer: You take medicine for that too?
+
+Patient: Yes.
+
+Interviewer: Do you have any other problems?
+
+Patient: No.
+
+Interviewer: Okay. So, how often do you get your pressure checked?
+
+Patient: Sometimes in 15 days, sometimes in a month, sometimes even in two months.
+
+Interviewer: Okay. Have you ever fallen down due to dizziness?
+
+Patient: No, never.
+
+Interviewer: Okay. Do you have chest pain?
+
+Patient: No.
+
+Interviewer: No chest pain. Do you have any difficulty breathing?
+
+Patient: No difficulty breathing.
+
+Interviewer: Okay. Do you feel any excessive pressure in your chest?
+
+Patient: No.
+
+Interviewer: Okay. You said... do you have any problems with your vision?
+
+Patient: I have cataracts. For reading small print...
+
+Interviewer: For things close up?
+
+Patient: Yes, I can't see close up.
+
+Interviewer: Do you use glasses?
+
+Patient: Yes, I use glasses.
+
+Interviewer: Okay. And any difficulty hearing?
+
+Patient: No, no difficulty.
+
+Interviewer: Okay. Has it happened that you wake up in the early morning or during the night and your head spins?
+
+Patient: No, nothing like that.
+
+Interviewer: Okay. The medicines you take daily, do they cause any problems in your body?
+
+Patient: No.
+
+Interviewer: For the pressure medicine?
+
+Patient: I don't feel any difficulty.
+
+Interviewer: Okay. And have you noticed if your clothes that you used to wear have become loose or if you've lost weight?
+
+Patient: My weight has decreased a bit.
+
+Interviewer: Your weight has decreased a bit. Okay. Do you feel excessive fatigue?
+
+Patient: A little, yes.
+
+Interviewer: You feel fatigue. When you do any work, do you feel weakness?
+
+Patient: I feel weakness.
+
+Interviewer: Do you have difficulty climbing stairs?
+
+Patient: I'll tell you something, Madam... I had an operation on my spine.
+
+Interviewer: Okay, surgery. When was that?
+
+Patient: That was in 2019.
+
+Interviewer: Okay.
+
+Patient: Because of that, I have a little difficulty climbing stairs.
+
+Interviewer: Okay.
+
+Patient: And otherwise, I feel a little...
+
+Interviewer: Okay, tired.
+
+Patient: Yes.
+
+Interviewer: Okay. Do you have a fever?
+
+Patient: No fever.
+
+Interviewer: Okay. Does your heart race?
+
+Patient: No... but like when I climbed the stairs, then it races and I feel tired.
+
+Interviewer: Do you sweat excessively?
+
+Patient: In summer it happens, otherwise no.
+
+Interviewer: Okay. How many pillows do you use under your head when you sleep?
+
+Patient: I use one pillow, and it's small... I almost don't use one.
+
+Interviewer: Okay.
+
+Patient: I've been doing this for a long time because of my back pain.
+
+Interviewer: Okay. And has it ever happened that half of your body feels like it has no strength?
+
+Patient: No, nothing like that.
+
+Interviewer: Okay. Do you have frequent urination at night?
+
+Patient: Yes, it happens at night.
+
+Interviewer: How many times do you get up?
+
+Patient: About three times.
+
+Interviewer: Three times at night. Okay. Was this happening before or is it recent?
+
+Patient: It's been happening for a few months.
+
+Interviewer: Since how long?
+
+Patient: About six months... maybe more than six months.
+
+Interviewer: Do you feel a burning sensation during urination?
+
+Patient: No.
+
+Interviewer: Any pain?
+
+Patient: No pain or burning.
+
+Interviewer: Is the color of your urine normal, as it was before?
+
+Patient: Yes.
+
+Interviewer: Are your bowel movements regular?
+
+Patient: Yes, regular.
+
+Interviewer: Okay.
+
+Interviewer: You mentioned pressure and thyroid... any other problems?
+
+Patient: No.
+
+Interviewer: You don't have a sugar problem?
+
+Patient: No sugar problem, just pressure.
+
+Interviewer: And do you have neck pain?
+
+Patient: Neck pain happens sometimes.
+
+Interviewer: Sometimes.
+
+Patient: Sometimes like this hand has been in pain for a long time.
+
+Interviewer: The right hand?
+
+Patient: Yes.
+
+Interviewer: For how long?
+
+Patient: For about a month.
+
+Interviewer: What happens?
+
+Patient: There is pain... it hurts when I try to lift it.
+
+Interviewer: The right hand hurts when lifting. Okay.
+
+Patient: And the wrist hurts too.
+
+Interviewer: Only on the right side?
+
+Patient: Yes.
+
+Interviewer: Is it because of age or did it start suddenly... do you do any heavy work?
+
+Patient: No, I think it's because of riding the bike.
+
+Interviewer: Okay, because of riding the bike.
+
+Interviewer: Has it ever happened that you had a seizure or a cramp in your body?
+
+Patient: Not in the whole body, but it happens in this leg.
+
+Interviewer: Which leg?
+
+Patient: The left leg.
+
+Interviewer: Since when?
+
+Patient: For a long time... I had that operation... it's because of that.
+
+Interviewer: The cramp has been there since then? It hasn't been cured yet?
+
+Patient: No.
+
+Interviewer: Okay. Does anyone in your family have pressure or sugar?
+
+Patient: My wife has pressure and sugar.
+
+Interviewer: And parents?
+
+Patient: My mother had pressure and sugar.
+
+Interviewer: Okay. You've been told not to eat salty food or puffed rice... you don't eat those excessively, right?
+
+Patient: No one has specifically forbidden me.
+
+Interviewer: For the pressure... like meat and such?
+
+Patient: Yes, those are forbidden.
+
+Interviewer: Is your appetite okay?
+
+Patient: I have a lot of appetite.
+
+Interviewer: Lots of appetite. Okay. Do you feel excessively thirsty?
+
+Patient: Yes, excessively.
+
+Interviewer: Since when?
+
+Patient: For quite some time... I drink water frequently.
+
+Interviewer: Frequent thirst. Okay.
+
+Interviewer: And you mentioned the spine operation... anything else?
+
+Patient: No, nothing else, and I take thyroid medicine.
+
+Interviewer: Okay. Have you ever had an illness for which you were hospitalized?
+
+Patient: That was a long time ago.
+
+Interviewer: How long ago?
+
+Patient: It was typhoid, about 15 years ago.
+
+Interviewer: Okay. No problems now. Alcohol, cigarettes, bidi?
+
+Patient: No, nothing. I have no addictions.
+
+Interviewer: Okay. You eat fish, meat, all kinds of food?
+
+Patient: Yes, everything.
+
+#MARKER B#
+
+Interviewer: You said your weight has decreased. How long have you noticed this?
+
+Patient: For the last six months to a year.
+
+Interviewer: And how much weight have you lost?
+
+Patient: About 10 kilos.
+
+Interviewer: About 10 kilos.
+
+Patient: I saw it here... it might vary at home.
+
+Interviewer: Okay. You said you feel very hungry. Does it happen that if you're late to eat, your body shakes?
+
+Patient: No, nothing like that.
+
+Interviewer: Do your hands or feet tingle or feel numb?
+
+Patient: No, nothing like that.
+
+Interviewer: When you climb stairs, do you feel chest pain or shortness of breath?
+
+Patient: Not shortness of breath, but it feels a bit tight.
+
+Interviewer: A bit tight. Okay. You don't have sugar?
+
+Patient: No sugar. Just pressure and thyroid medicine.
+
+Interviewer: Okay.
+
+#MARKER C#
