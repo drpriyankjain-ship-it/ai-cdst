@@ -1,0 +1,12 @@
+asyncpg
+fastapi
+google-genai
+pgvector
+pdfplumber
+python-docx
+python-jose[cryptography]
+rich>=13.8,<14
+sentence-transformers
+tenacity>=8.2.3,<9
+tqdm
+uvicorn

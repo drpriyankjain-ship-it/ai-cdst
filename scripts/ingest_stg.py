@@ -23,11 +23,25 @@ Usage:
   # Directory of files (uses filename stem as source, disease from --disease-map):
   python scripts/ingest_stg.py --dir docs/stg/ --disease-map scripts/disease_map.json
 
+  # Directory with explicit source labels and fallback disease tags:
+  python scripts/ingest_stg.py --dir "docs/clinical/RAG source" --manifest scripts/rag_source_manifest.json
+
   # Dry run (print chunks, no DB write):
   python scripts/ingest_stg.py --file docs/nhm_stg_malaria.pdf --disease malaria --dry-run
 
+  # Export extracted chunks for inspection, no DB write:
+  python scripts/ingest_stg.py --dir "docs/clinical/RAG source" --manifest scripts/rag_source_manifest.json --dry-run --out tmp/stg_chunks_preview.jsonl
+
 disease_map.json format:
   { "nhm_stg_malaria": "malaria", "nvbdcp_kala_azar": "kala-azar", ... }
+
+rag_source_manifest.json format:
+  {
+    "filename_stem": {
+      "source": "ICMR_STW_TB_2024_PTB_EPTB",
+      "disease": "tuberculosis"
+    }
+  }
 
 Documents to ingest (see docs/rag_brief.docx for full guidance):
   - NHM Standard Treatment Guidelines — all volumes
@@ -43,6 +57,8 @@ Dependencies:
 """
 
 import argparse
+from collections import Counter
+import hashlib
 import json
 import os
 import re
@@ -61,17 +77,36 @@ from tqdm import tqdm
 
 DATABASE_URL  = os.environ.get("DATABASE_URL", "postgresql://localhost/cdst")
 EMBED_MODEL   = "sentence-transformers/all-MiniLM-L6-v2"
+DISEASE_ALIASES_PATH = Path("data/rag_disease_aliases.json")
 CHUNK_TOKENS  = 350     # target chunk size in approximate tokens
 OVERLAP_TOKENS = 50     # overlap between consecutive chunks
 WORDS_PER_TOKEN = 0.75  # rough conversion: 1 token ≈ 0.75 words
-SIMILARITY_THRESHOLD = 0.55   # must match management_agent.py RAG config
 BATCH_SIZE    = 32      # embedding batch size
 
 # Approximate word counts derived from token targets
 CHUNK_WORDS   = int(CHUNK_TOKENS  / WORDS_PER_TOKEN)   # ~467 words
 OVERLAP_WORDS = int(OVERLAP_TOKENS / WORDS_PER_TOKEN)  # ~67 words
 
-embedder = SentenceTransformer(EMBED_MODEL)
+_embedder: SentenceTransformer | None = None
+_disease_aliases: dict[str, list[str]] | None = None
+
+
+def get_embedder() -> SentenceTransformer:
+    global _embedder
+    if _embedder is None:
+        _embedder = SentenceTransformer(EMBED_MODEL)
+    return _embedder
+
+
+def load_disease_aliases(path: Path = DISEASE_ALIASES_PATH) -> dict[str, list[str]]:
+    global _disease_aliases
+    if _disease_aliases is None:
+        if path.exists():
+            with path.open(encoding="utf-8") as f:
+                _disease_aliases = json.load(f)
+        else:
+            _disease_aliases = {}
+    return _disease_aliases
 
 
 # ---------------------------------------------------------------------------
@@ -82,9 +117,13 @@ embedder = SentenceTransformer(EMBED_MODEL)
 class Chunk:
     source:   str           # e.g. "NHM_STG_2023_malaria"
     disease:  Optional[str] # primary disease tag for filtered retrieval
-    section:  str           # section heading if detected, else "body"
+    section:  str           # treatment | dosing | contraindications | referral | diagnosis | complications | general
     content:  str           # chunk text
     embedding: list[float] = field(default_factory=list)
+
+    @property
+    def content_hash(self) -> str:
+        return hashlib.md5(f"{self.source}\n{self.content}".encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +254,67 @@ def chunk_section(heading: str, text: str) -> list[tuple[str, str]]:
     return chunks
 
 
-def extract_chunks(path: Path, source: str, disease: Optional[str]) -> list[Chunk]:
+def infer_section_type(heading: str, text: str) -> str:
+    """
+    Map free-form STG headings to the small section taxonomy used at retrieval time.
+    The original heading remains in the chunk content; this field is for filtering.
+    """
+    haystack = f"{heading}\n{text[:600]}".lower()
+    if any(k in haystack for k in ("dose", "dosage", "weight band", "mg/kg", "schedule")):
+        return "dosing"
+    if any(k in haystack for k in ("contraindication", "do not use", "avoid", "caution", "pregnancy", "g6pd")):
+        return "contraindications"
+    if any(k in haystack for k in ("refer", "referral", "hospital", "emergency", "admit")):
+        return "referral"
+    if any(k in haystack for k in ("treatment", "management", "therapy", "drug of choice", "first line", "second line")):
+        return "treatment"
+    if any(k in haystack for k in ("diagnosis", "investigation", "test", "clinical features")):
+        return "diagnosis"
+    if any(k in haystack for k in ("complication", "severe", "danger sign", "warning sign")):
+        return "complications"
+    return "general"
+
+
+def infer_disease_tag(
+    heading: str,
+    text: str,
+    fallback_disease: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Infer the disease tag from the chunk itself, not from the source document.
+
+    Broad STW volumes cover many diseases, so a source-level disease tag would be
+    misleading. Disease-specific documents can still provide a fallback in the
+    manifest for chunks whose text only says "treatment" or "follow-up".
+    """
+    aliases = load_disease_aliases()
+    if not aliases:
+        return fallback_disease
+
+    haystack = f"{heading}\n{text}".lower()
+    best_disease = fallback_disease
+    best_score = 0
+
+    for disease, terms in aliases.items():
+        score = 0
+        for term in terms:
+            term_l = term.lower()
+            pattern = r"(?<![a-z0-9])" + re.escape(term_l) + r"(?![a-z0-9])"
+            matches = len(re.findall(pattern, haystack))
+            if not matches:
+                continue
+            # Heading mentions are more likely to be the chunk topic.
+            heading_boost = 3 if re.search(pattern, heading.lower()) else 1
+            score += matches * heading_boost
+
+        if score > best_score:
+            best_disease = disease
+            best_score = score
+
+    return best_disease if best_score > 0 else fallback_disease
+
+
+def extract_chunks(path: Path, source: str, fallback_disease: Optional[str]) -> list[Chunk]:
     """
     Full extraction + chunking pipeline for one document.
     Returns a flat list of Chunk objects ready for embedding.
@@ -237,12 +336,14 @@ def extract_chunks(path: Path, source: str, disease: Optional[str]) -> list[Chun
         if not body.strip():
             continue
         for section_label, chunk_text in chunk_section(heading, body):
+            section_type = infer_section_type(section_label, chunk_text)
+            disease = infer_disease_tag(section_label, chunk_text, fallback_disease)
             if len(chunk_text.split()) < 10:   # skip trivially short chunks
                 continue
             chunks.append(Chunk(
                 source  = source,
                 disease = disease,
-                section = section_label,
+                section = section_type,
                 content = chunk_text,
             ))
 
@@ -257,7 +358,7 @@ def embed_chunks(chunks: list[Chunk]) -> None:
     """Embed all chunks in-place using batched inference."""
     texts = [c.content for c in chunks]
     print(f"Embedding {len(texts)} chunks in batches of {BATCH_SIZE}…")
-    embeddings = embedder.encode(
+    embeddings = get_embedder().encode(
         texts,
         batch_size   = BATCH_SIZE,
         show_progress_bar = True,
@@ -271,6 +372,18 @@ def embed_chunks(chunks: list[Chunk]) -> None:
 # Database insertion
 # ---------------------------------------------------------------------------
 
+async def ensure_stg_schema(conn: asyncpg.Connection) -> None:
+    """Keep older local databases compatible with the current RAG schema."""
+    await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    await conn.execute("ALTER TABLE stg_chunks ADD COLUMN IF NOT EXISTS section TEXT DEFAULT 'general'")
+    await conn.execute("ALTER TABLE stg_chunks ADD COLUMN IF NOT EXISTS content_hash TEXT")
+    await conn.execute("UPDATE stg_chunks SET content_hash = md5(source || E'\\n' || content) WHERE content_hash IS NULL")
+    await conn.execute("ALTER TABLE stg_chunks ALTER COLUMN content_hash SET NOT NULL")
+    await conn.execute("CREATE INDEX IF NOT EXISTS stg_chunks_disease_idx ON stg_chunks (disease)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS stg_chunks_section_idx ON stg_chunks (section)")
+    await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS stg_chunks_source_content_hash_idx ON stg_chunks (source, content_hash)")
+
+
 async def insert_chunks(chunks: list[Chunk], conn: asyncpg.Connection) -> int:
     """
     Bulk-insert chunks into stg_chunks.
@@ -278,34 +391,37 @@ async def insert_chunks(chunks: list[Chunk], conn: asyncpg.Connection) -> int:
     Returns count of rows inserted.
     """
     inserted = 0
+    await ensure_stg_schema(conn)
     for chunk in tqdm(chunks, desc="Inserting into stg_chunks"):
-        # Check for exact duplicate by source + first 200 chars of content
-        existing = await conn.fetchval(
+        row = await conn.fetchrow(
             """
-            SELECT chunk_id FROM stg_chunks
-            WHERE source = $1 AND left(content, 200) = $2
-            LIMIT 1
-            """,
-            chunk.source,
-            chunk.content[:200],
-        )
-        if existing:
-            continue
-
-        await conn.execute(
-            """
-            INSERT INTO stg_chunks (source, disease, section, content, embedding)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO stg_chunks (source, disease, section, content, content_hash, embedding)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (source, content_hash) DO NOTHING
+            RETURNING chunk_id
             """,
             chunk.source,
             chunk.disease,
             chunk.section,
             chunk.content,
+            chunk.content_hash,
             str(chunk.embedding),   # pgvector accepts '[0.1, 0.2, ...]' string format
         )
-        inserted += 1
+        if row:
+            inserted += 1
 
     return inserted
+
+
+async def delete_sources(sources: set[str], conn: asyncpg.Connection) -> int:
+    """Delete all chunks for the given source labels before re-ingesting an update."""
+    if not sources:
+        return 0
+    status = await conn.execute(
+        "DELETE FROM stg_chunks WHERE source = ANY($1::text[])",
+        list(sources),
+    )
+    return int(status.split()[-1])
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +433,31 @@ def resolve_disease_map(path: Optional[str]) -> dict[str, str]:
         return {}
     with open(path) as f:
         return json.load(f)
+
+
+def resolve_manifest(path: Optional[str]) -> dict[str, dict]:
+    if not path:
+        return {}
+    with open(path) as f:
+        return json.load(f)
+
+
+def print_chunk_summary(chunks: list[Chunk]) -> None:
+    by_source = Counter(c.source for c in chunks)
+    by_disease = Counter(c.disease or "(untagged)" for c in chunks)
+    by_section = Counter(c.section for c in chunks)
+
+    print("\nChunk summary by source:")
+    for source, count in by_source.most_common():
+        print(f"  {source:32s} {count:5d}")
+
+    print("\nChunk summary by disease:")
+    for disease, count in by_disease.most_common():
+        print(f"  {disease:32s} {count:5d}")
+
+    print("\nChunk summary by section:")
+    for section, count in by_section.most_common():
+        print(f"  {section:32s} {count:5d}")
 
 
 def main() -> None:
@@ -336,6 +477,10 @@ def main() -> None:
         help="JSON file mapping filename stem → disease tag. Used with --dir.",
     )
     parser.add_argument(
+        "--manifest",
+        help="JSON file mapping filename stem → {source, disease}. disease is only a fallback tag.",
+    )
+    parser.add_argument(
         "--source",
         help="Source label override (default: filename stem in UPPER_SNAKE_CASE).",
     )
@@ -343,6 +488,15 @@ def main() -> None:
         "--dry-run",
         action="store_true",
         help="Print chunks without writing to the database.",
+    )
+    parser.add_argument(
+        "--out",
+        help="Write extracted chunk metadata/content to a JSONL file for inspection.",
+    )
+    parser.add_argument(
+        "--replace-source",
+        action="store_true",
+        help="Delete existing chunks for the source label(s) before inserting.",
     )
     parser.add_argument(
         "--db",
@@ -369,15 +523,21 @@ def main() -> None:
             sys.exit(1)
 
     disease_map = resolve_disease_map(args.disease_map)
+    manifest = resolve_manifest(args.manifest)
 
     all_chunks: list[Chunk] = []
     for file_path in files:
         stem    = file_path.stem
-        source  = args.source or stem.upper().replace(" ", "_").replace("-", "_")
-        disease = args.disease or disease_map.get(stem)
+        manifest_entry = manifest.get(stem, {})
+        source  = (
+            args.source
+            or manifest_entry.get("source")
+            or stem.upper().replace(" ", "_").replace("-", "_")
+        )
+        fallback_disease = args.disease if args.disease is not None else manifest_entry.get("disease", disease_map.get(stem))
 
-        print(f"\nProcessing: {file_path.name} — source={source} disease={disease}")
-        chunks = extract_chunks(file_path, source, disease)
+        print(f"\nProcessing: {file_path.name} — source={source} fallback_disease={fallback_disease}")
+        chunks = extract_chunks(file_path, source, fallback_disease)
         print(f"  → {len(chunks)} chunks extracted")
         all_chunks.extend(chunks)
 
@@ -385,9 +545,27 @@ def main() -> None:
         print("No chunks extracted. Nothing to do.")
         return
 
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with out_path.open("w", encoding="utf-8") as f:
+            for i, c in enumerate(all_chunks, start=1):
+                f.write(json.dumps({
+                    "n": i,
+                    "source": c.source,
+                    "disease": c.disease,
+                    "section": c.section,
+                    "content_hash": c.content_hash,
+                    "word_count": len(c.content.split()),
+                    "content": c.content,
+                }, ensure_ascii=False) + "\n")
+        print(f"\nWrote {len(all_chunks)} chunks to {out_path}")
+
     if args.dry_run:
         print(f"\n{'─' * 60}")
         print(f"DRY RUN — {len(all_chunks)} chunks (not written to DB)\n")
+        print_chunk_summary(all_chunks)
+        print("")
         for i, c in enumerate(all_chunks[:5]):
             print(f"[{i+1}] source={c.source} disease={c.disease} section={c.section!r}")
             print(f"     {c.content[:120]}…\n")
@@ -395,16 +573,22 @@ def main() -> None:
             print(f"  … and {len(all_chunks) - 5} more chunks")
         return
 
-    # Embed
-    embed_chunks(all_chunks)
-
-    # Insert
     import asyncio
 
     async def run():
         conn     = await asyncpg.connect(dsn=args.db)
-        inserted = await insert_chunks(all_chunks, conn)
-        await conn.close()
+        try:
+            await ensure_stg_schema(conn)
+            if args.replace_source:
+                sources = {chunk.source for chunk in all_chunks}
+                deleted = await delete_sources(sources, conn)
+                print(f"Deleted {deleted} existing rows for source(s): {', '.join(sorted(sources))}")
+
+            # Embed only after the DB/schema check succeeds, so setup failures are cheap.
+            embed_chunks(all_chunks)
+            inserted = await insert_chunks(all_chunks, conn)
+        finally:
+            await conn.close()
         print(f"\nDone — {inserted} new rows inserted ({len(all_chunks) - inserted} duplicates skipped)")
 
         # Print stats

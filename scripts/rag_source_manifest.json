@@ -1,0 +1,22 @@
+{
+  "1725444938_stw_manual_v1_stw_i": {
+    "source": "ICMR_STW_MANUAL_V1_VOLUME_1",
+    "disease": null,
+    "notes": "Approved broad Standard Treatment Workflow source PDF. Keep disease null here; per-chunk disease is inferred from chunk text."
+  },
+  "1733131850_stw_vol_3_20222": {
+    "source": "ICMR_STW_VOLUME_3_2022",
+    "disease": null,
+    "notes": "Approved broad Standard Treatment Workflow source PDF. Keep disease null here; per-chunk disease is inferred from chunk text."
+  },
+  "1733131852_stw_vol_4_2024": {
+    "source": "ICMR_STW_VOLUME_4_2024",
+    "disease": null,
+    "notes": "Approved broad Standard Treatment Workflow source PDF. Keep disease null here; per-chunk disease is inferred from chunk text."
+  },
+  "1733131854_icmr_stw_ptb_eptb": {
+    "source": "ICMR_STW_PTB_EPTB_2024",
+    "disease": "tuberculosis",
+    "notes": "Approved pulmonary and extrapulmonary tuberculosis Standard Treatment Workflow source PDF. disease is a fallback for generic chunks in this disease-specific PDF."
+  }
+}

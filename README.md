@@ -105,12 +105,20 @@ documents before running sessions:
 # Single document
 python scripts/ingest_stg.py --file docs/nhm_stg_malaria.pdf --disease malaria
 
-# Whole directory with a disease map
-python scripts/ingest_stg.py --dir docs/stg/ --disease-map scripts/disease_map.json
+# Approved STW corpus for the initial RAG build
+python scripts/ingest_stg.py --dir "docs/clinical/RAG source" --manifest scripts/rag_source_manifest.json
 
-# Dry run — prints chunks without touching the DB
-python scripts/ingest_stg.py --file docs/nhm_stg_malaria.pdf --disease malaria --dry-run
+# Dry run and export chunks for review without touching the DB
+python scripts/ingest_stg.py --dir "docs/clinical/RAG source" --manifest scripts/rag_source_manifest.json --dry-run --out tmp/stg_chunks_preview.jsonl
+
+# Replace existing chunks for these source labels, then re-ingest
+python scripts/ingest_stg.py --dir "docs/clinical/RAG source" --manifest scripts/rag_source_manifest.json --replace-source
 ```
+
+The ingestion script infers `stg_chunks.disease` from each chunk's heading and
+content using `data/rag_disease_aliases.json`. Manifest `disease` values are
+fallbacks for disease-specific PDFs only; broad STW volumes should stay `null`
+in the manifest.
 
 Verify ingestion:
 

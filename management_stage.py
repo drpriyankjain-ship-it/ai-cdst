@@ -53,9 +53,19 @@ BEDSIDE_TOOLS_PATH = "data/bedside_tools.json"
 FORMULARY_PATH     = "data/formulary_wb.json"
 ESCALATION_RULES_PATH = "data/escalation_rules.json"
 RAG_TOP_K          = 8    # STG chunks per diagnosis for treatment retrieval
+RAG_SIMILARITY_THRESHOLD = 0.55
+RAG_SECTION_FILTER = ("treatment", "dosing", "contraindications", "referral", "general")
+RAG_IVFFLAT_PROBES = 10
 STAGE_TIMEOUT_SECS = 120  # hard ceiling for the full pipeline; orchestrator should wrap with asyncio.wait_for
 
-embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+_embedder: SentenceTransformer | None = None
+
+
+def get_embedder() -> SentenceTransformer:
+    global _embedder
+    if _embedder is None:
+        _embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+    return _embedder
 
 with open(ESCALATION_RULES_PATH) as _f:
     ESCALATION_RULES: dict = json.load(_f)
@@ -349,7 +359,7 @@ async def retrieve_treatment_protocols(
     conn: asyncpg.Connection,
     diagnoses: list[str],
     top_k: int = RAG_TOP_K,
-) -> str:
+) -> dict:
     """
     Retrieve STG treatment protocol chunks for the top 1-2 diagnoses.
 
@@ -357,34 +367,75 @@ async def retrieve_treatment_protocols(
     referral criteria. This is the core RAG use case for the Management Stage:
     retrieved authoritative text governs the prescription, not LLM recall.
 
-    Returns a formatted string ready for prompt injection, or empty string
-    if no relevant chunks are found.
+    Returns:
+      {
+        "context": formatted string ready for prompt injection,
+        "chunks":  structured retrieval audit records,
+      }
     """
-    retrieved_sections = []
-
+    unique_diagnoses = []
+    seen = set()
     for diagnosis in diagnoses:
+        cleaned = " ".join(str(diagnosis).split())
+        key = cleaned.lower()
+        if cleaned and key not in seen:
+            unique_diagnoses.append(cleaned)
+            seen.add(key)
+
+    retrieved_sections = []
+    retrieved_chunks = []
+
+    try:
+        await conn.execute(f"SET ivfflat.probes = {RAG_IVFFLAT_PROBES}")
+    except Exception as e:
+        print(f"[RAG WARNING] Could not set ivfflat.probes: {type(e).__name__}: {e}")
+
+    for diagnosis in unique_diagnoses:
         query = (
             f"treatment protocol dose duration route contraindications "
             f"referral criteria {diagnosis} NHM India STG"
         )
-        query_embedding = (await asyncio.to_thread(embedder.encode, query)).tolist()
+        query_embedding = (await asyncio.to_thread(lambda: get_embedder().encode(query))).tolist()
 
         rows = await conn.fetch(
             """
-            SELECT content, source, chunk_id,
+            SELECT content, source, disease, section, chunk_id,
                    1 - (embedding <=> $1::vector) AS similarity
             FROM stg_chunks
-            WHERE 1 - (embedding <=> $1::vector) > 0.55
-            ORDER BY embedding <=> $1::vector
+            WHERE embedding IS NOT NULL
+              AND ($3::text[] IS NULL OR section = ANY($3::text[]))
+              AND 1 - (embedding <=> $1::vector) >= $4
+            ORDER BY
+              CASE
+                WHEN lower(coalesce(disease, '')) = lower($5) THEN 0
+                WHEN disease IS NOT NULL AND lower($5) LIKE '%' || lower(disease) || '%' THEN 1
+                ELSE 2
+              END,
+              embedding <=> $1::vector
             LIMIT $2
             """,
-            query_embedding,
-            top_k
+            str(query_embedding),
+            top_k,
+            list(RAG_SECTION_FILTER),
+            RAG_SIMILARITY_THRESHOLD,
+            diagnosis,
         )
 
         if rows:
+            row_records = [
+                {
+                    "query_diagnosis": diagnosis,
+                    "source": row["source"],
+                    "chunk_id": row["chunk_id"],
+                    "disease": row["disease"],
+                    "section": row["section"],
+                    "similarity": float(row["similarity"]),
+                }
+                for row in rows
+            ]
+            retrieved_chunks.extend(row_records)
             chunks = "\n\n".join(
-                f"[{row['source']} / chunk {row['chunk_id']} "
+                f"[{row['source']} / chunk {row['chunk_id']} / {row['section'] or 'general'} "
                 f"| similarity {row['similarity']:.2f}]\n{row['content']}"
                 for row in rows
             )
@@ -393,9 +444,21 @@ async def retrieve_treatment_protocols(
     if not retrieved_sections:
         print("[RAG WARNING] No STG chunks retrieved. "
               "Prescription will rely on LLM knowledge only — flag for review.")
-        return ""
+        return {
+            "context": "",
+            "chunks": [],
+            "diagnoses_queried": unique_diagnoses,
+            "similarity_threshold": RAG_SIMILARITY_THRESHOLD,
+            "section_filter": list(RAG_SECTION_FILTER),
+        }
 
-    return "\n\n".join(retrieved_sections)
+    return {
+        "context": "\n\n".join(retrieved_sections),
+        "chunks": retrieved_chunks,
+        "diagnoses_queried": unique_diagnoses,
+        "similarity_threshold": RAG_SIMILARITY_THRESHOLD,
+        "section_filter": list(RAG_SECTION_FILTER),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -543,8 +606,11 @@ async def generate_provisional_diagnosis_and_rx(
             "second-line alternative and record in formulary_substitutions\n"
             "- Do NOT prescribe any drug the patient is allergic to\n"
             "- stg_source must cite the specific retrieved chunk — "
+            "use the exact format 'SOURCE / chunk N' from RETRIEVED STG TREATMENT PROTOCOLS; "
             "set to null if no STG chunk was retrieved for this drug; "
             "do not fabricate a citation\n"
+            "- If no STG chunk supports a drug dose, prefer non-pharmacological/supportive "
+            "care plus referral/doctor review over inventing a protocol-specific dose\n"
             "- non_pharmacological_shared: advice applying to the whole encounter\n"
             "- If prior_encounters is empty this is a new patient — proceed without "
             "assuming any prior treatment history"
@@ -1243,16 +1309,19 @@ async def _run_pipeline(
 
     # Call 1 + RAG in parallel — pass coroutines directly so gather cancels both on failure
     print(f"[{session_id}] Call 1: extracting clarifying findings + RAG retrieval")
-    clarifying_findings, stg_context = await asyncio.gather(
+    clarifying_findings, stg_retrieval = await asyncio.gather(
         extract_clarifying_findings(transcript_segment, vault_context),
         retrieve_treatment_protocols(db_conn, rag_diagnoses),
     )
-    await vault.update({"clarifying_findings": clarifying_findings})
+    await vault.update({
+        "clarifying_findings": clarifying_findings,
+        "stg_retrieval": stg_retrieval,
+    })
 
     # Call 2 — problem list (provisional Dx + all problems + prescriptions)
     print(f"[{session_id}] Call 2: generating problem list")
     problem_list_output = await generate_provisional_diagnosis_and_rx(
-        clarifying_findings, vault_context, stg_context, formulary
+        clarifying_findings, vault_context, stg_retrieval.get("context", ""), formulary
     )
     await vault.update({"problem_list": problem_list_output})
 
@@ -1387,10 +1456,11 @@ async def stream_management(
     if isinstance(known_conditions, list):
         rag_diagnoses += [c for c in known_conditions if c]
 
-    clarifying_findings, stg_context = await asyncio.gather(
+    clarifying_findings, stg_retrieval = await asyncio.gather(
         extract_clarifying_findings(transcript_segment, vault_context),
         retrieve_treatment_protocols(conn, rag_diagnoses),
     )
+    stg_context = stg_retrieval.get("context", "")
 
     stream_prompt = (
         f"Generate a problem-oriented management plan for a nurse "

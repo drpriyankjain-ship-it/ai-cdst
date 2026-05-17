@@ -102,8 +102,10 @@ CREATE EXTENSION IF NOT EXISTS vector;
 CREATE TABLE stg_chunks (
     chunk_id        SERIAL PRIMARY KEY,
     source          TEXT NOT NULL,          -- e.g. "NHM_STG_2023_malaria"
-    disease         TEXT,                   -- primary disease tag for filtering
+    disease         TEXT,                   -- inferred from chunk text; null for generic/front-matter chunks
+    section         TEXT,                   -- treatment | dosing | contraindications | referral | diagnosis | complications | general
     content         TEXT NOT NULL,
+    content_hash    TEXT NOT NULL,          -- md5(source + content), used to skip exact duplicates
     embedding       vector(384),            -- MiniLM-L6-v2 dimension
     created_at      TIMESTAMPTZ DEFAULT now()
 );
@@ -113,6 +115,8 @@ CREATE INDEX ON stg_chunks USING ivfflat (embedding vector_cosine_ops)
 
 -- Filter index for disease-scoped retrieval
 CREATE INDEX ON stg_chunks (disease);
+CREATE INDEX ON stg_chunks (section);
+CREATE UNIQUE INDEX stg_chunks_source_content_hash_idx ON stg_chunks (source, content_hash);
 
 
 -- ============================================================
