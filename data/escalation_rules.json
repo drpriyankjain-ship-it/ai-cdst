@@ -1,0 +1,659 @@
+{
+  "_metadata": {
+    "version": "1.0",
+    "description": "Clinical escalation rules for the CDST Rule Engine. These rules determine when a patient must be urgently referred to a First Referral Unit (FRU) or higher. Includes a conditional escalation policy for pregnancy where doctor review is required if a pregnancy-sensitive diagnosis or teratogen is involved.",
+    "last_reviewed_date": null,
+    "reviewed_by": null,
+    "sign_off_notes": null,
+    "next_review_due": null
+  },
+  "vital_thresholds": {
+    "_notes": "If any measured vital crosses these thresholds the case is automatically escalated to HIGH regardless of the AI-assessed tier. Adjust thresholds here — no code change required.",
+    "spo2_critical_pct": 92,
+    "systolic_bp_shock_mmhg": 90,
+    "systolic_bp_hypertensive_emergency_mmhg": 180,
+    "hr_tachycardia_bpm": 120,
+    "hr_bradycardia_bpm": 50,
+    "rr_distress_per_min": 30,
+    "rr_depression_per_min": 10,
+    "temperature_hyperpyrexia_c": 40.0,
+    "temperature_hypothermia_c": 35.0,
+    "gcs_altered_consciousness": 15,
+    "bgl_hypoglycaemia_mmol": 3.0,
+    "bgl_hyperglycaemia_mmol": 16.6
+  },
+  "high_risk_diagnoses": [
+    {
+      "name": "sepsis",
+      "category": "Infectious/Systemic",
+      "notes": ""
+    },
+    {
+      "name": "septic shock",
+      "category": "Infectious/Systemic",
+      "notes": ""
+    },
+    {
+      "name": "severe malaria",
+      "category": "Infectious/Systemic",
+      "notes": "Plasmodium falciparum with organ involvement"
+    },
+    {
+      "name": "cerebral malaria",
+      "category": "Infectious/Systemic",
+      "notes": ""
+    },
+    {
+      "name": "meningitis",
+      "category": "Infectious/Systemic",
+      "notes": "All suspected bacterial meningitis"
+    },
+    {
+      "name": "encephalitis",
+      "category": "Infectious/Systemic",
+      "notes": ""
+    },
+    {
+      "name": "cholera",
+      "category": "Infectious/Systemic",
+      "notes": "Severe dehydration — Plan C not responding"
+    },
+    {
+      "name": "diphtheria",
+      "category": "Infectious/Systemic",
+      "notes": "Bull neck or airway membrane"
+    },
+    {
+      "name": "tetanus",
+      "category": "Infectious/Systemic",
+      "notes": "Any stage with trismus or opisthotonus"
+    },
+    {
+      "name": "rabies",
+      "category": "Infectious/Systemic",
+      "notes": "After neurological onset"
+    },
+    {
+      "name": "eclampsia",
+      "category": "Obstetric/Gynaecological",
+      "notes": "Active or post-ictal"
+    },
+    {
+      "name": "pre-eclampsia",
+      "category": "Obstetric/Gynaecological",
+      "notes": "Severe features only"
+    },
+    {
+      "name": "ectopic pregnancy",
+      "category": "Obstetric/Gynaecological",
+      "notes": "Suspected or confirmed"
+    },
+    {
+      "name": "antepartum haemorrhage",
+      "category": "Obstetric/Gynaecological",
+      "notes": ""
+    },
+    {
+      "name": "antepartum hemorrhage",
+      "category": "Obstetric/Gynaecological",
+      "notes": "US spelling"
+    },
+    {
+      "name": "postpartum haemorrhage",
+      "category": "Obstetric/Gynaecological",
+      "notes": ">500 mL vaginal / >1000 mL CS"
+    },
+    {
+      "name": "postpartum hemorrhage",
+      "category": "Obstetric/Gynaecological",
+      "notes": "US spelling"
+    },
+    {
+      "name": "obstructed labour",
+      "category": "Obstetric/Gynaecological",
+      "notes": ""
+    },
+    {
+      "name": "obstructed labor",
+      "category": "Obstetric/Gynaecological",
+      "notes": "US spelling"
+    },
+    {
+      "name": "postpartum sepsis",
+      "category": "Obstetric/Gynaecological",
+      "notes": ""
+    },
+    {
+      "name": "puerperal sepsis",
+      "category": "Obstetric/Gynaecological",
+      "notes": ""
+    },
+    {
+      "name": "acute myocardial infarction",
+      "category": "Cardiopulmonary",
+      "notes": "STEMI or suspected STEMI"
+    },
+    {
+      "name": "unstable angina",
+      "category": "Cardiopulmonary",
+      "notes": ""
+    },
+    {
+      "name": "acute pulmonary oedema",
+      "category": "Cardiopulmonary",
+      "notes": ""
+    },
+    {
+      "name": "acute pulmonary edema",
+      "category": "Cardiopulmonary",
+      "notes": "US spelling"
+    },
+    {
+      "name": "respiratory failure",
+      "category": "Cardiopulmonary",
+      "notes": "Type I or II"
+    },
+    {
+      "name": "anaphylaxis",
+      "category": "Cardiopulmonary",
+      "notes": ""
+    },
+    {
+      "name": "aortic dissection",
+      "category": "Cardiopulmonary",
+      "notes": ""
+    },
+    {
+      "name": "stroke",
+      "category": "Neurological",
+      "notes": "Ischaemic or haemorrhagic"
+    },
+    {
+      "name": "status epilepticus",
+      "category": "Neurological",
+      "notes": "Seizure >5 min or recurrent without recovery"
+    },
+    {
+      "name": "guillain-barré",
+      "category": "Neurological",
+      "notes": ""
+    },
+    {
+      "name": "guillain barre",
+      "category": "Neurological",
+      "notes": "Spelling variant"
+    },
+    {
+      "name": "guillain-barre",
+      "category": "Neurological",
+      "notes": "Spelling variant"
+    },
+    {
+      "name": "acute flaccid paralysis",
+      "category": "Neurological",
+      "notes": "AFP — mandatory notification"
+    },
+    {
+      "name": "cord compression",
+      "category": "Neurological",
+      "notes": "New onset paraplegia or tetraplegia"
+    },
+    {
+      "name": "diabetic ketoacidosis",
+      "category": "Metabolic/Endocrine",
+      "notes": ""
+    },
+    {
+      "name": "hyperosmolar hyperglycaemic state",
+      "category": "Metabolic/Endocrine",
+      "notes": ""
+    },
+    {
+      "name": "hyperosmolar hyperglycemic state",
+      "category": "Metabolic/Endocrine",
+      "notes": "US spelling"
+    },
+    {
+      "name": "addisonian crisis",
+      "category": "Metabolic/Endocrine",
+      "notes": ""
+    },
+    {
+      "name": "adrenal crisis",
+      "category": "Metabolic/Endocrine",
+      "notes": ""
+    },
+    {
+      "name": "acute abdomen",
+      "category": "Surgical/GI",
+      "notes": "Perforation, torsion, ruptured aneurysm"
+    },
+    {
+      "name": "bowel obstruction",
+      "category": "Surgical/GI",
+      "notes": ""
+    },
+    {
+      "name": "intestinal obstruction",
+      "category": "Surgical/GI",
+      "notes": ""
+    },
+    {
+      "name": "peritonitis",
+      "category": "Surgical/GI",
+      "notes": ""
+    },
+    {
+      "name": "intussusception",
+      "category": "Surgical/GI",
+      "notes": "Paediatric — current jelly stool"
+    }
+  ],
+  "injectable_drugs": [
+    {
+      "name": "artesunate",
+      "reason": "IV/IM — requires trained nurse or doctor"
+    },
+    {
+      "name": "quinine",
+      "reason": "IV infusion — risk of arrhythmia and hypoglycaemia"
+    },
+    {
+      "name": "ceftriaxone",
+      "reason": "IV/IM — requires prescription and monitoring"
+    },
+    {
+      "name": "oxytocin",
+      "reason": "IV infusion — dose-critical, uterine hyperstimulation risk"
+    },
+    {
+      "name": "magnesium sulphate",
+      "reason": "IV/IM — eclampsia treatment, toxicity risk"
+    },
+    {
+      "name": "dexamethasone",
+      "reason": "IV/IM — requires clear medical indication"
+    },
+    {
+      "name": "adrenaline",
+      "reason": "IM/IV — anaphylaxis or cardiac arrest only"
+    },
+    {
+      "name": "morphine",
+      "reason": "Controlled drug — doctor prescription mandatory"
+    },
+    {
+      "name": "diazepam",
+      "reason": "IV/IM/PR — status epilepticus, controlled drug"
+    },
+    {
+      "name": "phenobarbitone",
+      "reason": "IV/IM — status epilepticus, controlled drug"
+    },
+    {
+      "name": "phenobarbital",
+      "reason": "US spelling of phenobarbitone"
+    },
+    {
+      "name": "hydralazine",
+      "reason": "IV — hypertensive crisis in pregnancy, requires BP monitoring"
+    },
+    {
+      "name": "labetalol",
+      "reason": "IV — severe hypertension, requires cardiac monitoring"
+    }
+  ],
+  "teratogenic_drugs": [
+    {
+      "name": "ciprofloxacin",
+      "pregnancy_risk": "B/C",
+      "notes": "Arthropathy risk; avoid in pregnancy"
+    },
+    {
+      "name": "ofloxacin",
+      "pregnancy_risk": "C",
+      "notes": "Avoid in pregnancy"
+    },
+    {
+      "name": "doxycycline",
+      "pregnancy_risk": "D",
+      "notes": "Bone and tooth development; contraindicated"
+    },
+    {
+      "name": "tetracycline",
+      "pregnancy_risk": "D",
+      "notes": "Contraindicated in pregnancy"
+    },
+    {
+      "name": "ibuprofen",
+      "pregnancy_risk": "D",
+      "notes": "NSAID — premature ductus arteriosus closure; avoid esp. 3rd trimester"
+    },
+    {
+      "name": "diclofenac",
+      "pregnancy_risk": "D",
+      "notes": "NSAID — same concern as ibuprofen"
+    },
+    {
+      "name": "naproxen",
+      "pregnancy_risk": "D",
+      "notes": "NSAID — same concern as ibuprofen"
+    },
+    {
+      "name": "aspirin",
+      "pregnancy_risk": "D",
+      "notes": "High dose only; low-dose under doctor supervision may be used"
+    },
+    {
+      "name": "albendazole",
+      "pregnancy_risk": "C",
+      "notes": "Avoid in first trimester"
+    },
+    {
+      "name": "mebendazole",
+      "pregnancy_risk": "C",
+      "notes": "Avoid in first trimester"
+    },
+    {
+      "name": "fluconazole",
+      "pregnancy_risk": "D",
+      "notes": "High dose — fetal malformations"
+    },
+    {
+      "name": "primaquine",
+      "pregnancy_risk": "C",
+      "notes": "G6PD haemolysis risk in fetus"
+    },
+    {
+      "name": "methotrexate",
+      "pregnancy_risk": "X",
+      "notes": "Absolute contraindication — abortifacient and teratogen"
+    },
+    {
+      "name": "misoprostol",
+      "pregnancy_risk": "X",
+      "notes": "Abortifacient — medically prescribed only"
+    },
+    {
+      "name": "mifepristone",
+      "pregnancy_risk": "X",
+      "notes": "Abortifacient — medically prescribed only"
+    },
+    {
+      "name": "phenytoin",
+      "pregnancy_risk": "D",
+      "notes": "Fetal hydantoin syndrome"
+    },
+    {
+      "name": "valproate",
+      "pregnancy_risk": "D",
+      "notes": "Neural tube defects — high-risk teratogen"
+    },
+    {
+      "name": "carbamazepine",
+      "pregnancy_risk": "D",
+      "notes": "Neural tube defects"
+    },
+    {
+      "name": "enalapril",
+      "pregnancy_risk": "D",
+      "notes": "ACE inhibitor — renal agenesis; avoid 2nd/3rd trimester"
+    },
+    {
+      "name": "losartan",
+      "pregnancy_risk": "D",
+      "notes": "ARB — same as ACE inhibitors; contraindicated"
+    },
+    {
+      "name": "atorvastatin",
+      "pregnancy_risk": "X",
+      "notes": "Statin — contraindicated in pregnancy"
+    }
+  ],
+  "pregnancy_sensitive_diagnoses": [
+    {
+      "name": "ectopic pregnancy",
+      "notes": ""
+    },
+    {
+      "name": "pre-eclampsia",
+      "notes": ""
+    },
+    {
+      "name": "eclampsia",
+      "notes": ""
+    },
+    {
+      "name": "anaemia in pregnancy",
+      "notes": ""
+    },
+    {
+      "name": "postpartum sepsis",
+      "notes": ""
+    },
+    {
+      "name": "hyperemesis gravidarum",
+      "notes": ""
+    },
+    {
+      "name": "placenta praevia",
+      "notes": ""
+    },
+    {
+      "name": "abruption",
+      "notes": ""
+    },
+    {
+      "name": "threatened miscarriage",
+      "notes": ""
+    },
+    {
+      "name": "miscarriage",
+      "notes": ""
+    },
+    {
+      "name": "antepartum haemorrhage",
+      "notes": ""
+    },
+    {
+      "name": "gestational diabetes",
+      "notes": ""
+    },
+    {
+      "name": "obstetric cholestasis",
+      "notes": ""
+    },
+    {
+      "name": "malaria",
+      "notes": "Treatment regimen changes significantly in pregnancy"
+    },
+    {
+      "name": "severe malaria",
+      "notes": ""
+    },
+    {
+      "name": "typhoid",
+      "notes": "Avoid fluoroquinolones; first-line drugs change"
+    },
+    {
+      "name": "tuberculosis",
+      "notes": "Streptomycin contraindicated; regimen modification needed"
+    },
+    {
+      "name": "pulmonary tb",
+      "notes": ""
+    },
+    {
+      "name": "urinary tract infection",
+      "notes": "Nitrofurantoin and fluoroquinolones change; treat promptly"
+    },
+    {
+      "name": "uti",
+      "notes": ""
+    },
+    {
+      "name": "epilepsy",
+      "notes": "AED regimen review required; valproate contraindicated"
+    },
+    {
+      "name": "hypertension",
+      "notes": "Antihypertensive choice changes; ACE inhibitors contraindicated"
+    }
+  ],
+  "critical_red_flag_terms": [
+    {
+      "term": "cannot walk",
+      "category": "Neurological"
+    },
+    {
+      "term": "can't walk",
+      "category": "Neurological"
+    },
+    {
+      "term": "unable to walk",
+      "category": "Neurological"
+    },
+    {
+      "term": "vomiting blood",
+      "category": "GI Haemorrhage"
+    },
+    {
+      "term": "blood in vomit",
+      "category": "GI Haemorrhage"
+    },
+    {
+      "term": "haematemesis",
+      "category": "GI Haemorrhage"
+    },
+    {
+      "term": "hematemesis",
+      "category": "GI Haemorrhage"
+    },
+    {
+      "term": "coughing blood",
+      "category": "Pulmonary"
+    },
+    {
+      "term": "blood in sputum",
+      "category": "Pulmonary"
+    },
+    {
+      "term": "haemoptysis",
+      "category": "Pulmonary"
+    },
+    {
+      "term": "hemoptysis",
+      "category": "Pulmonary"
+    },
+    {
+      "term": "black stool",
+      "category": "GI Haemorrhage"
+    },
+    {
+      "term": "melena",
+      "category": "GI Haemorrhage"
+    },
+    {
+      "term": "blood in stool",
+      "category": "GI Haemorrhage"
+    },
+    {
+      "term": "fitting",
+      "category": "Neurological"
+    },
+    {
+      "term": "convulsing",
+      "category": "Neurological"
+    },
+    {
+      "term": "seizure",
+      "category": "Neurological"
+    },
+    {
+      "term": "fits",
+      "category": "Neurological"
+    },
+    {
+      "term": "unconscious",
+      "category": "Neurological"
+    },
+    {
+      "term": "unresponsive",
+      "category": "Neurological"
+    },
+    {
+      "term": "not responding",
+      "category": "Neurological"
+    },
+    {
+      "term": "lost consciousness",
+      "category": "Neurological"
+    },
+    {
+      "term": "cannot breathe",
+      "category": "Respiratory"
+    },
+    {
+      "term": "unable to breathe",
+      "category": "Respiratory"
+    },
+    {
+      "term": "not breathing",
+      "category": "Respiratory"
+    },
+    {
+      "term": "paralysis",
+      "category": "Neurological"
+    },
+    {
+      "term": "cannot move",
+      "category": "Neurological"
+    },
+    {
+      "term": "limb weakness",
+      "category": "Neurological"
+    },
+    {
+      "term": "rigid abdomen",
+      "category": "Surgical"
+    },
+    {
+      "term": "board-like",
+      "category": "Surgical"
+    },
+    {
+      "term": "board like",
+      "category": "Surgical"
+    },
+    {
+      "term": "facial droop",
+      "category": "Neurological"
+    },
+    {
+      "term": "slurred speech",
+      "category": "Neurological"
+    },
+    {
+      "term": "sudden severe headache",
+      "category": "Neurological"
+    },
+    {
+      "term": "loss of bladder",
+      "category": "Neurological"
+    },
+    {
+      "term": "loss of bowel",
+      "category": "Neurological"
+    }
+  ],
+  "patient_profile_rules": {
+    "_notes": "Age values are in YEARS (decimal). Example: 2 months = 0.17 years.",
+    "infant_age_years_threshold": 2,
+    "infant_threshold_label": "2 years",
+    "low_weight_kg_threshold": 5,
+    "childbearing_age_min_years": 12,
+    "childbearing_age_max_years": 50,
+    "blanket_pregnancy_escalation": false,
+    "pregnancy_sensitive_trigger_required": true
+  }
+}

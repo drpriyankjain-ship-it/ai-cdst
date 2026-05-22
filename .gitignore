@@ -1,0 +1,10 @@
+node_modules/
+server/node_modules/
+.expo/
+dist/
+deploy/
+server/uploads/
+server/.env
+*.apk
+*.aab
+*.log

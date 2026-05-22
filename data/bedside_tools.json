@@ -1,0 +1,50 @@
+{
+  "_comment": "Tools and tests available to a community health nurse (MLHP/MPW) at a Sub Health Centre upgraded to Health and Wellness Centre (SHC-HWC) in rural West Bengal. Source: Ayushman Bharat Operational Guidelines for Health and Wellness Centers (MoHFW, GOI) — Annexures 3 and 4. The Diagnosis Agent is constrained to suggest only these when generating bedside observations and discriminating tests. See docs/bedside_tools_crosscheck.md for the full guideline citation table.",
+  "physical_examination": [
+    { "tool": "hands", "actions": ["palpation of abdomen", "lymph node assessment", "skin examination", "capillary refill", "oedema assessment", "fontanelle assessment (infants)"] },
+    { "tool": "eyes", "actions": ["pallor assessment (conjunctival)", "jaundice (scleral icterus)", "pupil reactivity", "rash inspection"] },
+    { "tool": "ears", "actions": ["aural inspection (visual, unaided)"] },
+    { "tool": "tongue depressor", "actions": ["throat inspection", "tonsillar assessment", "oral mucosa examination"] },
+    { "tool": "tuning fork", "actions": ["Weber test", "Rinne test", "hearing assessment"] },
+    { "tool": "foetoscope", "actions": ["fetal heart sounds (pregnant patients)"] }
+  ],
+  "basic_instruments": [
+    { "tool": "thermometer (clinical and digital)", "measures": "body temperature (axillary or oral)" },
+    { "tool": "blood pressure cuff (aneroid and digital)", "measures": "systolic and diastolic BP" },
+    { "tool": "pulse oximeter", "measures": "SpO2 and pulse rate" },
+    { "tool": "weighing scale (adult, infant, baby)", "measures": "body weight (kg)" },
+    { "tool": "stadiometer", "measures": "height (cm) — for BMI and paediatric growth assessment" },
+    { "tool": "measuring tape", "measures": "MUAC (mid-upper arm circumference), head circumference, abdominal girth" },
+    { "tool": "torch / examination lamp", "measures": "throat inspection, pupil reactivity, skin and wound examination" },
+    { "tool": "stethoscope", "measures": "breath sounds, heart sounds, bowel sounds, fetal heart sounds" },
+    { "tool": "peak flow meter", "measures": "peak expiratory flow rate (L/min) — for asthma and COPD assessment" },
+    { "tool": "snellen chart / near vision chart", "measures": "visual acuity — distance and near vision" },
+    { "tool": "nebulizer", "measures": "bronchodilator response — relevant for wheeze and respiratory distress assessment" },
+    { "tool": "oxygen cylinder with mask", "measures": "supplemental oxygen delivery — emergency stabilisation" }
+  ],
+  "rapid_diagnostic_tests": [
+    { "tool": "malaria RDT (HRP2 + pLDH)", "detects": "P. falciparum and P. vivax", "turnaround": "15-20 minutes" },
+    { "tool": "dengue RDT (NS1 Ag + IgM/IgG combo)", "detects": "dengue NS1 antigen (early) and dengue IgM/IgG (later phase)", "turnaround": "20-30 minutes" },
+    { "tool": "urine dipstick", "detects": "protein (albumin), glucose, nitrites, blood, ketones", "turnaround": "2 minutes" },
+    { "tool": "urine pregnancy test (hCG)", "detects": "pregnancy", "turnaround": "3 minutes" },
+    { "tool": "glucometer", "detects": "blood glucose — fasting or random", "turnaround": "1 minute" },
+    { "tool": "haemoglobin (HemoCue or Sahli hemoglobinometer)", "detects": "Hb g/dL — anaemia screening", "turnaround": "1-2 minutes" },
+    { "tool": "HIV rapid test (whole blood finger prick)", "detects": "HIV antibodies — two-test algorithm as per NACO protocol", "turnaround": "15-20 minutes" },
+    { "tool": "sickle cell rapid test", "detects": "sickle haemoglobin (HbS) — point-of-care sickling test", "turnaround": "5 minutes" },
+    { "tool": "sputum sample collection", "detects": "sample collected by nurse and sent to PHC designated microscopy centre for AFB smear; nurse cannot perform microscopy at SHC level", "turnaround": "result returned from PHC" }
+  ],
+  "not_available": [
+    "ECG",
+    "chest X-ray",
+    "blood cultures",
+    "CBC / full blood count",
+    "liver function tests",
+    "renal function tests",
+    "AFB sputum microscopy (SHC can collect sample only; microscopy done at PHC)",
+    "RPR / rapid syphilis serology (PHC level only)",
+    "ultrasound",
+    "CT scan",
+    "lumbar puncture",
+    "blood transfusion"
+  ]
+}

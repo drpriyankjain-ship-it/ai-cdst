@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Continuous Stream Pipeline — CDST Audio Architecture</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f5f4ef;
+      color: #1a1a18;
+      margin: 0;
+      padding: 2rem;
+      box-sizing: border-box;
+    }
+    h1 {
+      font-size: 18px;
+      font-weight: 500;
+      margin: 0 0 4px;
+    }
+    .subtitle {
+      font-size: 13px;
+      color: #73726c;
+      margin: 0 0 2rem;
+    }
+    .panel {
+      background: #fff;
+      border: 0.5px solid #d3d1c7;
+      border-radius: 12px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1rem;
+    }
+    .panel-title {
+      font-size: 14px;
+      font-weight: 500;
+      margin-bottom: 3px;
+    }
+    .panel-sub {
+      font-size: 12px;
+      color: #73726c;
+      margin-bottom: 1rem;
+    }
+    .tl-row {
+      display: grid;
+      grid-template-columns: 130px 1fr;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 7px;
+    }
+    .tl-label {
+      font-size: 11px;
+      color: #73726c;
+      text-align: right;
+      line-height: 1.4;
+    }
+    .tl-track {
+      position: relative;
+      height: 24px;
+      background: #f1efea;
+      border-radius: 6px;
+      overflow: visible;
+    }
+    .seg {
+      position: absolute;
+      height: 100%;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      padding: 0 7px;
+      font-size: 10px;
+      font-weight: 500;
+      color: #fff;
+      white-space: nowrap;
+      overflow: hidden;
+      box-sizing: border-box;
+    }
+    .divider {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 1px;
+      background: #b4b2a9;
+      opacity: 0.6;
+    }
+    .divider-label {
+      position: absolute;
+      top: -16px;
+      font-size: 9px;
+      color: #888780;
+      transform: translateX(-50%);
+      white-space: nowrap;
+    }
+    .key-point {
+      font-size: 12px;
+      background: #eaf3de;
+      color: #3b6d11;
+      border-radius: 8px;
+      padding: 8px 12px;
+      margin-top: 10px;
+    }
+    .warn-point {
+      font-size: 12px;
+      background: #faeeda;
+      color: #854f0b;
+      border-radius: 8px;
+      padding: 8px 12px;
+      margin-top: 8px;
+    }
+    .annotation {
+      font-size: 11px;
+      color: #888780;
+      margin-top: 8px;
+      line-height: 1.6;
+    }
+    .savings-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 1rem;
+    }
+    .sc {
+      background: #f1efea;
+      border-radius: 8px;
+      padding: 12px 14px;
+    }
+    .sc-label {
+      font-size: 11px;
+      color: #73726c;
+      margin-bottom: 4px;
+    }
+    .sc-val {
+      font-size: 19px;
+      font-weight: 500;
+      color: #1a1a18;
+    }
+    .sc-sub {
+      font-size: 11px;
+      color: #3b6d11;
+      margin-top: 2px;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #1a1a18; color: #e8e6e0; }
+      .panel { background: #2c2c2a; border-color: #444441; }
+      .tl-track { background: #3d3d3a; }
+      .key-point { background: #27500a; color: #c0dd97; }
+      .warn-point { background: #633806; color: #fac775; }
+      .sc { background: #3d3d3a; }
+      .sc-val { color: #e8e6e0; }
+      .panel-sub, .tl-label, .annotation { color: #888780; }
+      .sc-label { color: #888780; }
+      h1 { color: #e8e6e0; }
+    }
+  </style>
+</head>
+<body>
+
+<h1>Continuous stream pipeline — CDST audio architecture</h1>
+<p class="subtitle">Comparison of discrete file model vs. continuous WebSocket streaming across the full nurse consultation</p>
+
+<div class="panel">
+  <div class="panel-title" style="color:#a32d2d">Current model — three discrete files</div>
+  <div class="panel-sub">Each phase completes, uploads, then STT runs. Large idle gaps between phases.</div>
+
+  <div class="tl-row">
+    <div class="tl-label">Nurse activity</div>
+    <div class="tl-track" style="overflow:visible">
+      <div class="seg" style="left:0;width:8%;background:#888780">phase 1</div>
+      <div class="seg" style="left:10%;width:2%;background:#5f5e5a;opacity:.5">wait</div>
+      <div class="seg" style="left:14%;width:33%;background:#888780">phase 2 interview</div>
+      <div class="seg" style="left:49%;width:2%;background:#5f5e5a;opacity:.5">wait</div>
+      <div class="seg" style="left:53%;width:17%;background:#888780">phase 3 clarify</div>
+      <div class="seg" style="left:72%;width:2%;background:#5f5e5a;opacity:.5">wait</div>
+      <div class="divider" style="left:8%"><span class="divider-label">button press</span></div>
+      <div class="divider" style="left:47%"><span class="divider-label">send audio 2</span></div>
+      <div class="divider" style="left:70%"><span class="divider-label">send audio 3</span></div>
+    </div>
+  </div>
+
+  <div class="tl-row">
+    <div class="tl-label">WebSocket / upload</div>
+    <div class="tl-track">
+      <div class="seg" style="left:8%;width:2%;background:#378add">up</div>
+      <div class="seg" style="left:47%;width:2%;background:#378add">up</div>
+      <div class="seg" style="left:70%;width:2%;background:#378add">up</div>
+    </div>
+  </div>
+
+  <div class="tl-row">
+    <div class="tl-label">STT</div>
+    <div class="tl-track">
+      <div class="seg" style="left:10%;width:3%;background:#5dcaa5">stt1</div>
+      <div class="seg" style="left:49%;width:8%;background:#5dcaa5">stt2 ~4.5s</div>
+      <div class="seg" style="left:72%;width:5%;background:#5dcaa5">stt3 ~2.5s</div>
+    </div>
+  </div>
+
+  <div class="tl-row">
+    <div class="tl-label">Agent LLM calls</div>
+    <div class="tl-track">
+      <div class="seg" style="left:13%;width:1%;background:#7f77dd"></div>
+      <div class="seg" style="left:57%;width:5%;background:#7f77dd">Dx agent</div>
+      <div class="seg" style="left:77%;width:5%;background:#7f77dd">Mgmt agent</div>
+    </div>
+  </div>
+
+  <div class="annotation">Nurse waits ~7s after phase 2, ~5s after phase 3. STT is the dominant gap each time.</div>
+</div>
+
+<div class="panel">
+  <div class="panel-title" style="color:#3b6d11">Continuous stream model — single WebSocket, whole session</div>
+  <div class="panel-sub">One persistent connection. STT runs the entire time. Button presses are just timestamp markers on the transcript.</div>
+
+  <div class="tl-row">
+    <div class="tl-label">Nurse activity</div>
+    <div class="tl-track" style="overflow:visible">
+      <div class="seg" style="left:0;width:8%;background:#888780">phase 1</div>
+      <div class="seg" style="left:14%;width:33%;background:#888780">phase 2 interview</div>
+      <div class="seg" style="left:53%;width:17%;background:#888780">phase 3 clarify</div>
+      <div class="divider" style="left:8%"><span class="divider-label">marker A</span></div>
+      <div class="divider" style="left:47%"><span class="divider-label">marker B</span></div>
+      <div class="divider" style="left:70%"><span class="divider-label">marker C</span></div>
+    </div>
+  </div>
+
+  <div class="tl-row">
+    <div class="tl-label">WebSocket (single)</div>
+    <div class="tl-track">
+      <div class="seg" style="left:0;width:100%;background:#378add;opacity:0.75">one persistent connection — open from session start</div>
+    </div>
+  </div>
+
+  <div class="tl-row">
+    <div class="tl-label">STT (continuous)</div>
+    <div class="tl-track">
+      <div class="seg" style="left:0;width:100%;background:#5dcaa5">transcript streams in real time throughout entire consultation</div>
+    </div>
+  </div>
+
+  <div class="tl-row">
+    <div class="tl-label">History agent</div>
+    <div class="tl-track">
+      <div class="seg" style="left:8%;width:3%;background:#7f77dd">runs at marker A — transcript already ready</div>
+    </div>
+  </div>
+
+  <div class="tl-row">
+    <div class="tl-label">Diagnosis agent</div>
+    <div class="tl-track">
+      <div class="seg" style="left:47%;width:5%;background:#7f77dd">runs at marker B — no STT wait</div>
+    </div>
+  </div>
+
+  <div class="tl-row">
+    <div class="tl-label">Management agent</div>
+    <div class="tl-track">
+      <div class="seg" style="left:70%;width:5%;background:#7f77dd">runs at marker C — no STT wait</div>
+    </div>
+  </div>
+
+  <div class="key-point">STT latency for agents 2 and 3 drops to near zero. The button press triggers the LLM call directly — the transcript is already there.</div>
+  <div class="warn-point">Reconnection logic: if WebSocket drops, device buffers audio locally with session-relative timestamps and flushes to server on reconnect. Transcript stitching is seamless.</div>
+</div>
+
+<div class="savings-grid">
+  <div class="sc"><div class="sc-label">Agent 2 STT wait</div><div class="sc-val">~0s</div><div class="sc-sub">was ~4.5s</div></div>
+  <div class="sc"><div class="sc-label">Agent 3 STT wait</div><div class="sc-val">~0s</div><div class="sc-sub">was ~2.5s</div></div>
+  <div class="sc"><div class="sc-label">Total session saving</div><div class="sc-val">~7s</div><div class="sc-sub">across full consultation</div></div>
+</div>
+
+</body>
+</html>
