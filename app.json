@@ -19,6 +19,7 @@
       }
     },
     "android": {
+      "package": "com.nurseai.app",
       "adaptiveIcon": {
         "backgroundColor": "#0D9488"
       },
@@ -29,6 +30,12 @@
     "plugins": [
       "expo-asset",
       "expo-font"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "19a81a18-b3a5-490b-9c4f-d6142b3cb09f"
+      }
+    },
+    "owner": "devops123"
   }
 }
