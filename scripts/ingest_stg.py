@@ -375,6 +375,20 @@ def embed_chunks(chunks: list[Chunk]) -> None:
 async def ensure_stg_schema(conn: asyncpg.Connection) -> None:
     """Keep older local databases compatible with the current RAG schema."""
     await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS stg_chunks (
+            chunk_id SERIAL PRIMARY KEY,
+            source TEXT NOT NULL,
+            disease TEXT,
+            section TEXT,
+            content TEXT NOT NULL,
+            content_hash TEXT,
+            embedding vector(384),
+            created_at TIMESTAMPTZ DEFAULT now()
+        )
+        """
+    )
     await conn.execute("ALTER TABLE stg_chunks ADD COLUMN IF NOT EXISTS section TEXT DEFAULT 'general'")
     await conn.execute("ALTER TABLE stg_chunks ADD COLUMN IF NOT EXISTS content_hash TEXT")
     await conn.execute("UPDATE stg_chunks SET content_hash = md5(source || E'\\n' || content) WHERE content_hash IS NULL")
@@ -382,6 +396,13 @@ async def ensure_stg_schema(conn: asyncpg.Connection) -> None:
     await conn.execute("CREATE INDEX IF NOT EXISTS stg_chunks_disease_idx ON stg_chunks (disease)")
     await conn.execute("CREATE INDEX IF NOT EXISTS stg_chunks_section_idx ON stg_chunks (section)")
     await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS stg_chunks_source_content_hash_idx ON stg_chunks (source, content_hash)")
+    await conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS stg_chunks_embedding_idx
+        ON stg_chunks USING ivfflat (embedding vector_cosine_ops)
+        WITH (lists = 100)
+        """
+    )
 
 
 async def insert_chunks(chunks: list[Chunk], conn: asyncpg.Connection) -> int:
