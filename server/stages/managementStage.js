@@ -10,7 +10,8 @@ import { MODEL_M1_FINDINGS, MODEL_M2_PRESCRIPTION, MODEL_M3_RISK, MODEL_M4_TRIAG
 import { stateFromDistrictCode } from '../lib/epiUtils.js';
 import {
   SCHEMA_CLARIFYING_FINDINGS, SCHEMA_PROBLEM_LIST, SCHEMA_RISK_ASSESSMENT, SCHEMA_TRIAGE_HANDOFF,
-  RAG_TOP_K, loadFormulary, validateProblemList, buildPrescriptionIssued, runRuleEngine,
+  RAG_TOP_K, RAG_SIMILARITY_THRESHOLD, RAG_SECTION_FILTER, RAG_IVFFLAT_PROBES,
+  loadFormulary, validateProblemList, buildPrescriptionIssued, runRuleEngine,
 } from './managementHelpers.js';
 
 // Embedder — lazy loaded
@@ -28,8 +29,19 @@ async function getEmbedder() {
 // ---------------------------------------------------------------------------
 
 export async function retrieveTreatmentProtocols(dbClient, diagnoses, topK = RAG_TOP_K) {
+  const uniqueDiagnoses = [...new Set(
+    diagnoses.map(d => String(d || '').trim()).filter(Boolean)
+  )];
   const sections = [];
-  for (const diagnosis of diagnoses) {
+  const retrievedChunks = [];
+
+  try {
+    await dbClient.query(`SET ivfflat.probes = ${RAG_IVFFLAT_PROBES}`);
+  } catch (err) {
+    console.warn(`[RAG] Unable to set ivfflat.probes: ${err.message}`);
+  }
+
+  for (const diagnosis of uniqueDiagnoses) {
     const query = `treatment protocol dose duration route contraindications referral criteria ${diagnosis} NHM India STG`;
     let queryEmbedding;
     try {
@@ -42,19 +54,43 @@ export async function retrieveTreatmentProtocols(dbClient, diagnoses, topK = RAG
     }
 
     const res = await dbClient.query(
-      `SELECT content, source, chunk_id, 1 - (embedding <=> $1::vector) AS similarity
-       FROM stg_chunks WHERE 1 - (embedding <=> $1::vector) > 0.55
-       ORDER BY embedding <=> $1::vector LIMIT $2`,
-      [JSON.stringify(queryEmbedding), topK]
+      `SELECT content, source, disease, section, chunk_id,
+              1 - (embedding <=> $1::vector) AS similarity
+       FROM stg_chunks
+       WHERE embedding IS NOT NULL
+         AND section = ANY($3::text[])
+         AND 1 - (embedding <=> $1::vector) >= $4
+       ORDER BY CASE
+           WHEN lower(coalesce(disease, '')) = lower($5) THEN 0
+           WHEN disease IS NOT NULL AND lower($5) LIKE '%' || lower(disease) || '%' THEN 1
+           ELSE 2
+         END,
+         embedding <=> $1::vector
+       LIMIT $2`,
+      [JSON.stringify(queryEmbedding), topK, RAG_SECTION_FILTER, RAG_SIMILARITY_THRESHOLD, diagnosis]
     );
 
     if (res.rows.length) {
-      const chunks = res.rows.map(r => `[${r.source} / chunk ${r.chunk_id} | similarity ${parseFloat(r.similarity).toFixed(2)}]\n${r.content}`).join('\n\n');
+      retrievedChunks.push(...res.rows.map(r => ({
+        query_diagnosis: diagnosis,
+        source: r.source,
+        chunk_id: r.chunk_id,
+        disease: r.disease,
+        section: r.section,
+        similarity: Number(r.similarity),
+      })));
+      const chunks = res.rows.map(r => `[${r.source} / chunk ${r.chunk_id} / ${r.section || 'general'} | similarity ${parseFloat(r.similarity).toFixed(2)}]\n${r.content}`).join('\n\n');
       sections.push(`=== ${diagnosis} ===\n${chunks}`);
     }
   }
-  if (!sections.length) { console.log('[RAG WARNING] No STG chunks retrieved.'); return ''; }
-  return sections.join('\n\n');
+  if (!sections.length) console.log('[RAG WARNING] No STG chunks retrieved.');
+  return {
+    context: sections.join('\n\n'),
+    chunks: retrievedChunks,
+    diagnoses_queried: uniqueDiagnoses,
+    similarity_threshold: RAG_SIMILARITY_THRESHOLD,
+    section_filter: RAG_SECTION_FILTER,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -116,7 +152,8 @@ export async function generateProvisionalDiagnosisAndRx(clarifyingFindings, vaul
     '- for_problem is mandatory on every prescription item\n' +
     '- Prescribe ONLY drugs present in the local formulary\n' +
     '- Do NOT prescribe any drug the patient is allergic to\n' +
-    '- stg_source must cite the specific retrieved chunk or null\n' +
+    '- stg_source must use the exact SOURCE / chunk N citation from the retrieved text, or null\n' +
+    '- If no retrieved STG chunk supports a drug dose, prefer supportive care plus doctor review/referral over inventing a protocol-specific dose\n' +
     '- If weight-based dosing needed, use vitals_found weight > demographics weight',
   ].join('\n\n');
 
@@ -228,15 +265,18 @@ export async function runManagementStage(sessionId, transcriptSegment, dbClient)
 
     // Call 1 + RAG in parallel
     console.log(`[${sessionId}] Call 1: extracting clarifying findings + RAG retrieval`);
-    const [clarifyingFindings, stgContext] = await Promise.all([
+    const [clarifyingFindings, stgRetrieval] = await Promise.all([
       extractClarifyingFindings(transcriptSegment, vaultContext),
       retrieveTreatmentProtocols(dbClient, ragDiagnoses),
     ]);
-    await vaultUpdate(dbClient, sessionId, { clarifying_findings: clarifyingFindings });
+    await vaultUpdate(dbClient, sessionId, {
+      clarifying_findings: clarifyingFindings,
+      stg_retrieval: stgRetrieval,
+    });
 
     // Call 2
     console.log(`[${sessionId}] Call 2: generating problem list`);
-    const problemListOutput = await generateProvisionalDiagnosisAndRx(clarifyingFindings, vaultContext, stgContext, formulary);
+    const problemListOutput = await generateProvisionalDiagnosisAndRx(clarifyingFindings, vaultContext, stgRetrieval.context, formulary);
     await vaultUpdate(dbClient, sessionId, { problem_list: problemListOutput });
 
     const firstAcute = (problemListOutput.problem_list || []).find(p => p.type === 'acute_new');
@@ -306,10 +346,11 @@ export async function* streamManagement(transcriptSegment, vaultContext, dbClien
   const knownConditions = demographics.known_conditions || [];
   if (Array.isArray(knownConditions)) ragDiagnoses.push(...knownConditions.filter(Boolean));
 
-  const [clarifyingFindings, stgContext] = await Promise.all([
+  const [clarifyingFindings, stgRetrieval] = await Promise.all([
     extractClarifyingFindings(transcriptSegment, vaultContext),
     retrieveTreatmentProtocols(dbClient, ragDiagnoses),
   ]);
+  const stgContext = stgRetrieval.context;
 
   const streamPrompt = `Generate a problem-oriented management plan for a nurse in rural ${stateName}. Be clear and concise.\n\n` +
     `Patient: ${JSON.stringify(demographics)}\nAllergies: ${JSON.stringify(knownAllergies)}\n` +

@@ -25,7 +25,7 @@ export async function initPool() {
   const client = await pool.connect();
   await pgvector.registerTypes(client);
   client.release();
-  console.log('[DB] Pool initialised —', process.env.DATABASE_URL);
+  console.log('[DB] Pool initialised');
   return pool;
 }
 

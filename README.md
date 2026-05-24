@@ -126,6 +126,13 @@ Verify ingestion:
 SELECT disease, count(*) FROM stg_chunks GROUP BY disease ORDER BY count DESC;
 ```
 
+Smoke-test retrieval after ingestion:
+
+```bash
+DATABASE_URL="postgresql://..." python scripts/query_stg.py --diagnosis tuberculosis
+DATABASE_URL="postgresql://..." python scripts/query_stg.py --diagnosis "diarrhoea with dehydration"
+```
+
 **Priority order for ingestion:** NHM STG (all volumes) → NVBDCP malaria ACT
 protocol → NHM kala-azar guidelines → RNTCP/NTP TB guidelines → WB state addenda.
 

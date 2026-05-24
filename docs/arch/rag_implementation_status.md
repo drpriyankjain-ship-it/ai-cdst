@@ -71,3 +71,10 @@ ORDER BY source, disease, section;
 ```
 
 6. Run retrieval quality checks for common and negative cases before clinical review.
+
+Smoke-test command:
+
+```bash
+DATABASE_URL="postgresql://..." /opt/anaconda3/bin/python3 scripts/query_stg.py \
+  --diagnosis tuberculosis
+```

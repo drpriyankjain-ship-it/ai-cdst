@@ -15,6 +15,9 @@ export const FORMULARY_PATH = join(DATA_DIR, 'formulary_wb.json');
 export const BEDSIDE_TOOLS_PATH = join(DATA_DIR, 'bedside_tools.json');
 export const ESCALATION_RULES_PATH = join(DATA_DIR, 'escalation_rules.json');
 export const RAG_TOP_K = 8;
+export const RAG_SIMILARITY_THRESHOLD = 0.55;
+export const RAG_SECTION_FILTER = ['treatment', 'dosing', 'contraindications', 'referral', 'general'];
+export const RAG_IVFFLAT_PROBES = 10;
 
 let ESCALATION_RULES = {};
 try { ESCALATION_RULES = JSON.parse(readFileSync(ESCALATION_RULES_PATH, 'utf-8')); } catch { console.warn('[WARN] Could not load escalation_rules.json'); }
