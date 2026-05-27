@@ -434,6 +434,12 @@ async def insert_chunks(chunks: list[Chunk], conn: asyncpg.Connection) -> int:
     return inserted
 
 
+async def refresh_stg_index(conn: asyncpg.Connection) -> None:
+    """Refresh vector index centroids and planner stats after bulk ingestion."""
+    await conn.execute("REINDEX INDEX stg_chunks_embedding_idx")
+    await conn.execute("ANALYZE stg_chunks")
+
+
 async def delete_sources(sources: set[str], conn: asyncpg.Connection) -> int:
     """Delete all chunks for the given source labels before re-ingesting an update."""
     if not sources:
@@ -608,9 +614,11 @@ def main() -> None:
             # Embed only after the DB/schema check succeeds, so setup failures are cheap.
             embed_chunks(all_chunks)
             inserted = await insert_chunks(all_chunks, conn)
+            await refresh_stg_index(conn)
         finally:
             await conn.close()
         print(f"\nDone — {inserted} new rows inserted ({len(all_chunks) - inserted} duplicates skipped)")
+        print("Rebuilt stg_chunks vector index and refreshed table statistics.")
 
         # Print stats
         conn2 = await asyncpg.connect(dsn=args.db)

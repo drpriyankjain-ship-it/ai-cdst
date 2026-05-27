@@ -8,7 +8,9 @@ Usage:
 
 import argparse
 import asyncio
+import json
 import os
+from pathlib import Path
 
 import asyncpg
 from sentence_transformers import SentenceTransformer
@@ -16,7 +18,25 @@ from sentence_transformers import SentenceTransformer
 
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 RAG_SIMILARITY_THRESHOLD = 0.55
+RAG_DISEASE_FALLBACK_THRESHOLD = 0.48
 RAG_SECTION_FILTER = ["treatment", "dosing", "contraindications", "referral", "general"]
+ALIASES_PATH = Path(__file__).resolve().parents[1] / "data" / "rag_disease_aliases.json"
+
+
+def resolve_canonical_disease(text: str) -> str | None:
+    try:
+        aliases = json.loads(ALIASES_PATH.read_text())
+    except FileNotFoundError:
+        return None
+
+    haystack = text.lower()
+    best: tuple[str, str] | None = None
+    for disease, needles in aliases.items():
+        for needle in needles:
+            needle = needle.lower()
+            if needle in haystack and (best is None or len(needle) > len(best[1])):
+                best = (disease, needle)
+    return best[0] if best else None
 
 
 async def query_chunks(diagnosis: str, top_k: int, database_url: str) -> list[asyncpg.Record]:
@@ -25,12 +45,13 @@ async def query_chunks(diagnosis: str, top_k: int, database_url: str) -> list[as
         "treatment protocol dose duration route contraindications referral criteria "
         f"{diagnosis} NHM India STG"
     )
+    canonical_disease = resolve_canonical_disease(diagnosis)
     embedding = model.encode(query, normalize_embeddings=True).tolist()
 
     conn = await asyncpg.connect(database_url)
     try:
         await conn.execute("SET ivfflat.probes = 10")
-        return await conn.fetch(
+        rows = await conn.fetch(
             """
             SELECT chunk_id, source, disease, section, content,
                    1 - (embedding <=> $1::vector) AS similarity
@@ -38,10 +59,15 @@ async def query_chunks(diagnosis: str, top_k: int, database_url: str) -> list[as
             WHERE embedding IS NOT NULL
               AND section = ANY($3::text[])
               AND 1 - (embedding <=> $1::vector) >= $4
+              AND (
+                $5::text IS NULL
+                OR lower(coalesce(disease, '')) = lower($5)
+                OR disease IS NULL
+              )
             ORDER BY
               CASE
                 WHEN lower(coalesce(disease, '')) = lower($5) THEN 0
-                WHEN disease IS NOT NULL AND lower($5) LIKE '%' || lower(disease) || '%' THEN 1
+                WHEN disease IS NULL THEN 1
                 ELSE 2
               END,
               embedding <=> $1::vector
@@ -51,8 +77,31 @@ async def query_chunks(diagnosis: str, top_k: int, database_url: str) -> list[as
             top_k,
             RAG_SECTION_FILTER,
             RAG_SIMILARITY_THRESHOLD,
-            diagnosis,
+            canonical_disease,
         )
+        has_same_disease = canonical_disease and any((r["disease"] or "").lower() == canonical_disease for r in rows)
+        if canonical_disease and not has_same_disease:
+            fallback = await conn.fetch(
+                """
+                SELECT chunk_id, source, disease, section, content,
+                       1 - (embedding <=> $1::vector) AS similarity
+                FROM stg_chunks
+                WHERE embedding IS NOT NULL
+                  AND section = ANY($3::text[])
+                  AND lower(coalesce(disease, '')) = lower($5)
+                  AND 1 - (embedding <=> $1::vector) >= $4
+                ORDER BY embedding <=> $1::vector
+                LIMIT $2
+                """,
+                str(embedding),
+                top_k,
+                RAG_SECTION_FILTER,
+                RAG_DISEASE_FALLBACK_THRESHOLD,
+                canonical_disease,
+            )
+            if fallback:
+                rows = fallback
+        return rows
     finally:
         await conn.close()
 

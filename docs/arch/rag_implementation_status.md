@@ -1,6 +1,6 @@
 # RAG Implementation Status
 
-Status: ready for database access.
+Status: live in Supabase; ready for broader retrieval evaluation.
 
 ## Completed
 
@@ -18,41 +18,14 @@ Status: ready for database access.
   - check database/schema before embedding.
 - Updated `db/schema.sql` with RAG metadata columns and indexes.
 - Updated `management_stage.py` to store structured `stg_retrieval` audit metadata in the Vault and require real retrieved chunk citations in prescriptions.
+- Updated the Node management stage retrieval path to use the same pgvector corpus, store `stg_retrieval`, prefer same-disease chunks, and avoid returning chunks from the wrong disease when disease-specific chunks are weak or absent.
 - Added `requirements.txt` for the Python dependencies needed to run ingestion and the backend.
+- Ingested the approved source corpus into Supabase `stg_chunks`.
+- Rebuilt the pgvector IVFFlat index after ingestion and refreshed table statistics.
 
-## Latest Dry Run
+## Latest Ingestion
 
 Command:
-
-```bash
-/opt/anaconda3/bin/python3 scripts/ingest_stg.py \
-  --dir "docs/clinical/RAG source" \
-  --manifest scripts/rag_source_manifest.json \
-  --dry-run \
-  --out tmp/stg_chunks_preview.jsonl
-```
-
-Result:
-
-- Total chunks extracted: 1,478
-- `ICMR_STW_MANUAL_V1_VOLUME_1`: 511 chunks
-- `ICMR_STW_VOLUME_3_2022`: 482 chunks
-- `ICMR_STW_VOLUME_4_2024`: 344 chunks
-- `ICMR_STW_PTB_EPTB_2024`: 141 chunks
-
-Disease tagging is now chunk-level. Broad/generic chunks remain untagged, while chunks whose heading/content mention a known condition receive a disease tag.
-
-## Remaining Work After Database Access
-
-1. Confirm Supabase/Postgres connection string.
-2. Enable pgvector:
-
-```sql
-CREATE EXTENSION IF NOT EXISTS vector;
-```
-
-3. Run `db/schema.sql` or the equivalent migration.
-4. Ingest the approved corpus:
 
 ```bash
 DATABASE_URL="postgresql://..." /opt/anaconda3/bin/python3 scripts/ingest_stg.py \
@@ -61,7 +34,39 @@ DATABASE_URL="postgresql://..." /opt/anaconda3/bin/python3 scripts/ingest_stg.py
   --replace-source
 ```
 
-5. Verify inserted chunks:
+Result:
+
+- Total chunks extracted: 1,478
+- Unique chunks inserted into Supabase: 1,426
+- Exact duplicate chunks skipped: 52
+- `ICMR_STW_MANUAL_V1_VOLUME_1`: 511 chunks
+- `ICMR_STW_VOLUME_3_2022`: 482 chunks
+- `ICMR_STW_VOLUME_4_2024`: 344 chunks
+- `ICMR_STW_PTB_EPTB_2024`: 141 chunks
+
+Disease tagging is now chunk-level. Broad/generic chunks remain untagged, while chunks whose heading/content mention a known condition receive a disease tag.
+
+## Live Smoke Tests
+
+- `tuberculosis`: retrieves TB guideline chunks, including a dosing chunk.
+- `diarrhoea with dehydration`: retrieves same-disease dehydration/rehydration chunks after the same-disease fallback.
+- `pneumonia lower respiratory tract infection`: retrieves same-disease oxygen/antibiotic/referral chunks after the same-disease fallback.
+- `guillain-barre syndrome`: retrieves a referral/supportive-care chunk, which is the expected HIGH-risk behavior.
+- `malaria`: returns no chunks with the current corpus instead of incorrectly returning TB chunks. Add the NVBDCP malaria protocol PDF before relying on malaria prescriptions.
+
+## Remaining Work Before Clinical Use
+
+1. Add missing disease-specific protocol PDFs, especially NVBDCP malaria ACT dosing and kala-azar guidance.
+2. Re-run ingestion after adding each source:
+
+```bash
+DATABASE_URL="postgresql://..." /opt/anaconda3/bin/python3 scripts/ingest_stg.py \
+  --dir "docs/clinical/RAG source" \
+  --manifest scripts/rag_source_manifest.json \
+  --replace-source
+```
+
+3. Verify inserted chunks:
 
 ```sql
 SELECT source, disease, section, count(*)
@@ -70,7 +75,7 @@ GROUP BY source, disease, section
 ORDER BY source, disease, section;
 ```
 
-6. Run retrieval quality checks for common and negative cases before clinical review.
+4. Run retrieval quality checks for common and negative cases before clinical review.
 
 Smoke-test command:
 

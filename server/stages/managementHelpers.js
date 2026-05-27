@@ -14,16 +14,34 @@ const DATA_DIR = join(__dirname, '..', '..', 'data');
 export const FORMULARY_PATH = join(DATA_DIR, 'formulary_wb.json');
 export const BEDSIDE_TOOLS_PATH = join(DATA_DIR, 'bedside_tools.json');
 export const ESCALATION_RULES_PATH = join(DATA_DIR, 'escalation_rules.json');
+export const RAG_DISEASE_ALIASES_PATH = join(DATA_DIR, 'rag_disease_aliases.json');
 export const RAG_TOP_K = 8;
 export const RAG_SIMILARITY_THRESHOLD = 0.55;
+export const RAG_DISEASE_FALLBACK_THRESHOLD = 0.48;
 export const RAG_SECTION_FILTER = ['treatment', 'dosing', 'contraindications', 'referral', 'general'];
 export const RAG_IVFFLAT_PROBES = 10;
 
 let ESCALATION_RULES = {};
 try { ESCALATION_RULES = JSON.parse(readFileSync(ESCALATION_RULES_PATH, 'utf-8')); } catch { console.warn('[WARN] Could not load escalation_rules.json'); }
 
+let RAG_DISEASE_ALIASES = {};
+try { RAG_DISEASE_ALIASES = JSON.parse(readFileSync(RAG_DISEASE_ALIASES_PATH, 'utf-8')); } catch { console.warn('[WARN] Could not load rag_disease_aliases.json'); }
+
 export function loadFormulary() {
   return JSON.parse(readFileSync(FORMULARY_PATH, 'utf-8'));
+}
+
+export function resolveCanonicalDisease(text) {
+  const haystack = String(text || '').toLowerCase();
+  let best = null;
+  for (const [disease, aliases] of Object.entries(RAG_DISEASE_ALIASES)) {
+    for (const alias of aliases || []) {
+      const needle = String(alias || '').toLowerCase();
+      if (!needle || !haystack.includes(needle)) continue;
+      if (!best || needle.length > best.alias.length) best = { disease, alias: needle };
+    }
+  }
+  return best?.disease || null;
 }
 
 // ---------------------------------------------------------------------------

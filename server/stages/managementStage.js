@@ -10,8 +10,9 @@ import { MODEL_M1_FINDINGS, MODEL_M2_PRESCRIPTION, MODEL_M3_RISK, MODEL_M4_TRIAG
 import { stateFromDistrictCode } from '../lib/epiUtils.js';
 import {
   SCHEMA_CLARIFYING_FINDINGS, SCHEMA_PROBLEM_LIST, SCHEMA_RISK_ASSESSMENT, SCHEMA_TRIAGE_HANDOFF,
-  RAG_TOP_K, RAG_SIMILARITY_THRESHOLD, RAG_SECTION_FILTER, RAG_IVFFLAT_PROBES,
-  loadFormulary, validateProblemList, buildPrescriptionIssued, runRuleEngine,
+  RAG_TOP_K, RAG_SIMILARITY_THRESHOLD, RAG_DISEASE_FALLBACK_THRESHOLD,
+  RAG_SECTION_FILTER, RAG_IVFFLAT_PROBES,
+  loadFormulary, resolveCanonicalDisease, validateProblemList, buildPrescriptionIssued, runRuleEngine,
 } from './managementHelpers.js';
 
 // Embedder — lazy loaded
@@ -43,6 +44,7 @@ export async function retrieveTreatmentProtocols(dbClient, diagnoses, topK = RAG
 
   for (const diagnosis of uniqueDiagnoses) {
     const query = `treatment protocol dose duration route contraindications referral criteria ${diagnosis} NHM India STG`;
+    const canonicalDisease = resolveCanonicalDisease(diagnosis);
     let queryEmbedding;
     try {
       const embedder = await getEmbedder();
@@ -53,22 +55,46 @@ export async function retrieveTreatmentProtocols(dbClient, diagnoses, topK = RAG
       continue;
     }
 
-    const res = await dbClient.query(
+    const vector = JSON.stringify(queryEmbedding);
+    const queryArgs = [vector, topK, RAG_SECTION_FILTER, RAG_SIMILARITY_THRESHOLD, canonicalDisease];
+    let res = await dbClient.query(
       `SELECT content, source, disease, section, chunk_id,
               1 - (embedding <=> $1::vector) AS similarity
        FROM stg_chunks
        WHERE embedding IS NOT NULL
          AND section = ANY($3::text[])
          AND 1 - (embedding <=> $1::vector) >= $4
+         AND (
+           $5::text IS NULL
+           OR lower(coalesce(disease, '')) = lower($5)
+           OR disease IS NULL
+         )
        ORDER BY CASE
            WHEN lower(coalesce(disease, '')) = lower($5) THEN 0
-           WHEN disease IS NOT NULL AND lower($5) LIKE '%' || lower(disease) || '%' THEN 1
+           WHEN disease IS NULL THEN 1
            ELSE 2
          END,
          embedding <=> $1::vector
        LIMIT $2`,
-      [JSON.stringify(queryEmbedding), topK, RAG_SECTION_FILTER, RAG_SIMILARITY_THRESHOLD, diagnosis]
+      queryArgs
     );
+
+    const hasSameDisease = canonicalDisease && res.rows.some(r => (r.disease || '').toLowerCase() === canonicalDisease);
+    if (canonicalDisease && !hasSameDisease) {
+      const fallback = await dbClient.query(
+        `SELECT content, source, disease, section, chunk_id,
+                1 - (embedding <=> $1::vector) AS similarity
+         FROM stg_chunks
+         WHERE embedding IS NOT NULL
+           AND section = ANY($3::text[])
+           AND lower(coalesce(disease, '')) = lower($5)
+           AND 1 - (embedding <=> $1::vector) >= $4
+         ORDER BY embedding <=> $1::vector
+         LIMIT $2`,
+        [vector, topK, RAG_SECTION_FILTER, RAG_DISEASE_FALLBACK_THRESHOLD, canonicalDisease]
+      );
+      if (fallback.rows.length) res = fallback;
+    }
 
     if (res.rows.length) {
       retrievedChunks.push(...res.rows.map(r => ({
@@ -76,6 +102,7 @@ export async function retrieveTreatmentProtocols(dbClient, diagnoses, topK = RAG
         source: r.source,
         chunk_id: r.chunk_id,
         disease: r.disease,
+        resolved_disease: canonicalDisease,
         section: r.section,
         similarity: Number(r.similarity),
       })));
@@ -89,6 +116,7 @@ export async function retrieveTreatmentProtocols(dbClient, diagnoses, topK = RAG
     chunks: retrievedChunks,
     diagnoses_queried: uniqueDiagnoses,
     similarity_threshold: RAG_SIMILARITY_THRESHOLD,
+    disease_fallback_threshold: RAG_DISEASE_FALLBACK_THRESHOLD,
     section_filter: RAG_SECTION_FILTER,
   };
 }
