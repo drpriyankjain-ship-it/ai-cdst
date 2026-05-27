@@ -4,15 +4,15 @@
  * Two-call pipeline — no RAG:
  *
  *   Call 1: ~30s transcript → chief complaint extraction            (~700ms)
- *   Call 2: concepts + epi prior + visit type → questionnaire       (~1.3s, streaming)
+ *   Call 2: patient record + chief complaint → questionnaire        (single structured call, TIER_FAST)
  *
  * Direct port of history_stage.py
  */
 
 import { vaultRead, vaultUpdate } from '../lib/db.js';
-import { generateWithCascade, streamWithCascade, parseJsonResponse, responseText } from '../lib/llmClient.js';
+import { generateWithCascade, parseJsonResponse, responseText } from '../lib/llmClient.js';
 import { MODEL_H1_CHIEF_COMPLAINT, MODEL_H2_QUESTIONNAIRE } from '../lib/modelConfig.js';
-import { stateFromDistrictCode, loadBaselineDiseases, loadEpiPrior } from '../lib/epiUtils.js';
+import { stateFromDistrictCode } from '../lib/epiUtils.js';
 
 // ---------------------------------------------------------------------------
 // Patient record context builder
@@ -99,6 +99,19 @@ export function isComplaintMissing(chiefComplaint) {
   return empty.has(value);
 }
 
+// Build patient_record_fields deterministically — avoids a second LLM call
+// and eliminates divergence between what the nurse sees and what the vault stores.
+function buildPatientRecordFields() {
+  return {
+    past_medical_history: [],
+    family_history:       [],
+    social_history:       {},
+    current_medications:  [],
+    allergies:            [],
+    immunisation_flags:   [],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Response schemas
 // ---------------------------------------------------------------------------
@@ -124,11 +137,13 @@ const SCHEMA_CHIEF_COMPLAINT = {
   ],
 };
 
+// patient_record_fields: built deterministically after the call, not by LLM.
+// known_and_verified: removed — not used downstream.
+// discriminates: removed — no consumer.
 const SCHEMA_QUESTIONNAIRE = {
   type: 'object',
   properties: {
-    opening_context:    { type: 'string' },
-    known_and_verified: { type: 'array', items: { type: 'string' } },
+    opening_context: { type: 'string' },
     sections: {
       type: 'array',
       items: {
@@ -141,11 +156,10 @@ const SCHEMA_QUESTIONNAIRE = {
             items: {
               type: 'object',
               properties: {
-                question:      { type: 'string' },
-                follow_up:     { type: 'string' },
-                discriminates: { type: 'string' },
+                question:  { type: 'string' },
+                follow_up: { type: 'string' },
               },
-              required: ['question', 'follow_up', 'discriminates'],
+              required: ['question', 'follow_up'],
             },
           },
         },
@@ -160,34 +174,10 @@ const SCHEMA_QUESTIONNAIRE = {
         required: ['question', 'reason'],
       },
     },
-    prior_encounter_flags: { type: 'array', items: { type: 'string' } },
-    patient_record_fields: {
-      type: 'object',
-      properties: {
-        past_medical_history: { type: 'array', items: { type: 'string' } },
-        family_history:       { type: 'array', items: { type: 'string' } },
-        social_history: {
-          type: 'object',
-          properties: {
-            occupation:       { type: 'string' },
-            living_situation: { type: 'string' },
-            tobacco:          { type: 'string' },
-            alcohol:          { type: 'string' },
-          },
-        },
-        current_medications: { type: 'array', items: { type: 'string' } },
-        allergies:           { type: 'array', items: { type: 'string' } },
-        immunisation_flags:  { type: 'array', items: { type: 'string' } },
-      },
-      required: [
-        'past_medical_history', 'family_history', 'social_history',
-        'current_medications', 'allergies', 'immunisation_flags',
-      ],
-    },
   },
   required: [
-    'opening_context', 'known_and_verified', 'sections',
-    'mandatory_safety_questions', 'prior_encounter_flags', 'patient_record_fields',
+    'opening_context', 'sections',
+    'mandatory_safety_questions',
   ],
 };
 
@@ -199,13 +189,13 @@ const FIRST_VISIT_HISTORY_QUESTIONS = {
   section_title: 'Background History',
   rationale: 'Standard first-visit intake — collected once per patient, seeds the permanent record. Fixed question set for consistent coverage.',
   questions: [
-    { question: 'Do you have any long-term illness — like diabetes, high blood pressure, TB, asthma, epilepsy, or heart disease?', follow_up: 'How long have you had it? Are you on treatment for it?', discriminates: 'Past medical history — chronic conditions' },
-    { question: 'Have you ever been admitted to hospital or had an operation?', follow_up: 'When was this, and what was it for?', discriminates: 'Past medical history — hospitalisations and surgery' },
-    { question: 'Do any illnesses run in your family — your parents or brothers and sisters — like diabetes, TB, high blood pressure, or cancer?', follow_up: 'Which family member, and which illness?', discriminates: 'Family history' },
-    { question: 'What work do you do?', follow_up: 'Any exposure to chemicals, dust, pesticides, or heavy lifting at work?', discriminates: 'Social history — occupation and occupational exposures' },
-    { question: 'Do you use tobacco in any form — smoking, chewing, or gutka? Do you drink alcohol?', follow_up: 'How much, and for how long?', discriminates: 'Social history — tobacco and alcohol use' },
-    { question: 'Are you taking any medicines at the moment — tablets, injections, syrups, or any traditional or herbal remedies?', follow_up: 'What is the name? What dose? How long have you been taking it?', discriminates: 'Current medications — including OTC and traditional' },
-    { question: 'Have you ever had a bad reaction or allergy to any medicine or food?', follow_up: 'What happened — rash, swelling, breathing difficulty?', discriminates: 'Allergies and adverse drug reactions' },
+    { question: 'Do you have any long-term illness — like diabetes, high blood pressure, TB, asthma, epilepsy, or heart disease?', follow_up: 'How long have you had it? Are you on treatment for it?' },
+    { question: 'Have you ever been admitted to hospital or had an operation?', follow_up: 'When was this, and what was it for?' },
+    { question: 'Do any illnesses run in your family — your parents or brothers and sisters — like diabetes, TB, high blood pressure, or cancer?', follow_up: 'Which family member, and which illness?' },
+    { question: 'What work do you do?', follow_up: 'Any exposure to chemicals, dust, pesticides, or heavy lifting at work?' },
+    { question: 'Do you use tobacco in any form — smoking, chewing, or gutka? Do you drink alcohol?', follow_up: 'How much, and for how long?' },
+    { question: 'Are you taking any medicines at the moment — tablets, injections, syrups, or any traditional or herbal remedies?', follow_up: 'What is the name? What dose? How long have you been taking it?' },
+    { question: 'Have you ever had a bad reaction or allergy to any medicine or food?', follow_up: 'What happened — rash, swelling, breathing difficulty?' },
   ],
 };
 
@@ -239,10 +229,11 @@ export async function extractChiefComplaint(transcriptSegment, vaultContext) {
 }
 
 // ---------------------------------------------------------------------------
-// Call 2 — Generate questionnaire
+// Call 2 — Generate questionnaire (single structured call)
+// patient_record_fields is built deterministically after the call — not by LLM.
 // ---------------------------------------------------------------------------
 
-export async function generateQuestionnaire(chiefComplaint, vaultContext, baselineLayer, epiLayer, patientRecord) {
+export async function generateQuestionnaire(chiefComplaint, vaultContext, patientRecord) {
   const demographics = vaultContext.demographics || {};
   const districtCode = (vaultContext.gps || {}).district_code || 'WB_UNKNOWN';
   const stateName = stateFromDistrictCode(districtCode);
@@ -258,42 +249,55 @@ export async function generateQuestionnaire(chiefComplaint, vaultContext, baseli
     ? 'VOLUNTEERED IN PHASE 1 (patient mentioned unprompted):\n' + spontaneous.map(s => `  - ${s}`).join('\n')
     : '';
 
-  const fieldLabels = {
-    past_medical_history: '  past_medical_history: all chronic conditions, prior hospitalisations,\n    major illnesses, surgeries — ask specifically about diabetes, TB,\n    hypertension, heart disease, asthma, epilepsy',
-    family_history: '  family_history: diabetes, hypertension, TB, cancer, heart disease\n    in first-degree relatives (parents, siblings, children)',
-    social_history: '  social_history: occupation, living situation (joint/nuclear family),\n    tobacco use, alcohol use',
-    current_medications: '  current_medications: ALL drugs — prescription, over-the-counter,\n    and traditional/herbal remedies — name, dose, and reason if known',
-    allergies: '  allergies: drug allergies, food allergies, any known reactions\n    to medicines or other substances',
-    immunisation_history: '  immunisation_history: tetanus status (especially if trauma),\n    pregnancy vaccines if applicable',
+  const historyFieldDescriptions = {
+    past_medical_history: 'past_medical_history — chronic conditions, hospitalisations, surgeries (ask: DM, HTN, TB, asthma, epilepsy, heart disease)',
+    family_history:        'family_history — DM, HTN, TB, cancer, heart disease in first-degree relatives',
+    social_history:        'social_history — occupation, tobacco use, alcohol use',
+    current_medications:   'current_medications — all drugs including OTC and traditional/herbal (name, dose, duration)',
+    allergies:             'allergies — drug and food allergies, any adverse reactions to medicines',
+    immunisation_history:  'immunisation_history — tetanus status; pregnancy vaccines if applicable',
   };
 
   const historyInstruction = missingFields.length
-    ? 'HISTORY FIELDS TO COLLECT THIS VISIT:\nThe following fields are missing from this patient\'s record.\nInclude questions to collect them — work them naturally into the interview.\n' +
-      missingFields.filter(f => fieldLabels[f]).map(f => fieldLabels[f]).join('\n')
-    : 'HISTORY VERIFICATION:\nAll history fields are recorded. Include a brief verification section:\n  \'Have any of your health conditions changed since your last visit?\'\n  \'Are you still taking the same medications?\'\n  \'Any new allergies or reactions to medicines?\'';
+    ? 'HISTORY FIELDS TO COLLECT THIS VISIT:\nWork these into the interview naturally:\n' +
+      missingFields.filter(f => historyFieldDescriptions[f]).map(f => `  ${historyFieldDescriptions[f]}`).join('\n')
+    : 'HISTORY VERIFICATION:\nAll history fields are on record. Include a brief verification section — confirm what may have changed: conditions, medications, allergies.';
 
   const prompt = [
     `You are generating a structured interview questionnaire for a nurse in a remote rural clinic in ${stateName}, India. ` +
-    `The nurse reads these questions directly to the patient during a structured interview.\n\nPATIENT RECORD STATUS:\n${knownContext}`,
+    `The nurse reads these questions directly to the patient.\n\nPATIENT RECORD STATUS:\n${knownContext}`,
     `PATIENT (from 30-second opening):\n${JSON.stringify(demographics, null, 2)}`,
     `CHIEF COMPLAINT:\n${JSON.stringify(chiefComplaint, null, 2)}`,
     spontaneousText,
     languageInstruction,
-    baselineLayer,
-    epiLayer,
-    'CLINICAL FRAMEWORK FOR CHIEF COMPLAINT SECTION:\n' +
-    'Choose the framework that fits the presentation — do not force SOCRATES where it does not apply.\n' +
-    '  Pain / acute symptoms   → SOCRATES\n  Gynaecological/obstetric → Menstrual/obstetric history\n' +
-    '  Infertility              → Duration of trying, cycle regularity, prior pregnancies\n' +
-    '  Chronic/constitutional  → Duration, progression, systemic features\n  Psychiatric/behavioural → Onset, triggers, sleep, function, safety\n\n' +
-    'QUESTIONNAIRE DESIGN:\n- 4-8 sections depending on complexity\n- Each section: 3-5 questions\n' +
-    '- Chief complaint section is ALWAYS first\n- Questions within each section: most to least discriminating\n' +
-    '- Plain language — questions are read directly to the patient\n- follow_up: what to ask if the answer is yes or abnormal\n' +
-    '- discriminates: brief nurse-only note — not read to patient\n\n' +
+    'QUESTIONNAIRE STRUCTURE:\n\n' +
+    'Section 1 — History of Presenting Complaint (8–12 questions, always required):\n' +
+    'Use the appropriate framework for the chief complaint:\n' +
+    '  Pain / acute symptoms    → SOCRATES (site, onset, character, radiation, associations,\n' +
+    '                             timing, exacerbating/relieving factors, severity)\n' +
+    '  Fever                    → onset, pattern, rigors, sweats, focal symptoms\n' +
+    '  Respiratory              → onset, progression, sputum, haemoptysis, exertional component\n' +
+    '  Gynaecological/obstetric → LMP, cycle regularity, obstetric history, discharge, pain\n' +
+    '  Chronic/constitutional   → duration, progression, weight loss, appetite, night sweats\n' +
+    '  Psychiatric/behavioural  → onset, triggers, sleep, function, safety\n' +
+    'After the framework questions, add 2–3 questions that discriminate between the most likely differentials.\n' +
+    'If additional_complaints is non-empty, extend Section 1 to cover each one — or open a separate HPI section if the second complaint is distinctly different (e.g. fever + pleuritic chest pain warrants two sections; fever + fatigue does not).\n\n' +
+    'Section 2 — Associated Symptoms (3–4 questions, always required):\n' +
+    'Key positives and negatives most discriminating for the differentials. Do not repeat Section 1 questions.\n\n' +
+    'Section 3 — Functional Impact (2 questions, always required):\n' +
+    'How is the illness affecting daily life — mobility, eating, drinking, work?\n' +
+    'Trajectory since onset: better, worse, or the same?\n\n' +
+    'Additional sections (2–3 questions each, include only if clinically indicated):\n' +
+    '  Relevant systems review — urinary symptoms for fever, neuro for headache, etc.\n' +
+    '  Obstetric/menstrual history — if gynaecological causes are in the differential.\n\n' +
+    '- Plain language — questions are read directly to the patient\n' +
+    '- follow_up: what to ask if the answer is yes or abnormal\n' +
+    '- Do not generate questions about medications, allergies, PMH, or family/social history — covered separately\n' +
+    '- Maximum 25 questions across all LLM-generated sections — only ask what is clinically relevant\n\n' +
     historyInstruction + '\n\n' +
-    'MANDATORY SAFETY QUESTIONS (always):\n- Female patients aged 12-50: current pregnancy status and LMP\n' +
-    '- All patients: confirm current medications\n- All patients: confirm allergies\n- Any red flags from phase 1: follow up\n\n' +
-    'known_and_verified: list confirmations for fields already in the record\npatient_record_fields: populate with questions to ASK — answers will come from the phase 2 transcript.',
+    'MANDATORY SAFETY QUESTIONS (always include):\n' +
+    '- Female patients aged 12–50: current pregnancy status and LMP\n' +
+    '- All patients: confirm current medications and allergies',
   ].filter(Boolean).join('\n\n');
 
   const response = await generateWithCascade(
@@ -303,65 +307,22 @@ export async function generateQuestionnaire(chiefComplaint, vaultContext, baseli
       thinkingConfig: { thinkingBudget: 0 },
       responseMimeType: 'application/json',
       responseSchema: SCHEMA_QUESTIONNAIRE,
-      maxOutputTokens: 8000,
+      maxOutputTokens: 4000,
     },
   );
 
   const questionnaire = parseJsonResponse(responseText(response));
 
-  // Inject fixed background history section for first/partial visits
+  // Inject patient_record_fields deterministically — not from LLM output.
+  questionnaire.patient_record_fields = buildPatientRecordFields();
+
+  // Append fixed background history section for first/partial visits.
   if (missingFields.length) {
     if (!questionnaire.sections) questionnaire.sections = [];
     questionnaire.sections.push(FIRST_VISIT_HISTORY_QUESTIONS);
   }
+
   return questionnaire;
-}
-
-// ---------------------------------------------------------------------------
-// Call 2 — Streaming variant
-// ---------------------------------------------------------------------------
-
-export async function* streamQuestionnaire(chiefComplaint, vaultContext, baselineLayer, epiLayer, patientRecord) {
-  const demographics = vaultContext.demographics || {};
-  const districtCode = (vaultContext.gps || {}).district_code || 'WB_UNKNOWN';
-  const stateName = stateFromDistrictCode(districtCode);
-  const lang = chiefComplaint.language_of_consultation || 'English';
-  const languageInstruction = lang === 'English' ? '' :
-    `LANGUAGE: The consultation is in ${lang}. After each question, add a romanised ${lang} translation in brackets.`;
-  const { knownContext, missingFields } = buildPatientRecordContext(patientRecord);
-
-  const prompt = [
-    `Generate a structured interview questionnaire for a nurse in rural ${stateName}. ` +
-    `Write it as clearly numbered sections with questions the nurse reads directly to the patient. Be concise — start immediately.\n\nPATIENT RECORD STATUS:\n${knownContext}`,
-    `Patient: ${JSON.stringify(demographics)}`,
-    `Chief complaint (primary): ${JSON.stringify(chiefComplaint.chief_complaint)}`,
-    chiefComplaint.additional_complaints?.length ? `Additional complaints: ${JSON.stringify(chiefComplaint.additional_complaints)}` : '',
-    languageInstruction,
-    baselineLayer,
-    epiLayer,
-    'Clinical framework — choose by presentation type:\n  Pain/acute → SOCRATES\n  Gynaecological/obstetric → menstrual/obstetric history\n  Chronic/constitutional → duration, progression, systemic features',
-    `Format: numbered sections with bullet questions. 4-8 sections, 3-5 questions each. Plain language. Primary complaint first. ` +
-    (missingFields.length ? `Collect missing history fields: ${missingFields.join(', ')}.` : 'Verify existing history — confirm what has changed.'),
-  ].filter(Boolean).join('\n\n');
-
-  for await (const chunk of streamWithCascade(
-    MODEL_H2_QUESTIONNAIRE,
-    prompt,
-    { maxOutputTokens: 1500 },
-  )) {
-    if (chunk.text) yield chunk.text;
-  }
-
-  // Append fixed background history section for first/partial visits
-  if (missingFields.length) {
-    const section = FIRST_VISIT_HISTORY_QUESTIONS;
-    yield `\n\n${section.section_title.toUpperCase()}\n`;
-    for (let i = 0; i < section.questions.length; i++) {
-      const q = section.questions[i];
-      yield `\n${i + 1}. ${q.question}\n`;
-      if (q.follow_up) yield `   → If yes / abnormal: ${q.follow_up}\n`;
-    }
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -374,7 +335,7 @@ export function validateQuestionnaire(q) {
     opening_context: 'Conduct the structured interview below.',
     sections: [],
     mandatory_safety_questions: [],
-    prior_encounter_flags: [],
+
     patient_record_fields: {
       past_medical_history: [], family_history: [], social_history: {},
       current_medications: [], allergies: [], immunisation_flags: [],
@@ -396,7 +357,6 @@ export function validateQuestionnaire(q) {
     for (const qn of s.questions) {
       if (!qn.question) qn.question = '[Question text missing]';
       if (!qn.follow_up) qn.follow_up = '';
-      if (!qn.discriminates) qn.discriminates = '';
     }
   }
 
@@ -432,12 +392,7 @@ export function extractPatientRecordUpdate(questionnaire, chiefComplaint, sessio
 
 export async function runHistoryStage(sessionId, transcriptSegment, dbClient) {
   const vaultContext = await vaultRead(dbClient, sessionId);
-  const gps = vaultContext.gps || {};
-  const districtCode = gps.district_code || 'WB_UNKNOWN';
-  const currentMonth = new Date().getMonth() + 1;
   const patientRecord = vaultContext.patient_record || {};
-  const baselineLayer = loadBaselineDiseases();
-  const epiLayer = loadEpiPrior(districtCode, currentMonth);
 
   // Call 1
   console.log(`[${sessionId}] History stage Call 1: extracting chief complaint`);
@@ -460,7 +415,7 @@ export async function runHistoryStage(sessionId, transcriptSegment, dbClient) {
 
   // Call 2
   console.log(`[${sessionId}] History stage Call 2: generating questionnaire`);
-  let questionnaire = await generateQuestionnaire(chiefComplaint, vaultContext, baselineLayer, epiLayer, patientRecord);
+  let questionnaire = await generateQuestionnaire(chiefComplaint, vaultContext, patientRecord);
   questionnaire = validateQuestionnaire(questionnaire);
 
   const patientRecordStub = extractPatientRecordUpdate(questionnaire, chiefComplaint, sessionId);

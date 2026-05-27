@@ -9,7 +9,7 @@ import { DeepgramClient } from '@deepgram/sdk';
 import { getPool, vaultInit, vaultRead, vaultUpdate, vaultSetNested, vaultAppendTranscript, loadPatientRecord } from './lib/db.js';
 import { verifyJwt } from './lib/auth.js';
 import { loadBaselineDiseases, loadEpiPrior } from './lib/epiUtils.js';
-import { extractChiefComplaint, generateQuestionnaire, validateQuestionnaire, extractPatientRecordUpdate, streamQuestionnaire } from './stages/historyStage.js';
+import { extractChiefComplaint, generateQuestionnaire, validateQuestionnaire, extractPatientRecordUpdate } from './stages/historyStage.js';
 import { extractMedicalConcepts, generateDifferential, validateDifferential, streamDifferential, generateClarifyingQuestions, runDiagnosisStage } from './stages/diagnosisStage.js';
 import { runManagementStage, streamManagement } from './stages/managementStage.js';
 
@@ -147,31 +147,36 @@ async function handleMarkerA(ws, state, t) {
     try {
       const vaultCtx = await vaultRead(dbClient, sessionId);
       const patientRecord = vaultCtx.patient_record || {};
-      const gps = vaultCtx.gps || {};
-      const districtCode = gps.district_code || 'WB_UNKNOWN';
-      const baseline = loadBaselineDiseases();
-      const epi = loadEpiPrior(districtCode, new Date().getMonth() + 1);
 
       console.log(`[${sessionId}] History Call 1: extracting chief complaint`);
       const chief = await extractChiefComplaint(phase1, vaultCtx);
       await vaultUpdate(dbClient, sessionId, { chief_complaint: chief });
 
-      const doStructured = async () => {
-        let q = await generateQuestionnaire(chief, vaultCtx, baseline, epi, patientRecord);
-        q = validateQuestionnaire(q);
-        const stub = extractPatientRecordUpdate(q, chief, sessionId);
-        await vaultUpdate(dbClient, sessionId, { questionnaire: q, patient_record_stub: stub, history_stage_status: 'complete', history_stage_completed_at: new Date().toISOString() });
-        return q;
-      };
+      console.log(`[${sessionId}] History Call 2: generating questionnaire`);
+      let questionnaire = await generateQuestionnaire(chief, vaultCtx, patientRecord);
+      questionnaire = validateQuestionnaire(questionnaire);
+      const stub = extractPatientRecordUpdate(questionnaire, chief, sessionId);
+      await vaultUpdate(dbClient, sessionId, { questionnaire, patient_record_stub: stub, history_stage_status: 'complete', history_stage_completed_at: new Date().toISOString() });
 
-      const doStream = async () => {
-        for await (const token of streamQuestionnaire(chief, vaultCtx, baseline, epi, patientRecord)) {
-          wsSend(ws, { type: 'stage_token', stage: 'history', token });
+      // Push formatted questionnaire to nurse section by section
+      if (questionnaire.opening_context) {
+        wsSend(ws, { type: 'stage_token', stage: 'history', token: questionnaire.opening_context + '\n\n' });
+      }
+      (questionnaire.sections || []).forEach((s, i) => {
+        let text = `${i + 1}. ${s.section_title}\n`;
+        for (const qn of s.questions || []) {
+          text += `\n  • ${qn.question}`;
+          if (qn.follow_up) text += `\n    → ${qn.follow_up}`;
         }
-      };
-
-      console.log(`[${sessionId}] History Call 2: streaming + structured`);
-      const [questionnaire] = await Promise.all([doStructured(), doStream()]);
+        wsSend(ws, { type: 'stage_token', stage: 'history', token: text + '\n\n' });
+      });
+      if (questionnaire.mandatory_safety_questions?.length) {
+        let text = 'MANDATORY SAFETY QUESTIONS\n';
+        for (const msq of questionnaire.mandatory_safety_questions) {
+          text += `\n  • ${msq.question}`;
+        }
+        wsSend(ws, { type: 'stage_token', stage: 'history', token: text + '\n' });
+      }
       wsSend(ws, { type: 'stage_complete', stage: 'history', data: questionnaire });
       console.log(`[${sessionId}] History stage complete`);
     } catch (exc) {
