@@ -474,7 +474,7 @@ should be verified before going live.
 ## Doctor authorization
 
 **LOW risk:** Async doctor review. Nurse proceeds with treatment plan.
-Doctor reviews within 4 hours. No response = ratified.
+Doctor reviews within 24 hours. No response = ratified.
 
 **HIGH risk:** Synchronous. Nurse calls doctor or refers immediately.
 Do not proceed without doctor contact.

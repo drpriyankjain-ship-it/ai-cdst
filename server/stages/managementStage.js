@@ -154,14 +154,14 @@ export async function generateRiskAssessment(problemListOutput, clarifyingFindin
     'INSTRUCTIONS:\nAssess all five dimensions:\n' +
     '1. DIAGNOSTIC UNCERTAINTY — which must-not-miss diagnoses remain possible?\n' +
     '2. IATROGENIC RISK — assess ALL drugs, check allergy/interaction conflicts\n' +
-    '3. DELAY RISK — how time-sensitive? Safe window for async doctor auth?\n' +
+    '3. DELAY RISK — consequence of waiting up to 24 hours for async doctor review\n' +
     '4. COMPLICATION WATCH — warning signs with specific nurse actions\n' +
-    '5. MITIGATION PLAN — set HIGH if ANY unmitigable risk exists or safe_delay < 2h',
+    '5. MITIGATION PLAN — set overall_risk_tier HIGH only if: (a) the patient requires hospital-level care now, or (b) a 24-hour delay in doctor review carries genuine risk of serious harm or death. Set LOW if the nurse can safely administer the prescribed oral treatment and monitor the patient while the doctor reviews within 24 hours. Stable presentations manageable with oral medication and nursing care should be LOW.',
   ].join('\n\n');
 
   const response = await generateWithCascade(MODEL_M3_RISK, prompt, {
     thinkingConfig: { thinkingBudget: 0 },
-    systemInstruction: 'You are a clinical decision support system performing risk assessment. When in doubt, escalate.',
+    systemInstruction: 'You are a clinical decision support system performing risk assessment for nurse-managed consultations in rural India. LOW means the nurse can safely proceed with the prescribed plan and the doctor reviews asynchronously within 24 hours — no doctor response within 24 hours ratifies the plan. HIGH means the case cannot wait: the patient needs hospital-level care now, or a 24-hour delay in doctor involvement carries genuine risk of serious harm or death. A deterministic rule engine runs after your output and will escalate LOW→HIGH when hard clinical thresholds are crossed — your job is calibrated clinical judgement, not defensive escalation. Common stable presentations manageable with oral medication and nurse monitoring should be LOW.',
     responseMimeType: 'application/json', responseSchema: SCHEMA_RISK_ASSESSMENT, maxOutputTokens: 2500,
   });
   return parseJsonResponse(responseText(response));
@@ -261,7 +261,7 @@ export async function runManagementStage(sessionId, transcriptSegment, dbClient)
 
     // Inject deterministic fields
     const finalTier = ruleResult.final_risk_tier;
-    const hoursToAuth = finalTier === 'HIGH' ? 0 : 4;
+    const hoursToAuth = finalTier === 'HIGH' ? 0 : 24;
     const authDeadline = hoursToAuth === 0
       ? 'IMMEDIATE — do not proceed without doctor contact'
       : new Date(Date.now() + hoursToAuth * 3600000).toLocaleString('en-GB', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' });
@@ -270,7 +270,7 @@ export async function runManagementStage(sessionId, transcriptSegment, dbClient)
     triageOutput.triage.tier = finalTier;
     triageOutput.triage.action = finalTier === 'HIGH'
       ? 'Call the referring doctor immediately. Do not dispense any medication until you have spoken to the doctor.'
-      : 'Proceed with the prescribed treatment plan. The doctor will review this case within 4 hours.';
+      : 'Proceed with the prescribed treatment plan. The doctor will review this case within 24 hours.';
     triageOutput.triage.rationale = riskAssessment.mitigation_plan?.risk_tier_rationale || '';
     triageOutput.triage.rule_engine = ruleResult;
     if (!triageOutput.doctor_handoff) triageOutput.doctor_handoff = {};
