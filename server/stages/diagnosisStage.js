@@ -15,7 +15,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 import { vaultRead, vaultUpdate, vaultSetNested } from '../lib/db.js';
-import { generateWithCascade, streamWithCascade, parseJsonResponse, responseText } from '../lib/llmClient.js';
+import { generateWithCascade, parseJsonResponse, responseText } from '../lib/llmClient.js';
 import { MODEL_D1_CONCEPTS, MODEL_D2_DIFFERENTIAL, MODEL_D3_CLARIFYING } from '../lib/modelConfig.js';
 import { stateFromDistrictCode, loadBaselineDiseases, loadEpiPrior } from '../lib/epiUtils.js';
 
@@ -96,7 +96,6 @@ const SCHEMA_MEDICAL_CONCEPTS = {
       },
     },
     negatives: { type: 'array', items: { type: 'string' } },
-    relevant_history: { type: 'array', items: { type: 'string' } },
     risk_factors: { type: 'array', items: { type: 'string' } },
     vitals_reported: {
       type: 'object', properties: {
@@ -120,8 +119,8 @@ const SCHEMA_MEDICAL_CONCEPTS = {
     allergies_reported: { type: 'array', items: { type: 'string' } },
   },
   required: [
-    'chief_complaint', 'symptoms', 'negatives', 'relevant_history',
-    'risk_factors', 'vitals_reported', 'red_flags', 'pregnancy_status',
+    'chief_complaint', 'symptoms', 'negatives', 'risk_factors',
+    'vitals_reported', 'red_flags', 'pregnancy_status',
     'lmp', 'uncertain_findings', 'past_medical_history',
     'current_medications', 'allergies_reported',
   ],
@@ -209,6 +208,11 @@ export async function extractMedicalConcepts(transcriptSegment, vaultContext) {
     '  Set to \'unknown\' if the topic was not raised. Null for male patients or age outside 12-50.\n' +
     '- lmp: record verbatim if stated; null otherwise\n' +
     '- uncertain_findings: list any topic where the patient\'s answer was ambiguous.\n' +
+    '- risk_factors: list ALL patient-level risk factors and epidemiological exposures explicitly mentioned:\n' +
+    '  clinical risk factors (age, sex, BMI, smoking, alcohol, occupation, comorbidities),\n' +
+    '  epidemiological context (recent travel, household contacts with illness, TB in family,\n' +
+    '  pilgrimage/crowd exposure, occupational chemical exposure, living in flood-prone area).\n' +
+    '  Empty [] if none stated.\n' +
     '- past_medical_history: list chronic/past conditions explicitly mentioned. Empty [] if none.\n' +
     '- current_medications: list drugs currently taking with dose if stated. Empty [] if none.\n' +
     '- allergies_reported: list allergens with reaction. Empty [] if none.',
@@ -252,29 +256,6 @@ export async function generateDifferential(concepts, vaultContext, baselineLayer
     { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json', responseSchema: SCHEMA_DIFFERENTIAL, maxOutputTokens: 8000 },
   );
   return validateDifferential(parseJsonResponse(responseText(response)).differential);
-}
-
-// ---------------------------------------------------------------------------
-// Call 2 — streaming variant
-// ---------------------------------------------------------------------------
-
-export async function* streamDifferential(concepts, vaultContext, baselineLayer, epiLayer) {
-  const demographics = vaultContext.demographics || {};
-  const districtCode = (vaultContext.gps || {}).district_code || 'WB_UNKNOWN';
-  const stateName = stateFromDistrictCode(districtCode);
-
-  const prompt = [
-    `You are a clinical decision support system for a nurse in rural ${stateName}.\n` +
-    'Generate a ranked differential diagnosis. Write it as a readable numbered list with brief reasoning for each entry.',
-    `Patient: ${JSON.stringify(demographics)}`,
-    `Clinical features: ${JSON.stringify(concepts)}`,
-    baselineLayer,
-    epiLayer || '',
-  ].filter(Boolean).join('\n\n');
-
-  for await (const chunk of streamWithCascade(MODEL_D2_DIFFERENTIAL, prompt, { maxOutputTokens: 1500 })) {
-    if (chunk.text) yield chunk.text;
-  }
 }
 
 // ---------------------------------------------------------------------------

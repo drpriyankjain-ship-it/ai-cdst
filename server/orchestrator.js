@@ -10,7 +10,7 @@ import { getPool, vaultInit, vaultRead, vaultUpdate, vaultSetNested, vaultAppend
 import { verifyJwt } from './lib/auth.js';
 import { loadBaselineDiseases, loadEpiPrior } from './lib/epiUtils.js';
 import { extractChiefComplaint, generateQuestionnaire, validateQuestionnaire, extractPatientRecordUpdate } from './stages/historyStage.js';
-import { extractMedicalConcepts, generateDifferential, validateDifferential, streamDifferential, generateClarifyingQuestions, runDiagnosisStage } from './stages/diagnosisStage.js';
+import { extractMedicalConcepts, generateDifferential, generateClarifyingQuestions } from './stages/diagnosisStage.js';
 import { runManagementStage, streamManagement } from './stages/managementStage.js';
 
 const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY || '';
@@ -213,23 +213,51 @@ async function handleMarkerB(ws, state, t) {
         vaultCtx = await vaultRead(dbClient, sessionId);
       }
 
-      const doStructured = async () => {
-        const ddx = validateDifferential(await generateDifferential(concepts, vaultCtx, baseline, epi));
-        await vaultUpdate(dbClient, sessionId, { differential_table: ddx });
-        return ddx;
-      };
-      const doStream = async () => {
-        for await (const token of streamDifferential(concepts, vaultCtx, baseline, epi)) {
-          wsSend(ws, { type: 'stage_token', stage: 'diagnosis', token });
-        }
-      };
+      console.log(`[${sessionId}] Diagnosis Call 2: generating differential`);
+      const ddx = await generateDifferential(concepts, vaultCtx, baseline, epi);
+      await vaultUpdate(dbClient, sessionId, { differential_table: ddx });
 
-      console.log(`[${sessionId}] Diagnosis Call 2: streaming + structured`);
-      const [ddx] = await Promise.all([doStructured(), doStream()]);
+      // Push formatted differential
+      wsSend(ws, { type: 'stage_token', stage: 'diagnosis', token: 'DIFFERENTIAL DIAGNOSIS\n\n' });
+      for (const entry of ddx) {
+        const flags = [
+          entry.must_not_miss    ? 'Must-not-miss'    : null,
+          entry.referral_required ? 'Referral required' : null,
+        ].filter(Boolean).join(' | ');
+        let text = `${entry.rank}. ${entry.disease} [${entry.probability}]`;
+        if (flags) text += ` — ${flags}`;
+        text += '\n';
+        if (entry.supporting_features?.length) text += `   Supporting: ${entry.supporting_features.join(', ')}\n`;
+        if (entry.against?.length)             text += `   Against: ${entry.against.join(', ')}\n`;
+        if (entry.reasoning)                   text += `   Reasoning: ${entry.reasoning}\n`;
+        wsSend(ws, { type: 'stage_token', stage: 'diagnosis', token: text + '\n' });
+      }
 
       console.log(`[${sessionId}] Diagnosis Call 3: clarifying questions`);
       const clarifying = await generateClarifyingQuestions(ddx, concepts, vaultCtx);
       await vaultUpdate(dbClient, sessionId, { clarifying_questions: clarifying, diagnosis_stage_status: 'complete', diagnosis_stage_completed_at: new Date().toISOString() });
+
+      // Push formatted clarifying questions and bedside observations
+      const qs  = (clarifying.clarifying_questions || []).slice().sort((a, b) => a.priority - b.priority);
+      const obs = (clarifying.bedside_observations  || []).slice().sort((a, b) => a.priority - b.priority);
+      if (qs.length) {
+        wsSend(ws, { type: 'stage_token', stage: 'diagnosis', token: 'CLARIFYING QUESTIONS\n\n' });
+        for (const q of qs) {
+          let text = `  • ${q.question}\n`;
+          if (q.if_yes_favours || q.if_no_favours) {
+            text += `    → If yes: ${q.if_yes_favours || '—'} | If no: ${q.if_no_favours || '—'}\n`;
+          }
+          wsSend(ws, { type: 'stage_token', stage: 'diagnosis', token: text });
+        }
+      }
+      if (obs.length) {
+        wsSend(ws, { type: 'stage_token', stage: 'diagnosis', token: '\nBEDSIDE OBSERVATIONS\n\n' });
+        for (const o of obs) {
+          let text = `  • ${o.observation} [${o.tool_required}]\n`;
+          if (o.finding_and_meaning) text += `    → ${o.finding_and_meaning}\n`;
+          wsSend(ws, { type: 'stage_token', stage: 'diagnosis', token: text });
+        }
+      }
 
       wsSend(ws, { type: 'stage_complete', stage: 'diagnosis', data: { differential: ddx, clarifying_questions: clarifying } });
       console.log(`[${sessionId}] Diagnosis stage complete`);
