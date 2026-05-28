@@ -11,7 +11,7 @@ import { verifyJwt } from './lib/auth.js';
 import { loadBaselineDiseases, loadEpiPrior } from './lib/epiUtils.js';
 import { extractChiefComplaint, generateQuestionnaire, validateQuestionnaire, extractPatientRecordUpdate } from './stages/historyStage.js';
 import { extractMedicalConcepts, generateDifferential, generateClarifyingQuestions } from './stages/diagnosisStage.js';
-import { runManagementStage, streamManagement } from './stages/managementStage.js';
+import { runManagementStage } from './stages/managementStage.js';
 
 const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY || '';
 const DEEPGRAM_LANGUAGE = process.env.DEEPGRAM_LANGUAGE || 'hi';
@@ -280,25 +280,64 @@ async function handleMarkerC(ws, state, t) {
 
   (async () => {
     try {
-      const vaultCtx = await vaultRead(dbClient, sessionId);
-      const doStream = async () => {
-        for await (const token of streamManagement(phase3, vaultCtx, dbClient)) {
-          wsSend(ws, { type: 'stage_token', stage: 'management', token });
-        }
-      };
-      const doStructured = async () => runManagementStage(sessionId, phase3, dbClient);
-
-      console.log(`[${sessionId}] Management stage: streaming + pipeline starting`);
-      const [result] = await Promise.all([doStructured(), doStream()]);
+      console.log(`[${sessionId}] Management stage: starting`);
+      const result = await runManagementStage(sessionId, phase3, dbClient);
 
       const triage = result.triage || {};
-      const riskTier = result.rule_engine?.final_risk_tier || 'high';
+      const riskTier = result.rule_engine?.final_risk_tier || 'HIGH';
+
+      // Push formatted problem list (from M2)
+      const problems = result.problem_list?.problem_list || [];
+      if (problems.length) {
+        wsSend(ws, { type: 'stage_token', stage: 'management', token: 'MANAGEMENT PLAN\n\n' });
+        for (const p of problems) {
+          const a = p.assessment || {};
+          const typeLabel = { acute_new: 'Acute', established: 'Established', incidental: 'Incidental', deferred: 'Deferred' }[p.type] || p.type;
+          const confidence = a.confidence ? ` — ${a.confidence} confidence` : '';
+          let text = `Problem ${p.problem_number} — ${p.problem_title} [${typeLabel}]${confidence}\n`;
+          const dx = a.provisional_diagnosis || a.condition || a.finding;
+          if (dx) text += `  Assessment: ${dx}\n`;
+          if (a.rationale) text += `  Rationale: ${a.rationale}\n`;
+          const rx = p.plan?.prescription || [];
+          if (rx.length) {
+            text += `  Prescription:\n`;
+            for (const item of rx) {
+              const parts = [item.drug, item.dose, item.route, item.frequency, item.duration ? `for ${item.duration}` : ''].filter(Boolean);
+              text += `    • ${parts.join(' | ')}\n`;
+              if (item.instructions) text += `      ${item.instructions}\n`;
+            }
+          }
+          const invx = p.plan?.investigations || [];
+          if (invx.length) text += `  Investigations: ${invx.join(', ')}\n`;
+          const nonPharm = p.plan?.non_pharmacological || [];
+          if (nonPharm.length) text += `  Non-pharmacological: ${nonPharm.join('; ')}\n`;
+          wsSend(ws, { type: 'stage_token', stage: 'management', token: text + '\n' });
+        }
+      }
+
+      // Push triage decision (tier + action injected deterministically by runManagementStage)
+      const triageTier = triage.triage?.tier || riskTier;
+      const triageAction = triage.triage?.action || '';
+      wsSend(ws, { type: 'stage_token', stage: 'management', token: `TRIAGE: ${triageTier}\n${triageAction}\n\n` });
+
+      // Push patient instructions (from M4)
+      const pi = triage.patient_instructions;
+      if (pi) {
+        wsSend(ws, { type: 'stage_token', stage: 'management', token: 'PATIENT INSTRUCTIONS\n\n' });
+        if (pi.diagnosis_explained) wsSend(ws, { type: 'stage_token', stage: 'management', token: `${pi.diagnosis_explained}\n\n` });
+        if (pi.treatment_summary)   wsSend(ws, { type: 'stage_token', stage: 'management', token: `${pi.treatment_summary}\n\n` });
+        if (pi.return_criteria?.length) {
+          wsSend(ws, { type: 'stage_token', stage: 'management', token: `Return immediately if:\n${pi.return_criteria.map(c => `  • ${c}`).join('\n')}\n\n` });
+        }
+        if (pi.follow_up) wsSend(ws, { type: 'stage_token', stage: 'management', token: `Follow-up: ${pi.follow_up}\n` });
+      }
+
       wsSend(ws, { type: 'stage_complete', stage: 'management', data: { triage_output: triage, risk_tier: riskTier, problem_list: result.problem_list || {}, risk_assessment: result.risk_assessment || {} } });
 
       if (riskTier === 'HIGH') notifyDoctor(sessionId, triage);
       console.log(`[${sessionId}] Management stage complete — risk_tier=${riskTier}`);
 
-      // Write to patient_log — stores proforma, clarifying questions, and management plan distinctly
+      // Write to patient_log
       try {
         const vaultFinal = await vaultRead(dbClient, sessionId);
         await dbClient.query(

@@ -217,7 +217,7 @@ function toFloat(val) {
   try { const n = parseFloat(String(val).trim().replace(',', '.')); return isNaN(n) ? null : n; } catch { return null; }
 }
 
-export function runRuleEngine(problemListOutput, triageOutput, demographics, vitals, redFlags, extractedConcepts, acuteConfidence) {
+export function runRuleEngine(problemListOutput, riskAssessment, demographics, vitals, redFlags, extractedConcepts, acuteConfidence) {
   const triggers = [];
   const problems = problemListOutput.problem_list || [];
   const dxNames = [];
@@ -298,7 +298,7 @@ export function runRuleEngine(problemListOutput, triageOutput, demographics, vit
   // 7. Diagnostic confidence
   if ((acuteConfidence || 'high') === 'low') triggers.push('LOW DIAGNOSTIC CONFIDENCE: provisional diagnosis confidence is low');
 
-  const llmTier = triageOutput?.triage?.tier || 'HIGH';
+  const llmTier = riskAssessment?.mitigation_plan?.overall_risk_tier || 'HIGH';
   const overrodeLlm = triggers.length > 0 && llmTier === 'LOW';
   const finalTier = triggers.length > 0 ? 'HIGH' : llmTier;
   if (overrodeLlm) console.log(`[RULE ENGINE] Overriding LLM tier LOW → HIGH. Triggers: ${triggers}`);

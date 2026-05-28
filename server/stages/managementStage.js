@@ -5,7 +5,7 @@
  */
 
 import { vaultRead, vaultUpdate } from '../lib/db.js';
-import { generateWithCascade, streamWithCascade, parseJsonResponse, responseText } from '../lib/llmClient.js';
+import { generateWithCascade, parseJsonResponse, responseText } from '../lib/llmClient.js';
 import { MODEL_M1_FINDINGS, MODEL_M2_PRESCRIPTION, MODEL_M3_RISK, MODEL_M4_TRIAGE } from '../lib/modelConfig.js';
 import { stateFromDistrictCode } from '../lib/epiUtils.js';
 import {
@@ -257,7 +257,7 @@ export async function runManagementStage(sessionId, transcriptSegment, dbClient)
       if (key !== 'rdt_result' && val != null) vitals[key] = val;
     }
     const redFlags = vaultContext.extracted_concepts?.red_flags || [];
-    const ruleResult = runRuleEngine(problemListOutput, triageOutput, demographics, vitals, redFlags, vaultContext.extracted_concepts || {}, acuteConfidence);
+    const ruleResult = runRuleEngine(problemListOutput, riskAssessment, demographics, vitals, redFlags, vaultContext.extracted_concepts || {}, acuteConfidence);
 
     // Inject deterministic fields
     const finalTier = ruleResult.final_risk_tier;
@@ -291,33 +291,3 @@ export async function runManagementStage(sessionId, transcriptSegment, dbClient)
   }
 }
 
-// ---------------------------------------------------------------------------
-// Streaming variant
-// ---------------------------------------------------------------------------
-
-export async function* streamManagement(transcriptSegment, vaultContext, dbClient) {
-  const demographics = vaultContext.demographics || {};
-  const concepts = vaultContext.extracted_concepts || {};
-  const knownAllergies = [...new Set([...(demographics.known_allergies || []), ...(concepts.allergies_reported || [])].map(a => a.toLowerCase()))];
-  const ddx = vaultContext.differential_table || [];
-  const ragDiagnoses = ddx.filter(d => d.disease).map(d => d.disease);
-  const stateName = stateFromDistrictCode((vaultContext.gps || {}).district_code || 'WB_UNKNOWN');
-  const formulary = loadFormulary();
-  const knownConditions = demographics.known_conditions || [];
-  if (Array.isArray(knownConditions)) ragDiagnoses.push(...knownConditions.filter(Boolean));
-
-  const [clarifyingFindings, stgContext] = await Promise.all([
-    extractClarifyingFindings(transcriptSegment, vaultContext),
-    retrieveTreatmentProtocols(dbClient, ragDiagnoses),
-  ]);
-
-  const streamPrompt = `Generate a problem-oriented management plan for a nurse in rural ${stateName}. Be clear and concise.\n\n` +
-    `Patient: ${JSON.stringify(demographics)}\nAllergies: ${JSON.stringify(knownAllergies)}\n` +
-    `Differential: ${JSON.stringify(ddx.slice(0, 3))}\nClarifying findings: ${JSON.stringify(clarifyingFindings)}\n` +
-    `STG protocols:\n${stgContext ? stgContext.slice(0, 2000) : 'Not available'}\nFormulary: ${JSON.stringify(formulary)}\n\n` +
-    'Write: 1) Provisional diagnosis with brief rationale 2) Any other active problems 3) Prescription with doses 4) Key instructions';
-
-  for await (const chunk of streamWithCascade(MODEL_M4_TRIAGE, streamPrompt, { maxOutputTokens: 1500 })) {
-    if (chunk.text) yield chunk.text;
-  }
-}
