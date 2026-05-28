@@ -19,9 +19,10 @@ export const RAG_TOP_K = 8;
 let ESCALATION_RULES = {};
 try { ESCALATION_RULES = JSON.parse(readFileSync(ESCALATION_RULES_PATH, 'utf-8')); } catch { console.warn('[WARN] Could not load escalation_rules.json'); }
 
-export function loadFormulary() {
-  return JSON.parse(readFileSync(FORMULARY_PATH, 'utf-8'));
-}
+let _formulary = {};
+try { _formulary = JSON.parse(readFileSync(FORMULARY_PATH, 'utf-8')); } catch { console.warn('[WARN] Could not load formulary_wb.json'); }
+
+export function loadFormulary() { return _formulary; }
 
 // ---------------------------------------------------------------------------
 // Response schemas

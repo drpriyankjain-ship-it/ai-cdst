@@ -12,6 +12,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', '..', 'data');
 const EPI_PRIOR_PATH = join(DATA_DIR, 'epi_prior_wb.json');
 
+const _epiPrior = JSON.parse(readFileSync(EPI_PRIOR_PATH, 'utf-8'));
+
 // ---------------------------------------------------------------------------
 // State lookup — all 28 states + 6 UTs, keyed by district_code prefix
 // ---------------------------------------------------------------------------
@@ -53,32 +55,31 @@ export const MONTH_TO_SEASON = {
 // Layer 1 — baseline disease burden (rural India primary care)
 // ---------------------------------------------------------------------------
 
-export function loadBaselineDiseases() {
-  return (
-    'LAYER 1 — BASELINE DISEASE BURDEN (rural India primary care):\n' +
-    'Always consider these regardless of location or season:\n' +
-    '  Respiratory : acute RTI, pneumonia, pulmonary TB, COPD exacerbation, asthma\n' +
-    '  Fever       : typhoid, malaria, dengue, UTI, viral syndrome, scrub typhus\n' +
-    '  GI          : acute gastroenteritis, peptic ulcer disease, cholera, hepatitis A/E\n' +
-    '  Cardiac     : hypertension, heart failure, ischaemic heart disease\n' +
-    '  Metabolic   : type 2 diabetes, iron-deficiency anaemia, malnutrition, B12 deficiency\n' +
-    '  Neurological: stroke, GBS, peripheral neuropathy, epilepsy, cord compression\n' +
-    '  Obstetric   : pre-eclampsia, anaemia in pregnancy, post-partum sepsis\n' +
-    '  Trauma      : snake envenomation, fractures, burns\n' +
-    'Consider each of these where compatible with the presenting features. ' +
-    'Layer 2 elevates endemic infectious diseases where locally relevant — ' +
-    'it does not replace this baseline. Neither layer overrides the presenting complaint.'
-  );
-}
+const _baselineDiseases = (
+  'LAYER 1 — BASELINE DISEASE BURDEN (rural India primary care):\n' +
+  'Always consider these regardless of location or season:\n' +
+  '  Respiratory : acute RTI, pneumonia, pulmonary TB, COPD exacerbation, asthma\n' +
+  '  Fever       : typhoid, malaria, dengue, UTI, viral syndrome, scrub typhus\n' +
+  '  GI          : acute gastroenteritis, peptic ulcer disease, cholera, hepatitis A/E\n' +
+  '  Cardiac     : hypertension, heart failure, ischaemic heart disease\n' +
+  '  Metabolic   : type 2 diabetes, iron-deficiency anaemia, malnutrition, B12 deficiency\n' +
+  '  Neurological: stroke, GBS, peripheral neuropathy, epilepsy, cord compression\n' +
+  '  Obstetric   : pre-eclampsia, anaemia in pregnancy, post-partum sepsis\n' +
+  '  Trauma      : snake envenomation, fractures, burns\n' +
+  'Consider each of these where compatible with the presenting features. ' +
+  'Layer 2 elevates endemic infectious diseases where locally relevant — ' +
+  'it does not replace this baseline. Neither layer overrides the presenting complaint.'
+);
+
+export function loadBaselineDiseases() { return _baselineDiseases; }
 
 // ---------------------------------------------------------------------------
 // Layer 2 — district + season epi prior (IDSP/NVBDCP data)
 // ---------------------------------------------------------------------------
 
 export function loadEpiPrior(districtCode, month) {
-  const prior = JSON.parse(readFileSync(EPI_PRIOR_PATH, 'utf-8'));
   const season = MONTH_TO_SEASON[month] || 'monsoon';
-  const districtData = (prior.districts || {})[districtCode];
+  const districtData = (_epiPrior.districts || {})[districtCode];
 
   if (!districtData) {
     console.log(

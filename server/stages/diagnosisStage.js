@@ -34,6 +34,21 @@ try {
   console.warn('[WARN] Could not load must_not_miss.json — flags will not be enforced');
 }
 
+let _pregnancySensitiveDx = new Set();
+try {
+  const rules = JSON.parse(readFileSync(join(DATA_DIR, 'escalation_rules.json'), 'utf-8'));
+  _pregnancySensitiveDx = new Set((rules.pregnancy_sensitive_diagnoses || []).map(d => d.name.toLowerCase()));
+} catch {
+  console.warn('[WARN] Could not load pregnancy_sensitive_diagnoses from escalation_rules.json — pregnancy gate uses fallback');
+}
+
+let _bedsideTools = null;
+try {
+  _bedsideTools = JSON.parse(readFileSync(join(DATA_DIR, 'bedside_tools.json'), 'utf-8'));
+} catch {
+  console.warn('[WARN] Could not load bedside_tools.json — clarifying questions will have no tool list');
+}
+
 function isMustNotMiss(diseaseName) {
   const d = diseaseName.toLowerCase();
   return _mustNotMissLower.some(mnm => mnm.includes(d) || d.includes(mnm));
@@ -262,15 +277,6 @@ export async function generateDifferential(concepts, vaultContext, baselineLayer
 // Call 3 — Clarifying questions
 // ---------------------------------------------------------------------------
 
-const PREGNANCY_SENSITIVE_DX = new Set([
-  'ectopic pregnancy', 'pre-eclampsia', 'eclampsia', 'anaemia in pregnancy',
-  'postpartum sepsis', 'post-partum sepsis', 'hyperemesis gravidarum',
-  'placenta praevia', 'abruption', 'threatened miscarriage', 'miscarriage',
-  'antepartum haemorrhage', 'gestational diabetes', 'obstetric cholestasis',
-  'malaria', 'severe malaria', 'typhoid', 'tuberculosis', 'pulmonary tb',
-  'urinary tract infection', 'uti', 'epilepsy', 'hypertension',
-]);
-
 function pregnancyRelevance(ddx, concepts, vaultContext) {
   const demographics = vaultContext.demographics || {};
   const age = demographics.age || 99;
@@ -282,12 +288,12 @@ function pregnancyRelevance(ddx, concepts, vaultContext) {
   if (!statusUnknown) return { needsLmpQuestion: false, statusUnknown: false };
 
   const dxNames = ddx.map(d => (d.disease || '').toLowerCase()).join(' ');
-  const relevant = [...PREGNANCY_SENSITIVE_DX].some(term => dxNames.includes(term));
+  const relevant = [..._pregnancySensitiveDx].some(term => dxNames.includes(term));
   return { needsLmpQuestion: relevant, statusUnknown: true };
 }
 
 export async function generateClarifyingQuestions(ddx, concepts, vaultContext) {
-  const availableTools = JSON.parse(readFileSync(join(DATA_DIR, 'bedside_tools.json'), 'utf-8'));
+  const availableTools = _bedsideTools;
   const districtCode = (vaultContext.gps || {}).district_code || 'WB_UNKNOWN';
   const stateName = stateFromDistrictCode(districtCode);
   const lang = (vaultContext.chief_complaint || {}).language_of_consultation || 'English';
@@ -345,7 +351,7 @@ export async function generateClarifyingQuestions(ddx, concepts, vaultContext) {
     );
     if (!lmpPresent) {
       const pregnancySensitiveInDdx = ddx
-        .filter(d => [...PREGNANCY_SENSITIVE_DX].some(t => d.disease.toLowerCase().includes(t)))
+        .filter(d => [..._pregnancySensitiveDx].some(t => d.disease.toLowerCase().includes(t)))
         .map(d => d.disease);
       const lmpQ = {
         question: 'When did your last period start? Are you pregnant, or could you be pregnant?',

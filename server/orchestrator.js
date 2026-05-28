@@ -125,7 +125,7 @@ function wsSend(ws, payload) {
 // ---------------------------------------------------------------------------
 
 function notifyDoctor(sessionId, triageOutput) {
-  const oneLiner = triageOutput?.triage?.one_liner || 'see session';
+  const oneLiner = triageOutput?.doctor_handoff?.one_liner || 'see session';
   console.warn(`[${sessionId}] HIGH RISK — doctor notification triggered. one_liner=${oneLiner}`);
 }
 
@@ -138,14 +138,12 @@ async function handleMarkerA(ws, state, t) {
   await vaultUpdate(state.dbClient, state.sessionId, { marker_a_at: t });
 
   const { sessionId, dbClient } = state;
-  // Read phase 1 transcript from vault (populated by audio upload route)
-  const currentVault = await vaultRead(dbClient, sessionId);
-  const phase1 = (currentVault.transcript_segments || {}).phase_1 || state.transcriptFull || '';
+  const vaultCtx = await vaultRead(dbClient, sessionId);
+  const phase1 = (vaultCtx.transcript_segments || {}).phase_1 || state.transcriptFull || '';
   console.log(`[${sessionId}] Marker A — phase 1 transcript length: ${phase1.length}`);
 
   (async () => {
     try {
-      const vaultCtx = await vaultRead(dbClient, sessionId);
       const patientRecord = vaultCtx.patient_record || {};
 
       console.log(`[${sessionId}] History Call 1: extracting chief complaint`);
@@ -191,30 +189,29 @@ async function handleMarkerB(ws, state, t) {
   const { sessionId, dbClient } = state;
   await vaultUpdate(dbClient, sessionId, { marker_b_at: t });
 
-  // Read phase 2 transcript from vault (populated by audio upload route)
-  const currentVault = await vaultRead(dbClient, sessionId);
-  const phase2 = (currentVault.transcript_segments || {}).phase_2 || '';
+  const vaultCtx = await vaultRead(dbClient, sessionId);
+  const phase2 = (vaultCtx.transcript_segments || {}).phase_2 || '';
   console.log(`[${sessionId}] Marker B — phase 2 transcript length: ${phase2.length}`);
 
   (async () => {
     try {
-      let vaultCtx = await vaultRead(dbClient, sessionId);
-      const gps = vaultCtx.gps || {};
+      let ctx = vaultCtx;
+      const gps = ctx.gps || {};
       const baseline = loadBaselineDiseases();
       const epi = loadEpiPrior(gps.district_code || 'WB_UNKNOWN', new Date().getMonth() + 1);
 
       console.log(`[${sessionId}] Diagnosis Call 1: extracting concepts`);
-      const concepts = await extractMedicalConcepts(phase2, vaultCtx);
+      const concepts = await extractMedicalConcepts(phase2, ctx);
       await vaultUpdate(dbClient, sessionId, { extracted_concepts: concepts });
 
       if (concepts.pregnancy_status != null) {
         await vaultSetNested(dbClient, sessionId, ['demographics', 'pregnancy_status'], concepts.pregnancy_status);
         if (concepts.lmp) await vaultSetNested(dbClient, sessionId, ['demographics', 'lmp'], concepts.lmp);
-        vaultCtx = await vaultRead(dbClient, sessionId);
+        ctx = await vaultRead(dbClient, sessionId);
       }
 
       console.log(`[${sessionId}] Diagnosis Call 2: generating differential`);
-      const ddx = await generateDifferential(concepts, vaultCtx, baseline, epi);
+      const ddx = await generateDifferential(concepts, ctx, baseline, epi);
       await vaultUpdate(dbClient, sessionId, { differential_table: ddx });
 
       // Push formatted differential
@@ -234,7 +231,7 @@ async function handleMarkerB(ws, state, t) {
       }
 
       console.log(`[${sessionId}] Diagnosis Call 3: clarifying questions`);
-      const clarifying = await generateClarifyingQuestions(ddx, concepts, vaultCtx);
+      const clarifying = await generateClarifyingQuestions(ddx, concepts, ctx);
       await vaultUpdate(dbClient, sessionId, { clarifying_questions: clarifying, diagnosis_stage_status: 'complete', diagnosis_stage_completed_at: new Date().toISOString() });
 
       // Push formatted clarifying questions and bedside observations
@@ -273,7 +270,6 @@ async function handleMarkerC(ws, state, t) {
   const { sessionId, dbClient } = state;
   await vaultUpdate(dbClient, sessionId, { marker_c_at: t });
 
-  // Read phase 3 transcript from vault (populated by audio upload route)
   const currentVault = await vaultRead(dbClient, sessionId);
   const phase3 = (currentVault.transcript_segments || {}).phase_3 || '';
   console.log(`[${sessionId}] Marker C — phase 3 transcript length: ${phase3.length}`);
@@ -339,12 +335,12 @@ async function handleMarkerC(ws, state, t) {
 
       // Write to patient_log
       try {
-        const vaultFinal = await vaultRead(dbClient, sessionId);
+        const patientId = currentVault.patient_id || currentVault.demographics?.patient_id || '';
         await dbClient.query(
           `INSERT INTO patient_log (patient_id, session_id, source, proforma, clarifying_questions, management_plan)
            VALUES ($1, $2, 'live', $3, $4, $5)`,
           [
-            vaultFinal.patient_id || vaultFinal.demographics?.patient_id || '',
+            patientId,
             sessionId,
             JSON.stringify(vaultFinal.questionnaire || null),
             JSON.stringify(vaultFinal.clarifying_questions || null),
