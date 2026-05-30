@@ -185,3 +185,138 @@ export async function getSessionAudioIteration(client, sessionId, iteration) {
   );
   return res.rows[0] || null;
 }
+
+// ---------------------------------------------------------------------------
+// LLM Results — per-call output logging
+// ---------------------------------------------------------------------------
+
+import { calculateCost } from './llmClient.js';
+
+/**
+ * Insert a single LLM call result into llm_results.
+ * Non-throwing — logs errors but never crashes the pipeline.
+ *
+ * @param {object} client - pg pool/client
+ * @param {string} sessionId
+ * @param {string} callName - e.g. 'H1_chief_complaint'
+ * @param {string} stage - 'history' | 'diagnosis' | 'management'
+ * @param {number} callOrder - 1-9
+ * @param {object} result - the LLM output (JSON-serialisable)
+ * @param {object} [meta] - { model_used, latency_ms, input_tokens, output_tokens, cost_usd, error }
+ */
+export async function insertLlmResult(client, sessionId, callName, stage, callOrder, result, meta = {}) {
+  try {
+    const costUsd = meta.cost_usd ?? calculateCost(meta.model_used, meta.input_tokens || 0, meta.output_tokens || 0);
+    await client.query(
+      `INSERT INTO llm_results (session_id, call_name, stage, call_order, model_used, input_tokens, output_tokens, latency_ms, cost_usd, result, error)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)`,
+      [
+        sessionId,
+        callName,
+        stage,
+        callOrder,
+        meta.model_used || null,
+        meta.input_tokens || null,
+        meta.output_tokens || null,
+        meta.latency_ms || null,
+        costUsd || null,
+        JSON.stringify(result ?? {}),
+        meta.error || null,
+      ]
+    );
+  } catch (err) {
+    console.error(`[${sessionId}] llm_results insert failed for ${callName}:`, err.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline Failures — error logging
+// ---------------------------------------------------------------------------
+
+/**
+ * Log a pipeline failure. Non-throwing.
+ */
+export async function insertPipelineFailure(client, sessionId, userId, stage, callName, errorMsg) {
+  try {
+    const errorCode = errorMsg?.includes('503') ? 'LLM_503'
+      : errorMsg?.includes('429') ? 'LLM_429'
+      : errorMsg?.includes('Cannot parse JSON') ? 'PARSE_ERROR'
+      : errorMsg?.includes('ENOENT') ? 'ENOENT'
+      : 'UNKNOWN';
+    await client.query(
+      `INSERT INTO pipeline_failures (session_id, user_id, stage, call_name, error_code, error_msg)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [sessionId, userId, stage, callName, errorCode, (errorMsg || '').slice(0, 1000)]
+    );
+  } catch (err) {
+    console.error(`[${sessionId}] pipeline_failures insert failed:`, err.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Session Metrics — per-session aggregate
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute and insert session_metrics from llm_results for a completed session.
+ * Non-throwing.
+ */
+export async function insertSessionMetrics(client, data) {
+  try {
+    // Aggregate from llm_results
+    const agg = await client.query(
+      `SELECT
+         COUNT(*)::int AS total_llm_calls,
+         COALESCE(SUM(input_tokens), 0)::int AS total_input_tokens,
+         COALESCE(SUM(output_tokens), 0)::int AS total_output_tokens,
+         COALESCE(SUM(cost_usd), 0)::numeric(10,6) AS total_cost_usd,
+         COALESCE(SUM(latency_ms), 0)::int AS total_latency_ms
+       FROM llm_results WHERE session_id = $1`,
+      [data.session_id]
+    );
+    const a = agg.rows[0] || {};
+
+    await client.query(
+      `INSERT INTO session_metrics
+         (session_id, user_id, patient_id, total_llm_calls, total_input_tokens, total_output_tokens,
+          total_cost_usd, total_latency_ms, e2e_duration_ms, gps_lat, gps_lon, district_code,
+          risk_tier, pipeline_status, network_rtt_ms, total_transcription_ms, total_server_overhead_ms, phase_timings)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb)
+       ON CONFLICT (session_id) DO UPDATE SET
+         total_llm_calls = EXCLUDED.total_llm_calls,
+         total_input_tokens = EXCLUDED.total_input_tokens,
+         total_output_tokens = EXCLUDED.total_output_tokens,
+         total_cost_usd = EXCLUDED.total_cost_usd,
+         total_latency_ms = EXCLUDED.total_latency_ms,
+         e2e_duration_ms = EXCLUDED.e2e_duration_ms,
+         risk_tier = EXCLUDED.risk_tier,
+         pipeline_status = EXCLUDED.pipeline_status,
+         network_rtt_ms = EXCLUDED.network_rtt_ms,
+         total_transcription_ms = EXCLUDED.total_transcription_ms,
+         total_server_overhead_ms = EXCLUDED.total_server_overhead_ms,
+         phase_timings = EXCLUDED.phase_timings`,
+      [
+        data.session_id,
+        data.user_id,
+        data.patient_id,
+        a.total_llm_calls,
+        a.total_input_tokens,
+        a.total_output_tokens,
+        a.total_cost_usd,
+        a.total_latency_ms,
+        data.e2e_duration_ms,
+        data.gps_lat,
+        data.gps_lon,
+        data.district_code,
+        data.risk_tier,
+        data.pipeline_status,
+        data.network_rtt_ms,
+        data.total_transcription_ms,
+        data.total_server_overhead_ms,
+        JSON.stringify(data.phase_timings || []),
+      ]
+    );
+  } catch (err) {
+    console.error(`[${data.session_id}] session_metrics insert failed:`, err.message);
+  }
+}

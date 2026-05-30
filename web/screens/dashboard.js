@@ -1,4 +1,4 @@
-/* NurseAI Web — Dashboard Screen */
+/* AI-CDST Web — Dashboard Screen */
 import api from '../api.js';
 import { showToast, showModal, hideModal } from '../app.js';
 
@@ -34,7 +34,7 @@ function render(container) {
       <div class="logo-header">
         <div class="logo-icon"><ion-icon name="document-text"></ion-icon></div>
         <div>
-          <div class="logo-title">NurseAI</div>
+          <div class="logo-title">AI-CDST</div>
           <div class="logo-subtitle">Clinical Assistant</div>
         </div>
       </div>

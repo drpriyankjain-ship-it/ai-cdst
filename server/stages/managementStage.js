@@ -4,7 +4,7 @@
  * Direct port of management_stage.py
  */
 
-import { vaultRead, vaultUpdate } from '../lib/db.js';
+import { vaultRead, vaultUpdate, insertLlmResult } from '../lib/db.js';
 import { generateWithCascade, streamWithCascade, parseJsonResponse, responseText } from '../lib/llmClient.js';
 import { MODEL_M1_FINDINGS, MODEL_M2_PRESCRIPTION, MODEL_M3_RISK, MODEL_M4_TRIAGE } from '../lib/modelConfig.js';
 import { stateFromDistrictCode } from '../lib/epiUtils.js';
@@ -72,12 +72,12 @@ export async function extractClarifyingFindings(transcriptSegment, vaultContext)
     '- vitals_found: return NUMERIC JSON numbers only. Null for any vital not measured.',
   ].join('\n\n');
 
-  const response = await generateWithCascade(MODEL_M1_FINDINGS, prompt, {
+  const { response, meta } = await generateWithCascade(MODEL_M1_FINDINGS, prompt, {
     thinkingConfig: { thinkingBudget: 0 },
     systemInstruction: 'You are a clinical data extraction tool. Extract only what is explicitly stated.',
     responseMimeType: 'application/json', responseSchema: SCHEMA_CLARIFYING_FINDINGS, maxOutputTokens: 2000,
   });
-  return parseJsonResponse(responseText(response));
+  return { result: parseJsonResponse(responseText(response)), meta };
 }
 
 // ---------------------------------------------------------------------------
@@ -120,12 +120,12 @@ export async function generateProvisionalDiagnosisAndRx(clarifyingFindings, vaul
     '- If weight-based dosing needed, use vitals_found weight > demographics weight',
   ].join('\n\n');
 
-  const response = await generateWithCascade(MODEL_M2_PRESCRIPTION, prompt, {
+  const { response, meta } = await generateWithCascade(MODEL_M2_PRESCRIPTION, prompt, {
     thinkingConfig: { thinkingBudget: 0 },
     systemInstruction: 'You are a clinical decision support system generating provisional diagnoses and prescriptions for nurse-managed consultations in rural India. Patient safety takes precedence.',
     responseMimeType: 'application/json', responseSchema: SCHEMA_PROBLEM_LIST, maxOutputTokens: 10000,
   });
-  return validateProblemList(parseJsonResponse(responseText(response)));
+  return { result: validateProblemList(parseJsonResponse(responseText(response))), meta };
 }
 
 // ---------------------------------------------------------------------------
@@ -159,12 +159,12 @@ export async function generateRiskAssessment(problemListOutput, clarifyingFindin
     '5. MITIGATION PLAN — set HIGH if ANY unmitigable risk exists or safe_delay < 2h',
   ].join('\n\n');
 
-  const response = await generateWithCascade(MODEL_M3_RISK, prompt, {
+  const { response, meta } = await generateWithCascade(MODEL_M3_RISK, prompt, {
     thinkingConfig: { thinkingBudget: 0 },
     systemInstruction: 'You are a clinical decision support system performing risk assessment. When in doubt, escalate.',
     responseMimeType: 'application/json', responseSchema: SCHEMA_RISK_ASSESSMENT, maxOutputTokens: 2500,
   });
-  return parseJsonResponse(responseText(response));
+  return { result: parseJsonResponse(responseText(response)), meta };
 }
 
 // ---------------------------------------------------------------------------
@@ -199,7 +199,7 @@ export async function generateTriageAndHandoff(problemListOutput, vaultContext) 
     'DOCTOR HANDOFF: one_liner, clinical_summary, key_risks, questions — English only.',
   ].filter(Boolean).join('\n\n');
 
-  const response = await generateWithCascade(MODEL_M4_TRIAGE, prompt, {
+  const { response, meta } = await generateWithCascade(MODEL_M4_TRIAGE, prompt, {
     thinkingConfig: { thinkingBudget: 0 },
     systemInstruction: 'You are a clinical decision support system generating triage decisions. Never downgrade a risk tier.',
     responseMimeType: 'application/json', responseSchema: SCHEMA_TRIAGE_HANDOFF, maxOutputTokens: 3000,
@@ -207,7 +207,7 @@ export async function generateTriageAndHandoff(problemListOutput, vaultContext) 
   const result = parseJsonResponse(responseText(response));
   if (!result.doctor_handoff) result.doctor_handoff = {};
   result.doctor_handoff.prescription_issued = prescriptionIssued;
-  return result;
+  return { result, meta };
 }
 
 // ---------------------------------------------------------------------------
@@ -228,15 +228,21 @@ export async function runManagementStage(sessionId, transcriptSegment, dbClient)
 
     // Call 1 + RAG in parallel
     console.log(`[${sessionId}] Call 1: extracting clarifying findings + RAG retrieval`);
-    const [clarifyingFindings, stgContext] = await Promise.all([
+    let t0 = Date.now();
+    const [m1Result, stgContext] = await Promise.all([
       extractClarifyingFindings(transcriptSegment, vaultContext),
       retrieveTreatmentProtocols(dbClient, ragDiagnoses),
     ]);
+    const clarifyingFindings = m1Result.result;
+    await insertLlmResult(dbClient, sessionId, 'M1_clarifying_findings', 'management', 6, clarifyingFindings, { ...m1Result.meta, latency_ms: Date.now() - t0 });
     await vaultUpdate(dbClient, sessionId, { clarifying_findings: clarifyingFindings });
 
     // Call 2
     console.log(`[${sessionId}] Call 2: generating problem list`);
-    const problemListOutput = await generateProvisionalDiagnosisAndRx(clarifyingFindings, vaultContext, stgContext, formulary);
+    const t1 = Date.now();
+    const m2Result = await generateProvisionalDiagnosisAndRx(clarifyingFindings, vaultContext, stgContext, formulary);
+    const problemListOutput = m2Result.result;
+    await insertLlmResult(dbClient, sessionId, 'M2_problem_list', 'management', 7, problemListOutput, { ...m2Result.meta, latency_ms: Date.now() - t1 });
     await vaultUpdate(dbClient, sessionId, { problem_list: problemListOutput });
 
     const firstAcute = (problemListOutput.problem_list || []).find(p => p.type === 'acute_new');
@@ -244,10 +250,15 @@ export async function runManagementStage(sessionId, transcriptSegment, dbClient)
 
     // Calls 3 + 4 in parallel
     console.log(`[${sessionId}] Calls 3+4: risk assessment and triage handoff (parallel)`);
-    const [riskAssessment, triageOutput] = await Promise.all([
+    const t2 = Date.now();
+    const [m3Result, m4Result] = await Promise.all([
       generateRiskAssessment(problemListOutput, clarifyingFindings, vaultContext),
       generateTriageAndHandoff(problemListOutput, vaultContext),
     ]);
+    const riskAssessment = m3Result.result;
+    const triageOutput = m4Result.result;
+    await insertLlmResult(dbClient, sessionId, 'M3_risk_assessment', 'management', 8, riskAssessment, { ...m3Result.meta, latency_ms: Date.now() - t2 });
+    await insertLlmResult(dbClient, sessionId, 'M4_triage_handoff', 'management', 9, triageOutput, { ...m4Result.meta, latency_ms: Date.now() - t2 });
     await vaultUpdate(dbClient, sessionId, { risk_assessment: riskAssessment });
 
     // Rule engine gate
@@ -306,10 +317,11 @@ export async function* streamManagement(transcriptSegment, vaultContext, dbClien
   const knownConditions = demographics.known_conditions || [];
   if (Array.isArray(knownConditions)) ragDiagnoses.push(...knownConditions.filter(Boolean));
 
-  const [clarifyingFindings, stgContext] = await Promise.all([
+  const [m1Result, stgContext] = await Promise.all([
     extractClarifyingFindings(transcriptSegment, vaultContext),
     retrieveTreatmentProtocols(dbClient, ragDiagnoses),
   ]);
+  const clarifyingFindings = m1Result.result;
 
   const streamPrompt = `Generate a problem-oriented management plan for a nurse in rural ${stateName}. Be clear and concise.\n\n` +
     `Patient: ${JSON.stringify(demographics)}\nAllergies: ${JSON.stringify(knownAllergies)}\n` +

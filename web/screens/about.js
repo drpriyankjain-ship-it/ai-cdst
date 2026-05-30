@@ -1,4 +1,4 @@
-/* NurseAI Web — About Screen */
+/* AI-CDST Web — About Screen */
 import { navigate, clearToken } from '../app.js';
 
 export function initAbout(container) {
@@ -8,7 +8,7 @@ export function initAbout(container) {
         <div class="logo-header">
           <div class="logo-icon"><ion-icon name="document-text"></ion-icon></div>
           <div>
-            <div class="logo-title">NurseAI</div>
+            <div class="logo-title">AI-CDST</div>
             <div class="logo-subtitle">Clinical Assistant</div>
           </div>
         </div>
@@ -17,7 +17,7 @@ export function initAbout(container) {
       <div class="about-section">
         <p style="font-size:14px;color:#475569;line-height:1.6;">
           AI-powered clinical decision support for nurse practitioners in rural West Bengal.
-          NurseAI helps nurses conduct structured patient consultations with real-time AI guidance.
+          AI-CDST helps nurses conduct structured patient consultations with real-time AI guidance.
         </p>
         <p style="font-size:12px;color:#94A3B8;margin-top:8px;">Version 1.0.0</p>
       </div>

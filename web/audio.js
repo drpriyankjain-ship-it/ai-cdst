@@ -1,4 +1,4 @@
-/* NurseAI Web — Audio Recording via MediaRecorder API */
+/* AI-CDST Web — Audio Recording via MediaRecorder API */
 
 let mediaRecorder = null;
 let audioChunks = [];

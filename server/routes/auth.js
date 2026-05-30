@@ -9,6 +9,7 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { getPool } from '../lib/db.js';
 import { signJwt, requireAuth } from '../lib/auth.js';
+import { sendOtp } from '../lib/email.js';
 
 const router = Router();
 
@@ -29,7 +30,7 @@ router.post('/register', async (req, res) => {
        VALUES ($1, $2, $3, $4, $5, $6, NOW() + INTERVAL '10 minutes', false) RETURNING id`,
       [name, email.toLowerCase(), hash, phone, role || 'nurse', otp]
     );
-    console.log(`[AUTH] OTP for ${email}: ${otp}`); // In production, send via SMS/email
+    sendOtp(email, otp, 'register').catch(() => {});
     res.status(201).json({ success: true, userId: result.rows[0].id, message: 'OTP sent to your email/phone' });
   } catch (err) {
     console.error('[AUTH] Register error:', err);
@@ -70,7 +71,7 @@ router.post('/resend-otp', async (req, res) => {
       `UPDATE users SET otp_code = $1, otp_expires_at = NOW() + INTERVAL '10 minutes' WHERE email = $2`,
       [otp, email.toLowerCase()]
     );
-    console.log(`[AUTH] Resent OTP for ${email}: ${otp}`);
+    sendOtp(email, otp, 'resend').catch(() => {});
     res.json({ success: true, message: 'OTP resent' });
   } catch (err) { res.status(500).json({ error: 'Failed to resend OTP' }); }
 });
@@ -102,7 +103,7 @@ router.post('/request-password-reset', async (req, res) => {
     const pool = getPool();
     const otp = String(Math.floor(100000 + Math.random() * 900000));
     await pool.query(`UPDATE users SET otp_code = $1, otp_expires_at = NOW() + INTERVAL '10 minutes' WHERE email = $2`, [otp, email.toLowerCase()]);
-    console.log(`[AUTH] Password reset OTP for ${email}: ${otp}`);
+    sendOtp(email, otp, 'reset').catch(() => {});
     res.json({ success: true, message: 'Reset OTP sent' });
   } catch (err) { res.status(500).json({ error: 'Failed' }); }
 });

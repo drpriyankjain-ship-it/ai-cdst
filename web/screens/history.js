@@ -1,4 +1,4 @@
-/* NurseAI Web — History Screen */
+/* AI-CDST Web — History Screen */
 import api from '../api.js';
 import { showToast } from '../app.js';
 

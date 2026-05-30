@@ -1476,7 +1476,7 @@ const RecordPage = ({navigation}) => {
           <View style={styles.consentModalCard}>
             <Text style={styles.consentModalTitle}>Informed Consent</Text>
             <Text style={styles.consentModalBody}>
-              Note: please inform the patient that NurseAI is right now only collecting data for
+              Note: please inform the patient that AI-CDST is right now only collecting data for
               research purposes and the organisation will try its best to protect the data yet in
               case of leaks/hacking the organisation is not liable.
             </Text>

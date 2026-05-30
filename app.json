@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "NurseAI",
+    "name": "AI-CDST",
     "slug": "nurseai",
     "version": "1.0.0",
     "sdkVersion": "54.0.0",
@@ -15,7 +15,7 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "NurseAI needs microphone access to record patient consultations."
+        "NSMicrophoneUsageDescription": "AI-CDST needs microphone access to record patient consultations."
       }
     },
     "android": {

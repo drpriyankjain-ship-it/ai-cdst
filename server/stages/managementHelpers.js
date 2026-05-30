@@ -4,12 +4,14 @@
  * Extracted from management_stage.py for modularity.
  */
 
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, '..', '..', 'data');
+const DATA_DIR = existsSync(join(__dirname, '..', '..', 'data'))
+  ? join(__dirname, '..', '..', 'data')   // Local dev: server/stages/ → ../../data/
+  : join(__dirname, '..', 'data');          // EB deploy: stages/ → ../data/
 
 export const FORMULARY_PATH = join(DATA_DIR, 'formulary_wb.json');
 export const BEDSIDE_TOOLS_PATH = join(DATA_DIR, 'bedside_tools.json');

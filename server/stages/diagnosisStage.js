@@ -10,17 +10,19 @@
  * Direct port of diagnosis_stage.py
  */
 
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 import { vaultRead, vaultUpdate, vaultSetNested } from '../lib/db.js';
-import { generateWithCascade, streamWithCascade, parseJsonResponse, responseText } from '../lib/llmClient.js';
+import { generateWithCascade, streamWithCascade, parseJsonResponse, responseText, buildMultimodalContent } from '../lib/llmClient.js';
 import { MODEL_D1_CONCEPTS, MODEL_D2_DIFFERENTIAL, MODEL_D3_CLARIFYING } from '../lib/modelConfig.js';
 import { stateFromDistrictCode, loadBaselineDiseases, loadEpiPrior } from '../lib/epiUtils.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, '..', '..', 'data');
+const DATA_DIR = existsSync(join(__dirname, '..', '..', 'data'))
+  ? join(__dirname, '..', '..', 'data')   // Local dev: server/stages/ → ../../data/
+  : join(__dirname, '..', 'data');          // EB deploy: stages/ → ../data/
 
 // ---------------------------------------------------------------------------
 // Must-not-miss list (loaded once at startup)
@@ -183,7 +185,7 @@ const SCHEMA_CLARIFYING_QS = {
 // Call 1 — Concept extraction
 // ---------------------------------------------------------------------------
 
-export async function extractMedicalConcepts(transcriptSegment, vaultContext) {
+export async function extractMedicalConcepts(transcriptSegment, vaultContext, photos = []) {
   const demographics = vaultContext.demographics || {};
   const priorEncounters = (vaultContext.patient_record || {}).encounters || [];
   const priorText = priorEncounters.length
@@ -195,6 +197,7 @@ export async function extractMedicalConcepts(transcriptSegment, vaultContext) {
     `PATIENT DEMOGRAPHICS:\n${JSON.stringify(demographics, null, 2)}`,
     `PRIOR ENCOUNTER SUMMARY (last 3 visits):\n${priorText}`,
     `TRANSCRIPT (phase 2 interview):\n${transcriptSegment}`,
+    photos.length > 0 ? 'CLINICAL PHOTOS: The nurse has attached clinical photos. Extract any visible clinical findings (skin lesions, swelling, wounds, deformities, etc.) into the symptoms and red_flags arrays as appropriate.' : '',
     'INSTRUCTIONS:\n' +
     '- Extract only what is explicitly stated or clearly implied\n' +
     '- Negatives are as important as positives — list all denied symptoms\n' +
@@ -212,20 +215,21 @@ export async function extractMedicalConcepts(transcriptSegment, vaultContext) {
     '- past_medical_history: list chronic/past conditions explicitly mentioned. Empty [] if none.\n' +
     '- current_medications: list drugs currently taking with dose if stated. Empty [] if none.\n' +
     '- allergies_reported: list allergens with reaction. Empty [] if none.',
-  ].join('\n\n');
+  ].filter(Boolean).join('\n\n');
 
-  const response = await generateWithCascade(
-    MODEL_D1_CONCEPTS, prompt,
+  const contents = buildMultimodalContent(prompt, photos);
+  const { response, meta } = await generateWithCascade(
+    MODEL_D1_CONCEPTS, contents,
     { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json', responseSchema: SCHEMA_MEDICAL_CONCEPTS, maxOutputTokens: 4000 },
   );
-  return parseJsonResponse(responseText(response));
+  return { result: parseJsonResponse(responseText(response)), meta };
 }
 
 // ---------------------------------------------------------------------------
 // Call 2 — Differential diagnosis
 // ---------------------------------------------------------------------------
 
-export async function generateDifferential(concepts, vaultContext, baselineLayer, epiLayer) {
+export async function generateDifferential(concepts, vaultContext, baselineLayer, epiLayer, photos = []) {
   const demographics = vaultContext.demographics || {};
   const districtCode = (vaultContext.gps || {}).district_code || 'WB_UNKNOWN';
   const stateName = stateFromDistrictCode(districtCode);
@@ -236,6 +240,7 @@ export async function generateDifferential(concepts, vaultContext, baselineLayer
     `EXTRACTED CLINICAL CONCEPTS:\n${JSON.stringify(concepts, null, 2)}`,
     baselineLayer,
     epiLayer || '(No Layer 2 modifier — district not found in epi prior)',
+    photos.length > 0 ? 'CLINICAL PHOTOS: The nurse has attached clinical photos. Incorporate any visible findings into your differential reasoning.' : '',
     'INSTRUCTIONS:\n- Generate 4-6 differential diagnoses ranked by probability\n' +
     '- Layer 1 lists common primary care presentations — include any compatible.\n' +
     '- Layer 2 epi prior elevates endemic diseases where compatible — never overrides presenting complaint\n' +
@@ -245,13 +250,14 @@ export async function generateDifferential(concepts, vaultContext, baselineLayer
     '- discriminating_tests: list all relevant tests (bedside, lab, or imaging)\n' +
     '- icd10_code: most specific applicable ICD-10 code\n' +
     '- Base reasoning ONLY on features present — never assume unstated findings',
-  ].join('\n\n');
+  ].filter(Boolean).join('\n\n');
 
-  const response = await generateWithCascade(
-    MODEL_D2_DIFFERENTIAL, prompt,
+  const contents = buildMultimodalContent(prompt, photos);
+  const { response, meta } = await generateWithCascade(
+    MODEL_D2_DIFFERENTIAL, contents,
     { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json', responseSchema: SCHEMA_DIFFERENTIAL, maxOutputTokens: 8000 },
   );
-  return validateDifferential(parseJsonResponse(responseText(response)).differential);
+  return { result: validateDifferential(parseJsonResponse(responseText(response)).differential), meta };
 }
 
 // ---------------------------------------------------------------------------
@@ -347,7 +353,7 @@ export async function generateClarifyingQuestions(ddx, concepts, vaultContext) {
     instructions,
   ].join('\n\n');
 
-  const response = await generateWithCascade(
+  const { response, meta } = await generateWithCascade(
     MODEL_D3_CLARIFYING, prompt,
     { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json', responseSchema: SCHEMA_CLARIFYING_QS, maxOutputTokens: 4000 },
   );
@@ -379,7 +385,7 @@ export async function generateClarifyingQuestions(ddx, concepts, vaultContext) {
     }
   }
 
-  return result;
+  return { result, meta };
 }
 
 // ---------------------------------------------------------------------------

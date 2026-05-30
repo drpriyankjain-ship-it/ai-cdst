@@ -6,9 +6,10 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { DeepgramClient } from '@deepgram/sdk';
-import { getPool, vaultInit, vaultRead, vaultUpdate, vaultSetNested, vaultAppendTranscript, loadPatientRecord } from './lib/db.js';
+import { getPool, vaultInit, vaultRead, vaultUpdate, vaultSetNested, vaultAppendTranscript, loadPatientRecord, insertLlmResult, insertPipelineFailure, insertSessionMetrics } from './lib/db.js';
 import { verifyJwt } from './lib/auth.js';
 import { loadBaselineDiseases, loadEpiPrior } from './lib/epiUtils.js';
+import { buildMultimodalContent } from './lib/llmClient.js';
 import { extractChiefComplaint, generateQuestionnaire, validateQuestionnaire, extractPatientRecordUpdate, streamQuestionnaire } from './stages/historyStage.js';
 import { extractMedicalConcepts, generateDifferential, validateDifferential, streamDifferential, generateClarifyingQuestions, runDiagnosisStage } from './stages/diagnosisStage.js';
 import { runManagementStage, streamManagement } from './stages/managementStage.js';
@@ -89,6 +90,13 @@ class SessionState {
     this.markerCAt = null;
     this.dg = null;
     this.ringBuffer = [];
+    this.nurseId = null;
+    this.userId = null;
+    // Timing
+    this.networkRttMs = null;
+    this.phaseStartAt = null;   // Date.now() when marker received
+    this.lastTranscriptionMs = null; // from upload response
+    this.phaseTimings = [];     // accumulated per-phase timing breakdowns
   }
 
   async appendTranscript(text, isFinal) {
@@ -129,12 +137,76 @@ function notifyDoctor(sessionId, triageOutput) {
   console.warn(`[${sessionId}] HIGH RISK — doctor notification triggered. one_liner=${oneLiner}`);
 }
 
+/**
+ * Collect all photos from vault across all phases.
+ * Returns a flat array of { mimeType, data } objects.
+ */
+function collectAllPhotos(vaultCtx) {
+  const sessionPhotos = vaultCtx.session_photos || {};
+  const all = [];
+  for (const phaseKey of Object.keys(sessionPhotos)) {
+    const photos = sessionPhotos[phaseKey];
+    if (Array.isArray(photos)) all.push(...photos);
+  }
+  return all;
+}
+
+// ---------------------------------------------------------------------------
+// Phase timing breakdown builder
+// ---------------------------------------------------------------------------
+
+function buildPhaseTiming(state, callMetas, stageName) {
+  const now = Date.now();
+  const phaseTotal = state.phaseStartAt ? now - state.phaseStartAt : null;
+  const geminiMs = callMetas.reduce((sum, m) => sum + (m?.latency_ms || 0), 0) || null;
+  const transcriptionMs = state.lastTranscriptionMs || null;
+  const serverOverhead = phaseTotal && geminiMs
+    ? phaseTotal - geminiMs - (transcriptionMs || 0)
+    : null;
+
+  const timing = {
+    stage: stageName || 'unknown',
+    phase_total_ms: phaseTotal,
+    network_rtt_ms: state.networkRttMs,
+    transcription_ms: transcriptionMs,
+    gemini_calls_ms: geminiMs,
+    server_overhead_ms: serverOverhead > 0 ? serverOverhead : 0,
+    call_count: callMetas.length,
+    per_call: callMetas.map(m => ({
+      model: m?.model_used,
+      latency_ms: m?.latency_ms || null,
+      input_tokens: m?.input_tokens || null,
+      output_tokens: m?.output_tokens || null,
+      cost_usd: m?.cost_usd || null,
+    })),
+    timestamp: now,
+  };
+
+  // Compute percentage breakdown
+  if (phaseTotal && phaseTotal > 0) {
+    const pct = (v) => v ? parseFloat(((v / phaseTotal) * 100).toFixed(1)) : 0;
+    timing.breakdown = {
+      gemini_pct: pct(geminiMs),
+      transcription_pct: pct(transcriptionMs),
+      server_pct: pct(serverOverhead > 0 ? serverOverhead : 0),
+    };
+  }
+
+  // Accumulate for DB write and reset
+  state.phaseTimings.push(timing);
+  state.lastTranscriptionMs = null;
+  state.phaseStartAt = null;
+
+  return timing;
+}
+
 // ---------------------------------------------------------------------------
 // Marker handlers
 // ---------------------------------------------------------------------------
 
 async function handleMarkerA(ws, state, t) {
   state.markerAAt = t;
+  state.phaseStartAt = Date.now();
   await vaultUpdate(state.dbClient, state.sessionId, { marker_a_at: t });
 
   const { sessionId, dbClient } = state;
@@ -146,6 +218,8 @@ async function handleMarkerA(ws, state, t) {
   (async () => {
     try {
       const vaultCtx = await vaultRead(dbClient, sessionId);
+      const photos = collectAllPhotos(vaultCtx);
+      if (photos.length) console.log(`[${sessionId}] Including ${photos.length} clinical photo(s) in Gemini calls`);
       const patientRecord = vaultCtx.patient_record || {};
       const gps = vaultCtx.gps || {};
       const districtCode = gps.district_code || 'WB_UNKNOWN';
@@ -153,12 +227,21 @@ async function handleMarkerA(ws, state, t) {
       const epi = loadEpiPrior(districtCode, new Date().getMonth() + 1);
 
       console.log(`[${sessionId}] History Call 1: extracting chief complaint`);
-      const chief = await extractChiefComplaint(phase1, vaultCtx);
+      let t0 = Date.now();
+      const h1 = await extractChiefComplaint(phase1, vaultCtx, photos);
+      const chief = h1.result;
+      h1.meta.latency_ms = Date.now() - t0;
+      await insertLlmResult(dbClient, sessionId, 'H1_chief_complaint', 'history', 1, chief, { ...h1.meta });
       await vaultUpdate(dbClient, sessionId, { chief_complaint: chief });
 
+      let h2Meta = {};
       const doStructured = async () => {
-        let q = await generateQuestionnaire(chief, vaultCtx, baseline, epi, patientRecord);
-        q = validateQuestionnaire(q);
+        const t1 = Date.now();
+        const h2 = await generateQuestionnaire(chief, vaultCtx, baseline, epi, patientRecord, photos);
+        let q = validateQuestionnaire(h2.result);
+        h2.meta.latency_ms = Date.now() - t1;
+        h2Meta = h2.meta;
+        await insertLlmResult(dbClient, sessionId, 'H2_questionnaire', 'history', 2, q, { ...h2.meta });
         const stub = extractPatientRecordUpdate(q, chief, sessionId);
         await vaultUpdate(dbClient, sessionId, { questionnaire: q, patient_record_stub: stub, history_stage_status: 'complete', history_stage_completed_at: new Date().toISOString() });
         return q;
@@ -172,10 +255,14 @@ async function handleMarkerA(ws, state, t) {
 
       console.log(`[${sessionId}] History Call 2: streaming + structured`);
       const [questionnaire] = await Promise.all([doStructured(), doStream()]);
-      wsSend(ws, { type: 'stage_complete', stage: 'history', data: questionnaire });
+      wsSend(ws, {
+        type: 'stage_complete', stage: 'history', data: questionnaire,
+        timing: buildPhaseTiming(state, [h1.meta, h2Meta], 'history'),
+      });
       console.log(`[${sessionId}] History stage complete`);
     } catch (exc) {
       console.error(`[${sessionId}] History stage error:`, exc);
+      insertPipelineFailure(dbClient, sessionId, null, 'history', null, exc.message).catch(() => {});
       wsSend(ws, { type: 'error', code: 'HISTORY_STAGE_ERROR', message: exc.message });
     }
   })();
@@ -183,6 +270,7 @@ async function handleMarkerA(ws, state, t) {
 
 async function handleMarkerB(ws, state, t) {
   state.markerBAt = t;
+  state.phaseStartAt = Date.now();
   const { sessionId, dbClient } = state;
   await vaultUpdate(dbClient, sessionId, { marker_b_at: t });
 
@@ -194,12 +282,18 @@ async function handleMarkerB(ws, state, t) {
   (async () => {
     try {
       let vaultCtx = await vaultRead(dbClient, sessionId);
+      const photos = collectAllPhotos(vaultCtx);
+      if (photos.length) console.log(`[${sessionId}] Including ${photos.length} clinical photo(s) in diagnosis`);
       const gps = vaultCtx.gps || {};
       const baseline = loadBaselineDiseases();
       const epi = loadEpiPrior(gps.district_code || 'WB_UNKNOWN', new Date().getMonth() + 1);
 
       console.log(`[${sessionId}] Diagnosis Call 1: extracting concepts`);
-      const concepts = await extractMedicalConcepts(phase2, vaultCtx);
+      let t0 = Date.now();
+      const d1 = await extractMedicalConcepts(phase2, vaultCtx, photos);
+      const concepts = d1.result;
+      d1.meta.latency_ms = Date.now() - t0;
+      await insertLlmResult(dbClient, sessionId, 'D1_medical_concepts', 'diagnosis', 3, concepts, { ...d1.meta });
       await vaultUpdate(dbClient, sessionId, { extracted_concepts: concepts });
 
       if (concepts.pregnancy_status != null) {
@@ -208,8 +302,14 @@ async function handleMarkerB(ws, state, t) {
         vaultCtx = await vaultRead(dbClient, sessionId);
       }
 
+      let d2Meta = {};
       const doStructured = async () => {
-        const ddx = validateDifferential(await generateDifferential(concepts, vaultCtx, baseline, epi));
+        const t1 = Date.now();
+        const d2 = await generateDifferential(concepts, vaultCtx, baseline, epi, photos);
+        const ddx = d2.result;
+        d2.meta.latency_ms = Date.now() - t1;
+        d2Meta = d2.meta;
+        await insertLlmResult(dbClient, sessionId, 'D2_differential', 'diagnosis', 4, ddx, { ...d2.meta });
         await vaultUpdate(dbClient, sessionId, { differential_table: ddx });
         return ddx;
       };
@@ -223,13 +323,22 @@ async function handleMarkerB(ws, state, t) {
       const [ddx] = await Promise.all([doStructured(), doStream()]);
 
       console.log(`[${sessionId}] Diagnosis Call 3: clarifying questions`);
-      const clarifying = await generateClarifyingQuestions(ddx, concepts, vaultCtx);
+      const t2 = Date.now();
+      const d3 = await generateClarifyingQuestions(ddx, concepts, vaultCtx);
+      const clarifying = d3.result;
+      d3.meta.latency_ms = Date.now() - t2;
+      await insertLlmResult(dbClient, sessionId, 'D3_clarifying_questions', 'diagnosis', 5, clarifying, { ...d3.meta });
       await vaultUpdate(dbClient, sessionId, { clarifying_questions: clarifying, diagnosis_stage_status: 'complete', diagnosis_stage_completed_at: new Date().toISOString() });
 
-      wsSend(ws, { type: 'stage_complete', stage: 'diagnosis', data: { differential: ddx, clarifying_questions: clarifying } });
+      wsSend(ws, {
+        type: 'stage_complete', stage: 'diagnosis',
+        data: { differential: ddx, clarifying_questions: clarifying },
+        timing: buildPhaseTiming(state, [d1.meta, d2Meta, d3.meta], 'diagnosis'),
+      });
       console.log(`[${sessionId}] Diagnosis stage complete`);
     } catch (exc) {
       console.error(`[${sessionId}] Diagnosis stage error:`, exc);
+      insertPipelineFailure(dbClient, sessionId, null, 'diagnosis', null, exc.message).catch(() => {});
       wsSend(ws, { type: 'error', code: 'DIAGNOSIS_STAGE_ERROR', message: exc.message });
     }
   })();
@@ -237,6 +346,7 @@ async function handleMarkerB(ws, state, t) {
 
 async function handleMarkerC(ws, state, t) {
   state.markerCAt = t;
+  state.phaseStartAt = Date.now();
   const { sessionId, dbClient } = state;
   await vaultUpdate(dbClient, sessionId, { marker_c_at: t });
 
@@ -260,7 +370,11 @@ async function handleMarkerC(ws, state, t) {
 
       const triage = result.triage || {};
       const riskTier = result.rule_engine?.final_risk_tier || 'high';
-      wsSend(ws, { type: 'stage_complete', stage: 'management', data: { triage_output: triage, risk_tier: riskTier, problem_list: result.problem_list || {}, risk_assessment: result.risk_assessment || {} } });
+      wsSend(ws, {
+        type: 'stage_complete', stage: 'management',
+        data: { triage_output: triage, risk_tier: riskTier, problem_list: result.problem_list || {}, risk_assessment: result.risk_assessment || {} },
+        timing: buildPhaseTiming(state, [], 'management'),
+      });
 
       if (riskTier === 'HIGH') notifyDoctor(sessionId, triage);
       console.log(`[${sessionId}] Management stage complete — risk_tier=${riskTier}`);
@@ -288,8 +402,40 @@ async function handleMarkerC(ws, state, t) {
       } catch (logErr) {
         console.error(`[${sessionId}] patient_log write failed:`, logErr.message);
       }
+
+      // Write session_metrics aggregate
+      try {
+        const vaultFinal = await vaultRead(dbClient, sessionId);
+        const gps = vaultFinal.gps || {};
+        const sessionStart = vaultFinal.session_started_at ? new Date(vaultFinal.session_started_at).getTime() : null;
+        const e2eDuration = sessionStart ? Date.now() - sessionStart : null;
+
+        // Aggregate timing from all phases
+        const totalTranscriptionMs = state.phaseTimings.reduce((s, p) => s + (p.transcription_ms || 0), 0);
+        const totalServerOverheadMs = state.phaseTimings.reduce((s, p) => s + (p.server_overhead_ms || 0), 0);
+
+        await insertSessionMetrics(dbClient, {
+          session_id: sessionId,
+          user_id: state.userId || null,
+          patient_id: vaultFinal.patient_id || vaultFinal.demographics?.patient_id || null,
+          gps_lat: gps.lat || null,
+          gps_lon: gps.lon || null,
+          district_code: gps.district_code || null,
+          risk_tier: riskTier,
+          pipeline_status: 'complete',
+          e2e_duration_ms: e2eDuration,
+          network_rtt_ms: state.networkRttMs || null,
+          total_transcription_ms: totalTranscriptionMs || null,
+          total_server_overhead_ms: totalServerOverheadMs || null,
+          phase_timings: state.phaseTimings,
+        });
+        console.log(`[${sessionId}] session_metrics written`);
+      } catch (metErr) {
+        console.error(`[${sessionId}] session_metrics write failed:`, metErr.message);
+      }
     } catch (exc) {
       console.error(`[${sessionId}] Management stage error:`, exc);
+      insertPipelineFailure(dbClient, sessionId, state.nurseId || null, 'management', null, exc.message).catch(() => {});
       wsSend(ws, { type: 'error', code: 'MANAGEMENT_STAGE_ERROR', message: exc.message });
     }
   })();
@@ -349,8 +495,12 @@ export function mountWebSocket(app) {
           try { patientRecord = await loadPatientRecord(pool, msg.patient_id); } catch (e) { console.warn(`[${sessionId}] loadPatientRecord failed:`, e.message); }
           try { await vaultInit(pool, sessionId, msg.patient_id, claims.nurse_id || claims.user_id, msg.gps || {}, patientRecord); } catch (e) { console.error(`[${sessionId}] vaultInit failed:`, e.message); wsSend(ws, { type: 'error', code: 'INIT_ERROR', message: e.message }); return; }
           state = new SessionState(sessionId, pool);
+          state.nurseId = claims.nurse_id || claims.user_id;
+          state.userId = claims.user_id;
           _active.set(sessionId, state);
           wsSend(ws, { type: 'session_ready', session_id: sessionId, is_new_patient: Object.keys(patientRecord).length === 0 });
+          // Measure initial network RTT
+          wsSend(ws, { type: 'ping', ping_ts: Date.now() });
           console.log(`[${sessionId}] Session started — patient=${msg.patient_id}`);
         } else if (msgType === 'marker' && state) {
           const marker = msg.marker;
@@ -362,6 +512,15 @@ export function mountWebSocket(app) {
         } else if (msgType === 'audio_uploaded' && state) {
           await vaultUpdate(pool, state.sessionId, { audio: { upload_status: 'confirmed', url: msg.url, codec: msg.codec, duration_seconds: msg.duration_seconds, size_bytes: msg.size_bytes, retain_until: new Date(Date.now() + 90 * 86400000).toISOString() } });
           wsSend(ws, { type: 'audio_confirmed' });
+        } else if (msgType === 'pong' && state) {
+          // Client responded to our ping — calculate RTT
+          if (msg.ping_ts) {
+            state.networkRttMs = Date.now() - msg.ping_ts;
+            console.log(`[${state.sessionId}] Network RTT: ${state.networkRttMs}ms`);
+          }
+        } else if (msgType === 'transcription_timing' && state) {
+          // Client reports transcription timing from upload response
+          state.lastTranscriptionMs = msg.transcription_ms || null;
         }
       } catch (err) {
         console.error('WS message error:', err);

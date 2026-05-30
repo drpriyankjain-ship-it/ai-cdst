@@ -1,4 +1,4 @@
-/* NurseAI Web — Main Router & State */
+/* AI-CDST Web — Main Router & State */
 import { initLogin, initRegister } from './screens/login.js';
 import { initDashboard, refreshDashboard } from './screens/dashboard.js';
 import { initRecord, onRecordPageShow } from './screens/record.js';

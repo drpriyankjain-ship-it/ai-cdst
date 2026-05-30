@@ -29,16 +29,18 @@ export const PhaseIndicator = ({currentPhase}) => {
             {i > 0 && (
               <View style={[pi.line, isDone && pi.lineDone]} />
             )}
-            <View style={[pi.dot, isActive && pi.dotActive, isDone && pi.dotDone]}>
-              <Ionicons
-                name={isDone ? 'checkmark' : p.icon}
-                size={16}
-                color={isActive || isDone ? '#fff' : '#94A3B8'}
-              />
+            <View style={pi.dotWrapper}>
+              <View style={[pi.dot, isActive && pi.dotActive, isDone && pi.dotDone]}>
+                <Ionicons
+                  name={isDone ? 'checkmark' : p.icon}
+                  size={16}
+                  color={isActive || isDone ? '#fff' : '#94A3B8'}
+                />
+              </View>
+              <Text style={[pi.label, isActive && pi.labelActive, isDone && pi.labelDone]}>
+                {p.label}
+              </Text>
             </View>
-            <Text style={[pi.label, isActive && pi.labelActive, isDone && pi.labelDone]}>
-              {p.label}
-            </Text>
           </React.Fragment>
         );
       })}
@@ -47,13 +49,14 @@ export const PhaseIndicator = ({currentPhase}) => {
 };
 
 const pi = StyleSheet.create({
-  container: {flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 16, paddingHorizontal: 20},
+  container: {flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 16, paddingHorizontal: 20, marginBottom: 8},
+  dotWrapper: {alignItems: 'center'},
   dot: {width: 36, height: 36, borderRadius: 18, backgroundColor: '#E2E8F0', alignItems: 'center', justifyContent: 'center'},
   dotActive: {backgroundColor: '#0D9488', shadowColor: '#0D9488', shadowOffset: {width: 0, height: 0}, shadowOpacity: 0.4, shadowRadius: 8, elevation: 4},
   dotDone: {backgroundColor: '#10B981'},
   line: {height: 2, flex: 1, backgroundColor: '#E2E8F0', marginHorizontal: 4},
   lineDone: {backgroundColor: '#10B981'},
-  label: {position: 'absolute', bottom: -2, fontSize: 10, color: '#94A3B8', fontWeight: '500'},
+  label: {fontSize: 10, color: '#94A3B8', fontWeight: '500', marginTop: 4},
   labelActive: {color: '#0D9488', fontWeight: '700'},
   labelDone: {color: '#10B981'},
 });

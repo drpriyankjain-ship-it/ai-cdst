@@ -1,4 +1,4 @@
-/* NurseAI Web — Record / Consultation Screen */
+/* AI-CDST Web — Record / Consultation Screen */
 import api from '../api.js';
 import { showToast, showModal, hideModal, setCurrentPatient } from '../app.js';
 import { startRecording, stopRecording, isCurrentlyRecording, formatDuration } from '../audio.js';
@@ -23,6 +23,7 @@ let st = {
   firstBlob: null, autoProforma: '', genAutoProforma: false,
   generatedProforma: null, proformaQuery: '', createQuery: '',
   genProforma: false,
+  photos: [], // Array of File objects (up to 10)
 };
 let container = null;
 
@@ -147,6 +148,15 @@ function renderButtons() {
   </button>`;
 }
 
+function updateStartBtn() {
+  const btn = container?.querySelector('#start-rec-btn');
+  if (!btn) return;
+  const canStart = st.patientName.trim() && st.patientId.trim();
+  const dis = !canStart || st.uploading || (st.diagnosisText && st.audioRecordId);
+  btn.disabled = !!dis;
+  btn.classList.toggle('disabled', !!dis);
+}
+
 function bindRecordEvents() {
   // Proforma search
   const searchEl = container.querySelector('#proforma-search');
@@ -156,11 +166,11 @@ function bindRecordEvents() {
   const createBtn = container.querySelector('#proforma-create-btn');
   if (createBtn) createBtn.addEventListener('click', handleCreateProforma);
 
-  // Patient fields
+  // Patient fields — update state + toggle button without full re-render
   const nameEl = container.querySelector('#patient-name');
-  if (nameEl) nameEl.addEventListener('input', e => { st.patientName = e.target.value; });
+  if (nameEl) nameEl.addEventListener('input', e => { st.patientName = e.target.value; updateStartBtn(); });
   const idEl = container.querySelector('#patient-id');
-  if (idEl) idEl.addEventListener('input', e => { st.patientId = e.target.value; });
+  if (idEl) idEl.addEventListener('input', e => { st.patientId = e.target.value; updateStartBtn(); });
 
   // Record buttons
   container.querySelector('#start-rec-btn')?.addEventListener('click', handleStartRecording);
@@ -261,24 +271,56 @@ async function handleGenAutoProforma() {
 }
 
 function showPhotoModal(audioBlob) {
-  showModal(`
-    <div class="modal-title">Attach Photo?</div>
-    <div class="modal-subtitle">You can add a patient photo before uploading. This is optional.</div>
-    <button class="photo-option primary" id="upload-no-photo">Upload Without Photo</button>
-    <label class="photo-option" id="choose-photo-label">Choose Photo
-      <input type="file" accept="image/*" class="file-input-hidden" id="photo-file-input">
-    </label>
-    <button class="photo-option destructive" id="discard-recording">Don't Upload</button>
-  `);
-  document.getElementById('upload-no-photo').onclick = () => { hideModal(); uploadAudio(audioBlob, null); };
-  document.getElementById('photo-file-input').onchange = (e) => {
-    const file = e.target.files[0];
-    if (file) { hideModal(); uploadAudio(audioBlob, file); }
+  const renderPhotoModal = () => {
+    const thumbsHtml = st.photos.map((file, i) => {
+      const url = URL.createObjectURL(file);
+      return `<div class="photo-thumb-wrap" data-idx="${i}">
+        <img src="${url}" class="photo-thumb-img">
+        <button class="photo-thumb-remove" data-remove="${i}">&times;</button>
+      </div>`;
+    }).join('');
+
+    showModal(`
+      <div class="modal-title">Attach Photos</div>
+      <div class="modal-subtitle">Add up to 10 clinical photos. This is optional.</div>
+      <div class="photo-thumbs-row">${thumbsHtml}</div>
+      <div class="photo-actions">
+        ${st.photos.length < 10 ? `<label class="photo-option" id="add-photos-label">
+          <ion-icon name="images-outline"></ion-icon> Add Photos (${st.photos.length}/10)
+          <input type="file" accept="image/*" multiple class="file-input-hidden" id="photo-file-input">
+        </label>` : '<div class="photo-limit-msg">Maximum 10 photos reached</div>'}
+      </div>
+      <button class="photo-option primary" id="upload-with-photos">Upload${st.photos.length > 0 ? ` with ${st.photos.length} Photo${st.photos.length > 1 ? 's' : ''}` : ' Without Photos'}</button>
+      <button class="photo-option destructive" id="discard-recording">Don't Upload</button>
+    `);
+
+    // Bind events
+    document.getElementById('photo-file-input')?.addEventListener('change', (e) => {
+      const files = Array.from(e.target.files || []);
+      const remaining = 10 - st.photos.length;
+      st.photos.push(...files.slice(0, remaining));
+      renderPhotoModal();
+    });
+    document.querySelectorAll('[data-remove]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.dataset.remove);
+        st.photos.splice(idx, 1);
+        renderPhotoModal();
+      });
+    });
+    document.getElementById('upload-with-photos').onclick = () => {
+      hideModal();
+      uploadAudio(audioBlob, st.photos.length > 0 ? [...st.photos] : []);
+      st.photos = [];
+    };
+    document.getElementById('discard-recording').onclick = () => { hideModal(); st.photos = []; };
   };
-  document.getElementById('discard-recording').onclick = () => { hideModal(); };
+
+  st.photos = [];
+  renderPhotoModal();
 }
 
-async function uploadAudio(audioBlob, photoFile) {
+async function uploadAudio(audioBlob, photoFiles) {
   st.uploading = true; render();
   try {
     const fd = new FormData();
@@ -290,7 +332,9 @@ async function uploadAudio(audioBlob, photoFile) {
     } else {
       fd.append('audio', audioBlob, `recording${ext}`);
     }
-    if (photoFile) fd.append('photo', photoFile);
+    if (photoFiles && photoFiles.length > 0) {
+      photoFiles.forEach((file, i) => fd.append('photos', file, `photo_${i}.jpg`));
+    }
     fd.append('patientName', st.patientName.trim());
     fd.append('patientId', st.patientId.trim());
 
@@ -418,7 +462,7 @@ function showConsentModal() {
   return new Promise(resolve => {
     showModal(`
       <div class="consent-title">Informed Consent</div>
-      <div class="consent-body">Note: please inform the patient that NurseAI is right now only collecting data for research purposes and the organisation will try its best to protect the data yet in case of leaks/hacking the organisation is not liable.</div>
+      <div class="consent-body">Note: please inform the patient that AI-CDST is right now only collecting data for research purposes and the organisation will try its best to protect the data yet in case of leaks/hacking the organisation is not liable.</div>
       <div class="consent-actions">
         <button class="consent-cancel" id="consent-cancel">Cancel</button>
         <button class="consent-agree" id="consent-agree">Agree & Start</button>

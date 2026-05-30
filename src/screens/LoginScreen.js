@@ -78,7 +78,7 @@ const LoginScreen = ({navigation}) => {
             <View style={styles.iconContainer}>
               <Ionicons name="medical" size={40} color="#0D9488" />
             </View>
-            <Text style={styles.title}>NurseAI</Text>
+            <Text style={styles.title}>AI-CDST</Text>
             <Text style={styles.subtitle}>Clinical Assistant</Text>
           </View>
 

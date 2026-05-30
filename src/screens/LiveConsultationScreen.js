@@ -8,11 +8,12 @@
 import React, {useState, useCallback, useRef, useEffect} from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, SafeAreaView,
-  Alert, TextInput, ScrollView, ActivityIndicator, Vibration, Platform,
+  Alert, TextInput, ScrollView, ActivityIndicator, Vibration, Platform, Image,
 } from 'react-native';
 import {Ionicons} from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {Audio} from 'expo-av';
+import * as ImagePicker from 'expo-image-picker';
 import wsService from '../services/wsService';
 import {
   PhaseIndicator, StreamingText, QuestionnaireCard,
@@ -57,6 +58,9 @@ const LiveConsultationScreen = ({navigation}) => {
   // Live transcript
   const [liveTranscript, setLiveTranscript] = useState('');
 
+  // Photo state
+  const [photos, setPhotos] = useState([]);
+
   const scrollRef = useRef(null);
 
   // Auto-scroll when new content arrives
@@ -83,15 +87,27 @@ const LiveConsultationScreen = ({navigation}) => {
       }),
 
       wsService.on('stage_token', ({stage, token}) => {
-        setIsProcessing(true);
         setStreamingLabel(stage === 'history' ? 'Generating Questionnaire...' : stage === 'diagnosis' ? 'Analyzing Differential...' : 'Building Management Plan...');
         setStreamingText(prev => prev + token);
       }),
 
-      wsService.on('stage_complete', ({stage, data}) => {
+      wsService.on('stage_complete', ({stage, data, timing}) => {
         setIsProcessing(false);
         setStreamingText('');
         setStreamingLabel('');
+
+        // Log timing breakdown
+        if (timing) {
+          console.log(`[TIMING] ${stage}: total=${timing.phase_total_ms}ms | gemini=${timing.gemini_calls_ms}ms | transcription=${timing.transcription_ms || 0}ms | server=${timing.server_overhead_ms}ms | network_rtt=${timing.network_rtt_ms || '?'}ms`);
+          if (timing.breakdown) {
+            console.log(`[TIMING] ${stage} breakdown: gemini=${timing.breakdown.gemini_pct}% | transcription=${timing.breakdown.transcription_pct}% | server=${timing.breakdown.server_pct}%`);
+          }
+          if (timing.per_call) {
+            timing.per_call.forEach((c, i) => {
+              console.log(`[TIMING]   call ${i+1}: ${c.model} ${c.latency_ms}ms in=${c.input_tokens} out=${c.output_tokens} $${c.cost_usd?.toFixed(6)}`);
+            });
+          }
+        }
 
         if (stage === 'history') {
           setQuestionnaire(data);
@@ -261,7 +277,16 @@ const LiveConsultationScreen = ({navigation}) => {
         });
         formData.append('phase', String(currentPhase));
 
-        console.log(`[LiveConsultation] Uploading phase ${currentPhase} audio...`);
+        // Append photos
+        photos.forEach((photo, idx) => {
+          formData.append('photos', {
+            uri: photo.uri,
+            name: `photo_${idx}.jpg`,
+            type: 'image/jpeg',
+          });
+        });
+
+        console.log(`[LiveConsultation] Uploading phase ${currentPhase} audio + ${photos.length} photo(s)...`);
         setStreamingLabel('Transcribing audio...');
 
         const uploadResponse = await fetch(
@@ -277,6 +302,11 @@ const LiveConsultationScreen = ({navigation}) => {
         if (uploadResult.success) {
           console.log(`[LiveConsultation] Transcript received: "${(uploadResult.transcript || '').slice(0, 80)}..."`);
           setLiveTranscript(prev => prev + `\n[Phase ${currentPhase}]: ${uploadResult.transcript || '(no speech detected)'}\n`);
+          // Send transcription timing to server for latency breakdown
+          if (uploadResult.transcription_ms) {
+            wsService.sendTranscriptionTiming(uploadResult.transcription_ms);
+            console.log(`[LiveConsultation] Transcription took ${uploadResult.transcription_ms}ms`);
+          }
         } else {
           console.warn('[LiveConsultation] Upload failed:', uploadResult.error);
         }
@@ -290,11 +320,27 @@ const LiveConsultationScreen = ({navigation}) => {
     const elapsed = sessionStartRef.current ? Math.round((Date.now() - sessionStartRef.current) / 1000) : 0;
     wsService.sendMarker(phaseInfo.marker, elapsed);
 
-    // Start recording for next phase (if not last)
+    // Clear photos for next phase
+    setPhotos([]);
+
+    // Start recording for next phase (if not last) — with retry
     if (currentPhase < 3) {
-      setTimeout(() => startRecording(), 500);
+      const tryStart = async (attempt = 1) => {
+        try {
+          await startRecording();
+        } catch (e) {
+          if (attempt < 3) {
+            console.warn(`[LiveConsultation] Recording start attempt ${attempt} failed, retrying...`);
+            setTimeout(() => tryStart(attempt + 1), 1000);
+          } else {
+            console.error('[LiveConsultation] Failed to start recording after 3 attempts');
+            Alert.alert('Error', 'Failed to start recording. Please check microphone permissions.');
+          }
+        }
+      };
+      setTimeout(() => tryStart(), 1500);
     }
-  }, [currentPhase, stopRecording, startRecording, sessionId]);
+  }, [currentPhase, stopRecording, startRecording, sessionId, photos]);
 
   const handleEndSession = useCallback(async () => {
     await stopRecording();
@@ -318,6 +364,50 @@ const LiveConsultationScreen = ({navigation}) => {
     setLiveTranscript('');
     setRecordingSeconds(0);
     setSessionId(null);
+    setPhotos([]);
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // Photo picker
+  // ---------------------------------------------------------------------------
+
+  const handleAddPhotos = useCallback(async () => {
+    if (photos.length >= 10) {
+      Alert.alert('Limit', 'Maximum 10 photos per phase.');
+      return;
+    }
+    const remaining = 10 - photos.length;
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsMultipleSelection: true,
+      selectionLimit: remaining,
+      quality: 0.7,
+    });
+    if (!result.canceled && result.assets) {
+      setPhotos(prev => [...prev, ...result.assets.slice(0, remaining)]);
+    }
+  }, [photos]);
+
+  const handleTakePhoto = useCallback(async () => {
+    if (photos.length >= 10) {
+      Alert.alert('Limit', 'Maximum 10 photos per phase.');
+      return;
+    }
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission', 'Camera permission is needed.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      quality: 0.7,
+    });
+    if (!result.canceled && result.assets?.[0]) {
+      setPhotos(prev => [...prev, result.assets[0]]);
+    }
+  }, [photos]);
+
+  const handleRemovePhoto = useCallback((idx) => {
+    setPhotos(prev => prev.filter((_, i) => i !== idx));
   }, []);
 
   // ---------------------------------------------------------------------------
@@ -465,12 +555,36 @@ const LiveConsultationScreen = ({navigation}) => {
           </View>
         )}
 
-        <View style={{height: 120}} />
+        <View style={{height: 200}} />
       </ScrollView>
 
       {/* Bottom action bar */}
       {sessionState === 'active' && (
         <View style={s.bottomBar}>
+          {/* Photo strip */}
+          <View style={s.photoSection}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.photoScroll}>
+              {photos.map((photo, idx) => (
+                <View key={idx} style={s.photoThumbWrap}>
+                  <Image source={{uri: photo.uri}} style={s.photoThumb} />
+                  <TouchableOpacity style={s.photoRemoveBtn} onPress={() => handleRemovePhoto(idx)}>
+                    <Ionicons name="close-circle" size={18} color="#EF4444" />
+                  </TouchableOpacity>
+                </View>
+              ))}
+              {photos.length < 10 && (
+                <View style={s.photoAddBtns}>
+                  <TouchableOpacity style={s.photoAddBtn} onPress={handleTakePhoto}>
+                    <Ionicons name="camera" size={20} color="#0D9488" />
+                  </TouchableOpacity>
+                  <TouchableOpacity style={s.photoAddBtn} onPress={handleAddPhotos}>
+                    <Ionicons name="images" size={20} color="#0D9488" />
+                  </TouchableOpacity>
+                </View>
+              )}
+            </ScrollView>
+            <Text style={s.photoCount}>{photos.length}/10 photos</Text>
+          </View>
           <TouchableOpacity
             style={[s.markerBtn, isProcessing && s.markerBtnDisabled]}
             onPress={handleMarker}
@@ -545,7 +659,7 @@ const s = StyleSheet.create({
   processingText: {fontSize: 14, color: '#0D9488', marginLeft: 8, fontWeight: '500'},
 
   // Bottom bar
-  bottomBar: {position: 'absolute', bottom: 0, left: 0, right: 0, padding: 16, paddingBottom: Platform.OS === 'ios' ? 34 : 16, backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: '#E2E8F0'},
+  bottomBar: {position: 'absolute', bottom: 0, left: 0, right: 0, padding: 12, paddingBottom: Platform.OS === 'ios' ? 34 : 12, backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: '#E2E8F0'},
   markerBtn: {flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#0D9488', borderRadius: 14, paddingVertical: 16},
   markerBtnDisabled: {backgroundColor: '#94A3B8'},
   markerBtnText: {fontSize: 16, fontWeight: '700', color: '#fff', marginLeft: 8},
@@ -556,6 +670,16 @@ const s = StyleSheet.create({
   completeSub: {fontSize: 13, color: '#64748B', marginTop: 4},
   newSessionBtn: {backgroundColor: '#0D9488', borderRadius: 12, paddingHorizontal: 24, paddingVertical: 14, marginTop: 20},
   newSessionText: {fontSize: 15, fontWeight: '700', color: '#fff'},
+
+  // Photos
+  photoSection: {marginBottom: 10},
+  photoScroll: {flexGrow: 0},
+  photoThumbWrap: {width: 56, height: 56, borderRadius: 8, marginRight: 8, position: 'relative'},
+  photoThumb: {width: 56, height: 56, borderRadius: 8, backgroundColor: '#E2E8F0'},
+  photoRemoveBtn: {position: 'absolute', top: -6, right: -6, backgroundColor: '#fff', borderRadius: 10},
+  photoAddBtns: {flexDirection: 'row', gap: 6},
+  photoAddBtn: {width: 56, height: 56, borderRadius: 8, borderWidth: 2, borderColor: '#0D9488', borderStyle: 'dashed', alignItems: 'center', justifyContent: 'center', backgroundColor: '#F0FDFA'},
+  photoCount: {fontSize: 11, color: '#94A3B8', marginTop: 4},
 });
 
 export default LiveConsultationScreen;

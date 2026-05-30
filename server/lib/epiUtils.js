@@ -4,12 +4,14 @@
  * Direct port of epi_utils.py
  */
 
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, '..', '..', 'data');
+const DATA_DIR = existsSync(join(__dirname, '..', '..', 'data'))
+  ? join(__dirname, '..', '..', 'data')   // Local dev: server/lib/ → ../../data/
+  : join(__dirname, '..', 'data');          // EB deploy: lib/ → ../data/
 const EPI_PRIOR_PATH = join(DATA_DIR, 'epi_prior_wb.json');
 
 // ---------------------------------------------------------------------------

@@ -498,7 +498,7 @@ const HomePage = ({navigation}) => {
               <Ionicons name="document-text" size={32} color="#0D9488" />
             </View>
             <View style={styles.headerText}>
-              <Text style={styles.headerTitle}>NurseAI</Text>
+              <Text style={styles.headerTitle}>AI-CDST</Text>
               <Text style={styles.headerSubtitle}>Clinical Assistant</Text>
             </View>
           </View>

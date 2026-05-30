@@ -13,6 +13,31 @@ const gemini = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 const CASCADE_STATUSES = new Set([503, 404, 429]);
 
+// ---------------------------------------------------------------------------
+// Pricing (USD per 1M tokens, May 2026)
+// ---------------------------------------------------------------------------
+
+const PRICING = {
+  'gemini-3.5-flash':      { input: 0.15, output: 0.60 },
+  'gemini-2.5-flash':      { input: 0.30, output: 2.50 },
+  'gemini-2.5-flash-lite': { input: 0.10, output: 0.40 },
+  'gemini-2.5-pro':        { input: 1.25, output: 10.00 },
+  'gemini-2.0-flash':      { input: 0.10, output: 0.40 },
+};
+
+/**
+ * Calculate cost in USD for a given model + token counts.
+ */
+export function calculateCost(model, inputTokens, outputTokens) {
+  const p = PRICING[model];
+  if (!p) return 0;
+  return (inputTokens * p.input + outputTokens * p.output) / 1_000_000;
+}
+
+// ---------------------------------------------------------------------------
+// Usage log (backward compat)
+// ---------------------------------------------------------------------------
+
 const _usageLog = [];
 
 /**
@@ -72,15 +97,34 @@ export function parseJsonResponse(text) {
 }
 
 /**
+ * Build multimodal content (text + inline images) for Gemini.
+ * If photos is empty/null, returns just the text string (backward compatible).
+ * @param {string} prompt - The text prompt
+ * @param {Array} photos - Array of { mimeType, data } base64 photo objects (optional)
+ * @returns {string|Array} - Plain string or Gemini Content array
+ */
+export function buildMultimodalContent(prompt, photos) {
+  if (!photos || photos.length === 0) return prompt;
+  const parts = [];
+  // Add photos first so Gemini sees them before the text instructions
+  for (const photo of photos) {
+    parts.push({ inlineData: { mimeType: photo.mimeType, data: photo.data } });
+  }
+  parts.push({ text: `The nurse has attached ${photos.length} clinical photo(s) above. Incorporate visual findings from these images into your analysis.\n\n${prompt}` });
+  return [{ role: 'user', parts }];
+}
+
+/**
  * Try each model in order; cascade to the next on 503/404/429.
+ * Returns { response, meta } where meta = { model_used, input_tokens, output_tokens, cost_usd }.
  */
 export async function generateWithCascade(models, contents, config = {}) {
   let lastErr = null;
   for (const model of models) {
     try {
-      // Strip thinkingConfig for models that don't support it (non-2.5)
+      // Strip thinkingConfig for models that don't support it
       let modelConfig = { ...config };
-      if (!model.includes('2.5') && modelConfig.thinkingConfig) {
+      if (!model.includes('2.5') && !model.includes('3-flash') && !model.includes('3.') && modelConfig.thinkingConfig) {
         delete modelConfig.thinkingConfig;
       }
       const response = await gemini.models.generateContent({
@@ -89,17 +133,21 @@ export async function generateWithCascade(models, contents, config = {}) {
         config: modelConfig,
       });
       const u = response.usageMetadata;
-      if (u) {
-        _usageLog.push({
-          model,
-          input_tokens: u.promptTokenCount || 0,
-          output_tokens: u.candidatesTokenCount || 0,
-        });
-      }
+      const inputTokens = u?.promptTokenCount || 0;
+      const outputTokens = u?.candidatesTokenCount || 0;
+      const meta = {
+        model_used: model,
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        cost_usd: calculateCost(model, inputTokens, outputTokens),
+      };
+
+      _usageLog.push({ model, input_tokens: inputTokens, output_tokens: outputTokens });
+
       if (model !== models[0]) {
         console.warn(`[LLM] Cascade: used ${model} (primary ${models[0]} unavailable)`);
       }
-      return response;
+      return { response, meta };
     } catch (err) {
       const code = err.status || err.code || 0;
       const msg = (err.message || '').toLowerCase();

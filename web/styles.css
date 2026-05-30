@@ -317,6 +317,19 @@ a { color: #0D9488; text-decoration: none; }
 .photo-option.primary { background: #0D9488; color: #FFF; border-color: #0D9488; }
 .photo-option.destructive { background: #FFF; color: #DC2626; border-color: #DC2626; }
 
+/* Photo Thumbnails */
+.photo-thumbs-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.photo-thumb-wrap { position: relative; width: 60px; height: 60px; border-radius: 8px; overflow: visible; }
+.photo-thumb-img { width: 60px; height: 60px; border-radius: 8px; object-fit: cover; border: 1px solid #E2E8F0; }
+.photo-thumb-remove {
+  position: absolute; top: -6px; right: -6px; width: 20px; height: 20px;
+  border-radius: 50%; background: #DC2626; color: #FFF; border: 2px solid #FFF;
+  font-size: 12px; line-height: 14px; cursor: pointer; display: flex;
+  align-items: center; justify-content: center; padding: 0;
+}
+.photo-actions { margin-bottom: 10px; }
+.photo-limit-msg { font-size: 13px; color: #94A3B8; text-align: center; padding: 10px; }
+
 /* Missing Data Form */
 .modal-field { margin-bottom: 12px; }
 .modal-label { font-size: 14px; font-weight: 600; color: #1E293B; margin-bottom: 6px; display: block; }

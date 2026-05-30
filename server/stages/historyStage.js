@@ -10,7 +10,7 @@
  */
 
 import { vaultRead, vaultUpdate } from '../lib/db.js';
-import { generateWithCascade, streamWithCascade, parseJsonResponse, responseText } from '../lib/llmClient.js';
+import { generateWithCascade, streamWithCascade, parseJsonResponse, responseText, buildMultimodalContent } from '../lib/llmClient.js';
 import { MODEL_H1_CHIEF_COMPLAINT, MODEL_H2_QUESTIONNAIRE } from '../lib/modelConfig.js';
 import { stateFromDistrictCode, loadBaselineDiseases, loadEpiPrior } from '../lib/epiUtils.js';
 
@@ -213,7 +213,7 @@ const FIRST_VISIT_HISTORY_QUESTIONS = {
 // Call 1 — Extract chief complaint from ~30 second opening
 // ---------------------------------------------------------------------------
 
-export async function extractChiefComplaint(transcriptSegment, vaultContext) {
+export async function extractChiefComplaint(transcriptSegment, vaultContext, photos = []) {
   const demographics = vaultContext.demographics || {};
   const prompt = [
     'Extract the chief complaint from this brief nurse-patient consultation ' +
@@ -221,6 +221,7 @@ export async function extractChiefComplaint(transcriptSegment, vaultContext) {
     'name, age, village, chief complaint, and duration. Extract only what is explicitly stated.',
     `PATIENT DEMOGRAPHICS (from registration if any):\n${JSON.stringify(demographics, null, 2)}`,
     `TRANSCRIPT (phase 1, ~30 seconds):\n${transcriptSegment}`,
+    photos.length > 0 ? 'The nurse has also attached clinical photos. Note any visible findings (rash, swelling, wound, etc.) in spontaneous_history and red_flags_mentioned if relevant.' : '',
     'INSTRUCTIONS:\n' +
     '- Extract only what is explicitly stated in the transcript\n' +
     '- patient_name, age, village: verbatim from the opening exchange\n' +
@@ -228,21 +229,23 @@ export async function extractChiefComplaint(transcriptSegment, vaultContext) {
     '- spontaneous_history: anything volunteered beyond the direct questions\n' +
     '- red_flags_mentioned: only what the patient explicitly stated\n' +
     '- This is ~30 seconds. Most fields will be null. Do not infer.',
-  ].join('\n\n');
+  ].filter(Boolean).join('\n\n');
 
-  const response = await generateWithCascade(
+  const contents = buildMultimodalContent(prompt, photos);
+  const { response, meta } = await generateWithCascade(
     MODEL_H1_CHIEF_COMPLAINT,
-    prompt,
+    contents,
     { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json', responseSchema: SCHEMA_CHIEF_COMPLAINT, maxOutputTokens: 600 },
   );
-  return parseJsonResponse(responseText(response));
+  const result = parseJsonResponse(responseText(response));
+  return { result, meta };
 }
 
 // ---------------------------------------------------------------------------
 // Call 2 — Generate questionnaire
 // ---------------------------------------------------------------------------
 
-export async function generateQuestionnaire(chiefComplaint, vaultContext, baselineLayer, epiLayer, patientRecord) {
+export async function generateQuestionnaire(chiefComplaint, vaultContext, baselineLayer, epiLayer, patientRecord, photos = []) {
   const demographics = vaultContext.demographics || {};
   const districtCode = (vaultContext.gps || {}).district_code || 'WB_UNKNOWN';
   const stateName = stateFromDistrictCode(districtCode);
@@ -281,6 +284,7 @@ export async function generateQuestionnaire(chiefComplaint, vaultContext, baseli
     languageInstruction,
     baselineLayer,
     epiLayer,
+    photos.length > 0 ? 'CLINICAL PHOTOS: The nurse has attached clinical photos. Include questions about any visible findings (e.g., describe the rash, when did the swelling start, etc.).' : '',
     'CLINICAL FRAMEWORK FOR CHIEF COMPLAINT SECTION:\n' +
     'Choose the framework that fits the presentation — do not force SOCRATES where it does not apply.\n' +
     '  Pain / acute symptoms   → SOCRATES\n  Gynaecological/obstetric → Menstrual/obstetric history\n' +
@@ -296,9 +300,10 @@ export async function generateQuestionnaire(chiefComplaint, vaultContext, baseli
     'known_and_verified: list confirmations for fields already in the record\npatient_record_fields: populate with questions to ASK — answers will come from the phase 2 transcript.',
   ].filter(Boolean).join('\n\n');
 
-  const response = await generateWithCascade(
+  const contents = buildMultimodalContent(prompt, photos);
+  const { response, meta } = await generateWithCascade(
     MODEL_H2_QUESTIONNAIRE,
-    prompt,
+    contents,
     {
       thinkingConfig: { thinkingBudget: 0 },
       responseMimeType: 'application/json',
@@ -314,7 +319,7 @@ export async function generateQuestionnaire(chiefComplaint, vaultContext, baseli
     if (!questionnaire.sections) questionnaire.sections = [];
     questionnaire.sections.push(FIRST_VISIT_HISTORY_QUESTIONS);
   }
-  return questionnaire;
+  return { result: questionnaire, meta };
 }
 
 // ---------------------------------------------------------------------------

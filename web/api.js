@@ -1,4 +1,4 @@
-/* NurseAI Web — API Service */
+/* AI-CDST Web — API Service */
 const API_BASE_URL = window.location.origin + '/api';
 const AUTH_TOKEN_KEY = '@nurseai_auth_token';
 const CACHE_DURATION = 30000;

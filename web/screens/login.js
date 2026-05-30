@@ -1,4 +1,4 @@
-/* NurseAI Web — Login & Register Screens */
+/* AI-CDST Web — Login & Register Screens */
 import api from '../api.js';
 import { navigate, showToast, saveToken, showModal, hideModal } from '../app.js';
 
@@ -7,7 +7,7 @@ export function initLogin(container) {
     <div class="auth-page">
       <div class="auth-logo">
         <div class="auth-logo-icon"><ion-icon name="document-text"></ion-icon></div>
-        <div class="auth-logo-text">NurseAI</div>
+        <div class="auth-logo-text">AI-CDST</div>
       </div>
       <div class="auth-card">
         <div class="input-group">
@@ -63,7 +63,7 @@ export function initRegister(container) {
     <div class="auth-page">
       <div class="auth-logo">
         <div class="auth-logo-icon"><ion-icon name="document-text"></ion-icon></div>
-        <div class="auth-logo-text">NurseAI</div>
+        <div class="auth-logo-text">AI-CDST</div>
       </div>
       <div class="auth-card">
         <div class="input-group">

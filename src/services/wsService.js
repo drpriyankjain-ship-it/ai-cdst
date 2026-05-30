@@ -111,7 +111,7 @@ class WSService {
         this._emit('stage_token', { stage: msg.stage, token: msg.token });
         break;
       case 'stage_complete':
-        this._emit('stage_complete', { stage: msg.stage, data: msg.data });
+        this._emit('stage_complete', { stage: msg.stage, data: msg.data, timing: msg.timing || null });
         break;
       case 'transcript':
         this._emit('transcript', { text: msg.text, is_final: msg.is_final });
@@ -124,6 +124,10 @@ class WSService {
         break;
       case 'error':
         this._emit('error', msg);
+        break;
+      case 'ping':
+        // Auto-respond with pong to measure network RTT
+        this._send({ type: 'pong', ping_ts: msg.ping_ts });
         break;
       default:
         console.log('[WS] Unknown message type:', msg.type);
@@ -191,6 +195,16 @@ class WSService {
     this._send({
       type: 'session_end',
       t: durationSeconds,
+    });
+  }
+
+  /**
+   * Send transcription timing back to server for latency breakdown
+   */
+  sendTranscriptionTiming(transcriptionMs) {
+    return this._send({
+      type: 'transcription_timing',
+      transcription_ms: transcriptionMs,
     });
   }
 
