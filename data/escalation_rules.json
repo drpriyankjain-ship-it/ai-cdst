@@ -12,7 +12,7 @@
     "spo2_critical_pct": 92,
     "systolic_bp_shock_mmhg": 90,
     "systolic_bp_hypertensive_emergency_mmhg": 180,
-    "hr_tachycardia_bpm": 120,
+    "hr_tachycardia_bpm": 130,
     "hr_bradycardia_bpm": 50,
     "rr_distress_per_min": 30,
     "rr_depression_per_min": 10,

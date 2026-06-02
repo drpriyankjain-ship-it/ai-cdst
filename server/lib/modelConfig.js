@@ -11,7 +11,7 @@ export const TIER_STANDARD_CRITICAL = ['gemini-3.5-flash', 'gemini-2.5-flash', '
 
 // ── History Stage ────────────────────────────────────────────────────────────
 export const MODEL_H1_CHIEF_COMPLAINT = TIER_FAST;       // extract_chief_complaint — extraction only
-export const MODEL_H2_QUESTIONNAIRE   = TIER_STANDARD;   // generate_questionnaire — visit-type inference
+export const MODEL_H2_QUESTIONNAIRE   = TIER_STANDARD_CRITICAL;  // generate_questionnaire — primary clinical reasoning call
 
 // ── Diagnosis Stage ──────────────────────────────────────────────────────────
 export const MODEL_D1_CONCEPTS        = TIER_FAST;                // extract_medical_concepts — extraction

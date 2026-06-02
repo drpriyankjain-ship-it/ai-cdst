@@ -5,12 +5,14 @@
  */
 
 import { vaultRead, vaultUpdate, insertLlmResult } from '../lib/db.js';
-import { generateWithCascade, streamWithCascade, parseJsonResponse, responseText } from '../lib/llmClient.js';
+import { generateWithCascade, parseJsonResponse, responseText } from '../lib/llmClient.js';
 import { MODEL_M1_FINDINGS, MODEL_M2_PRESCRIPTION, MODEL_M3_RISK, MODEL_M4_TRIAGE } from '../lib/modelConfig.js';
 import { stateFromDistrictCode } from '../lib/epiUtils.js';
 import {
   SCHEMA_CLARIFYING_FINDINGS, SCHEMA_PROBLEM_LIST, SCHEMA_RISK_ASSESSMENT, SCHEMA_TRIAGE_HANDOFF,
-  RAG_TOP_K, loadFormulary, validateProblemList, buildPrescriptionIssued, runRuleEngine,
+  RAG_TOP_K, RAG_SIMILARITY_THRESHOLD, RAG_DISEASE_FALLBACK_THRESHOLD,
+  RAG_SECTION_FILTER, RAG_IVFFLAT_PROBES,
+  loadFormulary, resolveCanonicalDisease, validateProblemList, buildPrescriptionIssued, runRuleEngine,
 } from './managementHelpers.js';
 
 // Embedder — lazy loaded
@@ -28,9 +30,21 @@ async function getEmbedder() {
 // ---------------------------------------------------------------------------
 
 export async function retrieveTreatmentProtocols(dbClient, diagnoses, topK = RAG_TOP_K) {
+  const uniqueDiagnoses = [...new Set(
+    diagnoses.map(d => String(d || '').trim()).filter(Boolean)
+  )];
   const sections = [];
-  for (const diagnosis of diagnoses) {
+  const retrievedChunks = [];
+
+  try {
+    await dbClient.query(`SET ivfflat.probes = ${RAG_IVFFLAT_PROBES}`);
+  } catch (err) {
+    console.warn(`[RAG] Unable to set ivfflat.probes: ${err.message}`);
+  }
+
+  for (const diagnosis of uniqueDiagnoses) {
     const query = `treatment protocol dose duration route contraindications referral criteria ${diagnosis} NHM India STG`;
+    const canonicalDisease = resolveCanonicalDisease(diagnosis);
     let queryEmbedding;
     try {
       const embedder = await getEmbedder();
@@ -41,20 +55,70 @@ export async function retrieveTreatmentProtocols(dbClient, diagnoses, topK = RAG
       continue;
     }
 
-    const res = await dbClient.query(
-      `SELECT content, source, chunk_id, 1 - (embedding <=> $1::vector) AS similarity
-       FROM stg_chunks WHERE 1 - (embedding <=> $1::vector) > 0.55
-       ORDER BY embedding <=> $1::vector LIMIT $2`,
-      [JSON.stringify(queryEmbedding), topK]
+    const vector = JSON.stringify(queryEmbedding);
+    const queryArgs = [vector, topK, RAG_SECTION_FILTER, RAG_SIMILARITY_THRESHOLD, canonicalDisease];
+    let res = await dbClient.query(
+      `SELECT content, source, disease, section, chunk_id,
+              1 - (embedding <=> $1::vector) AS similarity
+       FROM stg_chunks
+       WHERE embedding IS NOT NULL
+         AND section = ANY($3::text[])
+         AND 1 - (embedding <=> $1::vector) >= $4
+         AND (
+           $5::text IS NULL
+           OR lower(coalesce(disease, '')) = lower($5)
+           OR disease IS NULL
+         )
+       ORDER BY CASE
+           WHEN lower(coalesce(disease, '')) = lower($5) THEN 0
+           WHEN disease IS NULL THEN 1
+           ELSE 2
+         END,
+         embedding <=> $1::vector
+       LIMIT $2`,
+      queryArgs
     );
 
+    const hasSameDisease = canonicalDisease && res.rows.some(r => (r.disease || '').toLowerCase() === canonicalDisease);
+    if (canonicalDisease && !hasSameDisease) {
+      const fallback = await dbClient.query(
+        `SELECT content, source, disease, section, chunk_id,
+                1 - (embedding <=> $1::vector) AS similarity
+         FROM stg_chunks
+         WHERE embedding IS NOT NULL
+           AND section = ANY($3::text[])
+           AND lower(coalesce(disease, '')) = lower($5)
+           AND 1 - (embedding <=> $1::vector) >= $4
+         ORDER BY embedding <=> $1::vector
+         LIMIT $2`,
+        [vector, topK, RAG_SECTION_FILTER, RAG_DISEASE_FALLBACK_THRESHOLD, canonicalDisease]
+      );
+      if (fallback.rows.length) res = fallback;
+    }
+
     if (res.rows.length) {
-      const chunks = res.rows.map(r => `[${r.source} / chunk ${r.chunk_id} | similarity ${parseFloat(r.similarity).toFixed(2)}]\n${r.content}`).join('\n\n');
+      retrievedChunks.push(...res.rows.map(r => ({
+        query_diagnosis: diagnosis,
+        source: r.source,
+        chunk_id: r.chunk_id,
+        disease: r.disease,
+        resolved_disease: canonicalDisease,
+        section: r.section,
+        similarity: Number(r.similarity),
+      })));
+      const chunks = res.rows.map(r => `[${r.source} / chunk ${r.chunk_id} / ${r.section || 'general'} | similarity ${parseFloat(r.similarity).toFixed(2)}]\n${r.content}`).join('\n\n');
       sections.push(`=== ${diagnosis} ===\n${chunks}`);
     }
   }
-  if (!sections.length) { console.log('[RAG WARNING] No STG chunks retrieved.'); return ''; }
-  return sections.join('\n\n');
+  if (!sections.length) console.log('[RAG WARNING] No STG chunks retrieved.');
+  return {
+    context: sections.join('\n\n'),
+    chunks: retrievedChunks,
+    diagnoses_queried: uniqueDiagnoses,
+    similarity_threshold: RAG_SIMILARITY_THRESHOLD,
+    disease_fallback_threshold: RAG_DISEASE_FALLBACK_THRESHOLD,
+    section_filter: RAG_SECTION_FILTER,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -116,7 +180,8 @@ export async function generateProvisionalDiagnosisAndRx(clarifyingFindings, vaul
     '- for_problem is mandatory on every prescription item\n' +
     '- Prescribe ONLY drugs present in the local formulary\n' +
     '- Do NOT prescribe any drug the patient is allergic to\n' +
-    '- stg_source must cite the specific retrieved chunk or null\n' +
+    '- stg_source must use the exact SOURCE / chunk N citation from the retrieved text, or null\n' +
+    '- If no retrieved STG chunk supports a drug dose, prefer supportive care plus doctor review/referral over inventing a protocol-specific dose\n' +
     '- If weight-based dosing needed, use vitals_found weight > demographics weight',
   ].join('\n\n');
 
@@ -154,14 +219,14 @@ export async function generateRiskAssessment(problemListOutput, clarifyingFindin
     'INSTRUCTIONS:\nAssess all five dimensions:\n' +
     '1. DIAGNOSTIC UNCERTAINTY — which must-not-miss diagnoses remain possible?\n' +
     '2. IATROGENIC RISK — assess ALL drugs, check allergy/interaction conflicts\n' +
-    '3. DELAY RISK — how time-sensitive? Safe window for async doctor auth?\n' +
+    '3. DELAY RISK — consequence of waiting up to 24 hours for async doctor review\n' +
     '4. COMPLICATION WATCH — warning signs with specific nurse actions\n' +
-    '5. MITIGATION PLAN — set HIGH if ANY unmitigable risk exists or safe_delay < 2h',
+    '5. MITIGATION PLAN — set overall_risk_tier HIGH only if: (a) the patient requires hospital-level care now, or (b) a 24-hour delay in doctor review carries genuine risk of serious harm or death. Set LOW if the nurse can safely administer the prescribed oral treatment and monitor the patient while the doctor reviews within 24 hours. Stable presentations manageable with oral medication and nursing care should be LOW.',
   ].join('\n\n');
 
   const { response, meta } = await generateWithCascade(MODEL_M3_RISK, prompt, {
     thinkingConfig: { thinkingBudget: 0 },
-    systemInstruction: 'You are a clinical decision support system performing risk assessment. When in doubt, escalate.',
+    systemInstruction: 'You are a clinical decision support system performing risk assessment for nurse-managed consultations in rural India. LOW means the nurse can safely proceed with the prescribed plan and the doctor reviews asynchronously within 24 hours — no doctor response within 24 hours ratifies the plan. HIGH means the case cannot wait: the patient needs hospital-level care now, or a 24-hour delay in doctor involvement carries genuine risk of serious harm or death. A deterministic rule engine runs after your output and will escalate LOW→HIGH when hard clinical thresholds are crossed — your job is calibrated clinical judgement, not defensive escalation. Common stable presentations manageable with oral medication and nurse monitoring should be LOW.',
     responseMimeType: 'application/json', responseSchema: SCHEMA_RISK_ASSESSMENT, maxOutputTokens: 2500,
   });
   return { result: parseJsonResponse(responseText(response)), meta };
@@ -229,18 +294,21 @@ export async function runManagementStage(sessionId, transcriptSegment, dbClient)
     // Call 1 + RAG in parallel
     console.log(`[${sessionId}] Call 1: extracting clarifying findings + RAG retrieval`);
     let t0 = Date.now();
-    const [m1Result, stgContext] = await Promise.all([
+    const [m1Result, stgRetrieval] = await Promise.all([
       extractClarifyingFindings(transcriptSegment, vaultContext),
       retrieveTreatmentProtocols(dbClient, ragDiagnoses),
     ]);
     const clarifyingFindings = m1Result.result;
     await insertLlmResult(dbClient, sessionId, 'M1_clarifying_findings', 'management', 6, clarifyingFindings, { ...m1Result.meta, latency_ms: Date.now() - t0 });
-    await vaultUpdate(dbClient, sessionId, { clarifying_findings: clarifyingFindings });
+    await vaultUpdate(dbClient, sessionId, {
+      clarifying_findings: clarifyingFindings,
+      stg_retrieval: stgRetrieval,
+    });
 
     // Call 2
     console.log(`[${sessionId}] Call 2: generating problem list`);
     const t1 = Date.now();
-    const m2Result = await generateProvisionalDiagnosisAndRx(clarifyingFindings, vaultContext, stgContext, formulary);
+    const m2Result = await generateProvisionalDiagnosisAndRx(clarifyingFindings, vaultContext, stgRetrieval.context, formulary);
     const problemListOutput = m2Result.result;
     await insertLlmResult(dbClient, sessionId, 'M2_problem_list', 'management', 7, problemListOutput, { ...m2Result.meta, latency_ms: Date.now() - t1 });
     await vaultUpdate(dbClient, sessionId, { problem_list: problemListOutput });
@@ -268,11 +336,11 @@ export async function runManagementStage(sessionId, transcriptSegment, dbClient)
       if (key !== 'rdt_result' && val != null) vitals[key] = val;
     }
     const redFlags = vaultContext.extracted_concepts?.red_flags || [];
-    const ruleResult = runRuleEngine(problemListOutput, triageOutput, demographics, vitals, redFlags, vaultContext.extracted_concepts || {}, acuteConfidence);
+    const ruleResult = runRuleEngine(problemListOutput, riskAssessment, demographics, vitals, redFlags, vaultContext.extracted_concepts || {}, acuteConfidence);
 
     // Inject deterministic fields
     const finalTier = ruleResult.final_risk_tier;
-    const hoursToAuth = finalTier === 'HIGH' ? 0 : 4;
+    const hoursToAuth = finalTier === 'HIGH' ? 0 : 24;
     const authDeadline = hoursToAuth === 0
       ? 'IMMEDIATE — do not proceed without doctor contact'
       : new Date(Date.now() + hoursToAuth * 3600000).toLocaleString('en-GB', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' });
@@ -281,7 +349,7 @@ export async function runManagementStage(sessionId, transcriptSegment, dbClient)
     triageOutput.triage.tier = finalTier;
     triageOutput.triage.action = finalTier === 'HIGH'
       ? 'Call the referring doctor immediately. Do not dispense any medication until you have spoken to the doctor.'
-      : 'Proceed with the prescribed treatment plan. The doctor will review this case within 4 hours.';
+      : 'Proceed with the prescribed treatment plan. The doctor will review this case within 24 hours.';
     triageOutput.triage.rationale = riskAssessment.mitigation_plan?.risk_tier_rationale || '';
     triageOutput.triage.rule_engine = ruleResult;
     if (!triageOutput.doctor_handoff) triageOutput.doctor_handoff = {};
@@ -302,34 +370,3 @@ export async function runManagementStage(sessionId, transcriptSegment, dbClient)
   }
 }
 
-// ---------------------------------------------------------------------------
-// Streaming variant
-// ---------------------------------------------------------------------------
-
-export async function* streamManagement(transcriptSegment, vaultContext, dbClient) {
-  const demographics = vaultContext.demographics || {};
-  const concepts = vaultContext.extracted_concepts || {};
-  const knownAllergies = [...new Set([...(demographics.known_allergies || []), ...(concepts.allergies_reported || [])].map(a => a.toLowerCase()))];
-  const ddx = vaultContext.differential_table || [];
-  const ragDiagnoses = ddx.filter(d => d.disease).map(d => d.disease);
-  const stateName = stateFromDistrictCode((vaultContext.gps || {}).district_code || 'WB_UNKNOWN');
-  const formulary = loadFormulary();
-  const knownConditions = demographics.known_conditions || [];
-  if (Array.isArray(knownConditions)) ragDiagnoses.push(...knownConditions.filter(Boolean));
-
-  const [m1Result, stgContext] = await Promise.all([
-    extractClarifyingFindings(transcriptSegment, vaultContext),
-    retrieveTreatmentProtocols(dbClient, ragDiagnoses),
-  ]);
-  const clarifyingFindings = m1Result.result;
-
-  const streamPrompt = `Generate a problem-oriented management plan for a nurse in rural ${stateName}. Be clear and concise.\n\n` +
-    `Patient: ${JSON.stringify(demographics)}\nAllergies: ${JSON.stringify(knownAllergies)}\n` +
-    `Differential: ${JSON.stringify(ddx.slice(0, 3))}\nClarifying findings: ${JSON.stringify(clarifyingFindings)}\n` +
-    `STG protocols:\n${stgContext ? stgContext.slice(0, 2000) : 'Not available'}\nFormulary: ${JSON.stringify(formulary)}\n\n` +
-    'Write: 1) Provisional diagnosis with brief rationale 2) Any other active problems 3) Prescription with doses 4) Key instructions';
-
-  for await (const chunk of streamWithCascade(MODEL_M4_TRIAGE, streamPrompt, { maxOutputTokens: 1500 })) {
-    if (chunk.text) yield chunk.text;
-  }
-}

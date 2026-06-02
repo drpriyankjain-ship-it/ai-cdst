@@ -15,7 +15,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 import { vaultRead, vaultUpdate, vaultSetNested } from '../lib/db.js';
-import { generateWithCascade, streamWithCascade, parseJsonResponse, responseText, buildMultimodalContent } from '../lib/llmClient.js';
+import { generateWithCascade, parseJsonResponse, responseText, buildMultimodalContent } from '../lib/llmClient.js';
 import { MODEL_D1_CONCEPTS, MODEL_D2_DIFFERENTIAL, MODEL_D3_CLARIFYING } from '../lib/modelConfig.js';
 import { stateFromDistrictCode, loadBaselineDiseases, loadEpiPrior } from '../lib/epiUtils.js';
 
@@ -258,29 +258,6 @@ export async function generateDifferential(concepts, vaultContext, baselineLayer
     { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json', responseSchema: SCHEMA_DIFFERENTIAL, maxOutputTokens: 8000 },
   );
   return { result: validateDifferential(parseJsonResponse(responseText(response)).differential), meta };
-}
-
-// ---------------------------------------------------------------------------
-// Call 2 — streaming variant
-// ---------------------------------------------------------------------------
-
-export async function* streamDifferential(concepts, vaultContext, baselineLayer, epiLayer) {
-  const demographics = vaultContext.demographics || {};
-  const districtCode = (vaultContext.gps || {}).district_code || 'WB_UNKNOWN';
-  const stateName = stateFromDistrictCode(districtCode);
-
-  const prompt = [
-    `You are a clinical decision support system for a nurse in rural ${stateName}.\n` +
-    'Generate a ranked differential diagnosis. Write it as a readable numbered list with brief reasoning for each entry.',
-    `Patient: ${JSON.stringify(demographics)}`,
-    `Clinical features: ${JSON.stringify(concepts)}`,
-    baselineLayer,
-    epiLayer || '',
-  ].filter(Boolean).join('\n\n');
-
-  for await (const chunk of streamWithCascade(MODEL_D2_DIFFERENTIAL, prompt, { maxOutputTokens: 1500 })) {
-    if (chunk.text) yield chunk.text;
-  }
 }
 
 // ---------------------------------------------------------------------------

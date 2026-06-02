@@ -10,9 +10,9 @@
  */
 
 import { vaultRead, vaultUpdate } from '../lib/db.js';
-import { generateWithCascade, streamWithCascade, parseJsonResponse, responseText, buildMultimodalContent } from '../lib/llmClient.js';
+import { generateWithCascade, parseJsonResponse, responseText, buildMultimodalContent } from '../lib/llmClient.js';
 import { MODEL_H1_CHIEF_COMPLAINT, MODEL_H2_QUESTIONNAIRE } from '../lib/modelConfig.js';
-import { stateFromDistrictCode, loadBaselineDiseases, loadEpiPrior } from '../lib/epiUtils.js';
+import { stateFromDistrictCode } from '../lib/epiUtils.js';
 
 // ---------------------------------------------------------------------------
 // Patient record context builder
@@ -97,6 +97,21 @@ export function isComplaintMissing(chiefComplaint) {
   if (!value) return true;
   const empty = new Set(['unknown', 'unclear', 'not stated', 'not mentioned', 'n/a', 'none']);
   return empty.has(value);
+}
+
+// ---------------------------------------------------------------------------
+// Patient record fields builder
+// ---------------------------------------------------------------------------
+
+function buildPatientRecordFields() {
+  return {
+    past_medical_history: [],
+    family_history:       [],
+    social_history:       {},
+    current_medications:  [],
+    allergies:            [],
+    immunisation_flags:   [],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -245,7 +260,7 @@ export async function extractChiefComplaint(transcriptSegment, vaultContext, pho
 // Call 2 — Generate questionnaire
 // ---------------------------------------------------------------------------
 
-export async function generateQuestionnaire(chiefComplaint, vaultContext, baselineLayer, epiLayer, patientRecord, photos = []) {
+export async function generateQuestionnaire(chiefComplaint, vaultContext, patientRecord, photos = []) {
   const demographics = vaultContext.demographics || {};
   const districtCode = (vaultContext.gps || {}).district_code || 'WB_UNKNOWN';
   const stateName = stateFromDistrictCode(districtCode);
@@ -282,22 +297,37 @@ export async function generateQuestionnaire(chiefComplaint, vaultContext, baseli
     `CHIEF COMPLAINT:\n${JSON.stringify(chiefComplaint, null, 2)}`,
     spontaneousText,
     languageInstruction,
-    baselineLayer,
-    epiLayer,
     photos.length > 0 ? 'CLINICAL PHOTOS: The nurse has attached clinical photos. Include questions about any visible findings (e.g., describe the rash, when did the swelling start, etc.).' : '',
-    'CLINICAL FRAMEWORK FOR CHIEF COMPLAINT SECTION:\n' +
-    'Choose the framework that fits the presentation — do not force SOCRATES where it does not apply.\n' +
-    '  Pain / acute symptoms   → SOCRATES\n  Gynaecological/obstetric → Menstrual/obstetric history\n' +
-    '  Infertility              → Duration of trying, cycle regularity, prior pregnancies\n' +
-    '  Chronic/constitutional  → Duration, progression, systemic features\n  Psychiatric/behavioural → Onset, triggers, sleep, function, safety\n\n' +
-    'QUESTIONNAIRE DESIGN:\n- 4-8 sections depending on complexity\n- Each section: 3-5 questions\n' +
-    '- Chief complaint section is ALWAYS first\n- Questions within each section: most to least discriminating\n' +
-    '- Plain language — questions are read directly to the patient\n- follow_up: what to ask if the answer is yes or abnormal\n' +
-    '- discriminates: brief nurse-only note — not read to patient\n\n' +
+    'QUESTIONNAIRE STRUCTURE:\n\n' +
+    'Section 1 — History of Presenting Complaint (8–12 questions, always required):\n' +
+    'Use the appropriate framework for the chief complaint:\n' +
+    '  Pain / acute symptoms    → SOCRATES (site, onset, character, radiation, associations,\n' +
+    '                             timing, exacerbating/relieving factors, severity)\n' +
+    '  Skin / dermatological    → site, onset, spread, itch/pain, discharge, triggers\n' +
+    '  GI / abdominal           → site, onset, character, radiation, bowel habit, vomiting,\n' +
+    '                             blood in stool/vomit, diet relationship\n' +
+    '  Respiratory              → onset, progression, sputum, haemoptysis, exertional component\n' +
+    '  Gynaecological/obstetric → LMP, cycle regularity, obstetric history, discharge, pain\n' +
+    '  Chronic/constitutional   → duration, progression, weight loss, appetite, night sweats\n' +
+    '  Psychiatric/behavioural  → onset, triggers, sleep, function, safety\n' +
+    'After the framework questions, add 2–3 questions that discriminate between the most likely differentials.\n' +
+    'If additional_complaints is non-empty, extend Section 1 to cover each one — or open a separate HPI section if the second complaint is distinctly different (e.g. fever + pleuritic chest pain warrants two sections; fever + fatigue does not).\n\n' +
+    'Section 2 — Associated Symptoms (3–4 questions, always required):\n' +
+    'Key positives and negatives most discriminating for the differentials. Do not repeat Section 1 questions.\n\n' +
+    'Section 3 — Functional Impact (2 questions, always required):\n' +
+    'How is the illness affecting daily life — mobility, eating, drinking, work?\n' +
+    'Trajectory since onset: better, worse, or the same?\n\n' +
+    'Additional sections (2–3 questions each, include only if clinically indicated):\n' +
+    '  Relevant systems review — urinary symptoms for fever, neuro for headache, etc.\n' +
+    '  Obstetric/menstrual history — if gynaecological causes are in the differential.\n\n' +
+    '- Plain language — questions are read directly to the patient\n' +
+    '- follow_up: what to ask if the answer is yes or abnormal\n' +
+    '- Do not generate questions about medications, allergies, PMH, or family/social history — covered separately\n' +
+    '- Maximum 25 questions across all LLM-generated sections — only ask what is clinically relevant\n\n' +
     historyInstruction + '\n\n' +
-    'MANDATORY SAFETY QUESTIONS (always):\n- Female patients aged 12-50: current pregnancy status and LMP\n' +
-    '- All patients: confirm current medications\n- All patients: confirm allergies\n- Any red flags from phase 1: follow up\n\n' +
-    'known_and_verified: list confirmations for fields already in the record\npatient_record_fields: populate with questions to ASK — answers will come from the phase 2 transcript.',
+    'MANDATORY SAFETY QUESTIONS (always include):\n' +
+    '- Female patients aged 12–50: current pregnancy status and LMP\n' +
+    '- All patients: confirm current medications and allergies',
   ].filter(Boolean).join('\n\n');
 
   const contents = buildMultimodalContent(prompt, photos);
@@ -308,11 +338,14 @@ export async function generateQuestionnaire(chiefComplaint, vaultContext, baseli
       thinkingConfig: { thinkingBudget: 0 },
       responseMimeType: 'application/json',
       responseSchema: SCHEMA_QUESTIONNAIRE,
-      maxOutputTokens: 8000,
+      maxOutputTokens: 4000,
     },
   );
 
   const questionnaire = parseJsonResponse(responseText(response));
+
+  // Inject patient_record_fields deterministically — not from LLM output.
+  questionnaire.patient_record_fields = buildPatientRecordFields();
 
   // Inject fixed background history section for first/partial visits
   if (missingFields.length) {
@@ -322,52 +355,6 @@ export async function generateQuestionnaire(chiefComplaint, vaultContext, baseli
   return { result: questionnaire, meta };
 }
 
-// ---------------------------------------------------------------------------
-// Call 2 — Streaming variant
-// ---------------------------------------------------------------------------
-
-export async function* streamQuestionnaire(chiefComplaint, vaultContext, baselineLayer, epiLayer, patientRecord) {
-  const demographics = vaultContext.demographics || {};
-  const districtCode = (vaultContext.gps || {}).district_code || 'WB_UNKNOWN';
-  const stateName = stateFromDistrictCode(districtCode);
-  const lang = chiefComplaint.language_of_consultation || 'English';
-  const languageInstruction = lang === 'English' ? '' :
-    `LANGUAGE: The consultation is in ${lang}. After each question, add a romanised ${lang} translation in brackets.`;
-  const { knownContext, missingFields } = buildPatientRecordContext(patientRecord);
-
-  const prompt = [
-    `Generate a structured interview questionnaire for a nurse in rural ${stateName}. ` +
-    `Write it as clearly numbered sections with questions the nurse reads directly to the patient. Be concise — start immediately.\n\nPATIENT RECORD STATUS:\n${knownContext}`,
-    `Patient: ${JSON.stringify(demographics)}`,
-    `Chief complaint (primary): ${JSON.stringify(chiefComplaint.chief_complaint)}`,
-    chiefComplaint.additional_complaints?.length ? `Additional complaints: ${JSON.stringify(chiefComplaint.additional_complaints)}` : '',
-    languageInstruction,
-    baselineLayer,
-    epiLayer,
-    'Clinical framework — choose by presentation type:\n  Pain/acute → SOCRATES\n  Gynaecological/obstetric → menstrual/obstetric history\n  Chronic/constitutional → duration, progression, systemic features',
-    `Format: numbered sections with bullet questions. 4-8 sections, 3-5 questions each. Plain language. Primary complaint first. ` +
-    (missingFields.length ? `Collect missing history fields: ${missingFields.join(', ')}.` : 'Verify existing history — confirm what has changed.'),
-  ].filter(Boolean).join('\n\n');
-
-  for await (const chunk of streamWithCascade(
-    MODEL_H2_QUESTIONNAIRE,
-    prompt,
-    { maxOutputTokens: 1500 },
-  )) {
-    if (chunk.text) yield chunk.text;
-  }
-
-  // Append fixed background history section for first/partial visits
-  if (missingFields.length) {
-    const section = FIRST_VISIT_HISTORY_QUESTIONS;
-    yield `\n\n${section.section_title.toUpperCase()}\n`;
-    for (let i = 0; i < section.questions.length; i++) {
-      const q = section.questions[i];
-      yield `\n${i + 1}. ${q.question}\n`;
-      if (q.follow_up) yield `   → If yes / abnormal: ${q.follow_up}\n`;
-    }
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Schema validation
@@ -379,7 +366,6 @@ export function validateQuestionnaire(q) {
     opening_context: 'Conduct the structured interview below.',
     sections: [],
     mandatory_safety_questions: [],
-    prior_encounter_flags: [],
     patient_record_fields: {
       past_medical_history: [], family_history: [], social_history: {},
       current_medications: [], allergies: [], immunisation_flags: [],
@@ -401,7 +387,6 @@ export function validateQuestionnaire(q) {
     for (const qn of s.questions) {
       if (!qn.question) qn.question = '[Question text missing]';
       if (!qn.follow_up) qn.follow_up = '';
-      if (!qn.discriminates) qn.discriminates = '';
     }
   }
 
@@ -437,12 +422,7 @@ export function extractPatientRecordUpdate(questionnaire, chiefComplaint, sessio
 
 export async function runHistoryStage(sessionId, transcriptSegment, dbClient) {
   const vaultContext = await vaultRead(dbClient, sessionId);
-  const gps = vaultContext.gps || {};
-  const districtCode = gps.district_code || 'WB_UNKNOWN';
-  const currentMonth = new Date().getMonth() + 1;
   const patientRecord = vaultContext.patient_record || {};
-  const baselineLayer = loadBaselineDiseases();
-  const epiLayer = loadEpiPrior(districtCode, currentMonth);
 
   // Call 1
   console.log(`[${sessionId}] History stage Call 1: extracting chief complaint`);
@@ -465,7 +445,7 @@ export async function runHistoryStage(sessionId, transcriptSegment, dbClient) {
 
   // Call 2
   console.log(`[${sessionId}] History stage Call 2: generating questionnaire`);
-  let questionnaire = await generateQuestionnaire(chiefComplaint, vaultContext, baselineLayer, epiLayer, patientRecord);
+  let questionnaire = await generateQuestionnaire(chiefComplaint, vaultContext, patientRecord);
   questionnaire = validateQuestionnaire(questionnaire);
 
   const patientRecordStub = extractPatientRecordUpdate(questionnaire, chiefComplaint, sessionId);

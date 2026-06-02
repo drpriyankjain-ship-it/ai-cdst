@@ -47,10 +47,15 @@ async function run() {
       disease TEXT,
       section TEXT,
       content TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
       embedding vector(384),
       created_at TIMESTAMPTZ DEFAULT now()
     );
   `);
+  await client.query(`ALTER TABLE stg_chunks ADD COLUMN IF NOT EXISTS section TEXT DEFAULT 'general';`);
+  await client.query(`ALTER TABLE stg_chunks ADD COLUMN IF NOT EXISTS content_hash TEXT;`);
+  await client.query(`UPDATE stg_chunks SET content_hash = md5(source || E'\\n' || content) WHERE content_hash IS NULL;`);
+  await client.query(`ALTER TABLE stg_chunks ALTER COLUMN content_hash SET NOT NULL;`);
   console.log('  stg_chunks ✓');
 
   // 4. Confirmed encounters
@@ -110,6 +115,10 @@ async function run() {
   await client.query('CREATE INDEX IF NOT EXISTS idx_audio_records_user ON audio_records(user_id);');
   await client.query('CREATE INDEX IF NOT EXISTS idx_audio_records_status ON audio_records(status);');
   await client.query('CREATE INDEX IF NOT EXISTS idx_patient_records_pid ON patient_records(patient_id);');
+  await client.query('CREATE INDEX IF NOT EXISTS stg_chunks_disease_idx ON stg_chunks(disease);');
+  await client.query('CREATE INDEX IF NOT EXISTS stg_chunks_section_idx ON stg_chunks(section);');
+  await client.query('CREATE UNIQUE INDEX IF NOT EXISTS stg_chunks_source_content_hash_idx ON stg_chunks(source, content_hash);');
+  await client.query(`CREATE INDEX IF NOT EXISTS stg_chunks_embedding_idx ON stg_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);`);
   console.log('  indexes ✓');
 
   // Updated_at trigger function
