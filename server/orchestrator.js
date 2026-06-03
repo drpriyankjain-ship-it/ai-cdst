@@ -14,7 +14,7 @@ import { loadBaselineDiseases, loadEpiPrior } from './lib/epiUtils.js';
 import { extractChiefComplaint, generateQuestionnaire, validateQuestionnaire, extractPatientRecordUpdate } from './stages/historyStage.js';
 import { extractMedicalConcepts, generateDifferential, validateDifferential, generateClarifyingQuestions } from './stages/diagnosisStage.js';
 import { runManagementStage } from './stages/managementStage.js';
-import { uploadAudioToStorage } from './lib/storage.js';
+import { uploadAudioToStorage, uploadPhotoToStorage } from './lib/storage.js';
 
 // ffmpeg for phase-level audio concatenation at session end
 let _ffmpeg = null;
@@ -63,12 +63,16 @@ class SessionState {
     this.userId = null;
     // Phase audio buffers — arrays of Buffer objects, one per 12s segment
     this.phaseAudioBuffers = { 1: [], 2: [], 3: [] };
+    // Phase photo buffers — arrays of { buffer, mimeType }, archived to S3 at session end
+    this.phasePhotoBuffers = { 1: [], 2: [], 3: [] };
     this.currentPhase = 1;
     this.markerRetryCount = { 1: 0, 2: 0, 3: 0 };
     // Timing
     this.networkRttMs = null;
     this.phaseStartAt = null;
     this.phaseTimings = [];
+    // Device local month (1-12) sent in init — used for epi prior season lookup
+    this.local_month = null;
   }
 }
 
@@ -90,14 +94,15 @@ function notifyDoctor(sessionId, triageOutput) {
 }
 
 /**
- * Collect all photos from vault across all phases.
+ * Collect all photos from session state across all phases as inline base64 objects for Gemini.
+ * Photos are buffered in memory during the session; URLs are written to vault at session end.
  */
-function collectAllPhotos(vaultCtx) {
-  const sessionPhotos = vaultCtx.session_photos || {};
+function collectAllPhotos(state) {
   const all = [];
-  for (const phaseKey of Object.keys(sessionPhotos)) {
-    const photos = sessionPhotos[phaseKey];
-    if (Array.isArray(photos)) all.push(...photos);
+  for (const phase of [1, 2, 3]) {
+    for (const { buffer, mimeType } of (state.phasePhotoBuffers[phase] || [])) {
+      all.push({ mimeType, data: buffer.toString('base64') });
+    }
   }
   return all;
 }
@@ -148,7 +153,7 @@ function buildPhaseTiming(state, callMetas, stageName) {
 // Runs asynchronously after session end; does not block the nurse.
 // ---------------------------------------------------------------------------
 
-async function concatAndArchiveAudio(sessionId, phaseAudioBuffers, dbClient) {
+async function concatAndArchiveAudio(sessionId, phaseAudioBuffers, phasePhotoBuffers, dbClient) {
   const ffmpeg = await getFfmpeg();
   const audioUrls = {};
   const retainUntil = new Date(Date.now() + 3650 * 86400000).toISOString();
@@ -217,6 +222,29 @@ async function concatAndArchiveAudio(sessionId, phaseAudioBuffers, dbClient) {
     });
     console.log(`[${sessionId}] Audio vault updated with ${Object.keys(audioUrls).length} phase URL(s)`);
   }
+
+  // Archive photos — one upload per photo, keyed by phase
+  const photosByPhase = {};
+  for (const phase of [1, 2, 3]) {
+    const photos = phasePhotoBuffers[phase] || [];
+    if (!photos.length) continue;
+    const phaseUrls = [];
+    for (let i = 0; i < photos.length; i++) {
+      const { buffer, mimeType } = photos[i];
+      try {
+        const { publicUrl } = await uploadPhotoToStorage(buffer, sessionId, phase, i, mimeType);
+        phaseUrls.push({ mimeType, url: publicUrl });
+      } catch (err) {
+        console.error(`[${sessionId}] Phase ${phase} photo ${i} upload failed: ${err.message}`);
+      }
+    }
+    if (phaseUrls.length) photosByPhase[`phase_${phase}`] = phaseUrls;
+  }
+
+  if (Object.keys(photosByPhase).length) {
+    await vaultUpdate(dbClient, sessionId, { session_photos: photosByPhase });
+    console.log(`[${sessionId}] session_photos vault updated — ${Object.values(photosByPhase).flat().length} photo(s)`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -250,13 +278,13 @@ async function handleMarkerA(ws, state, t) {
   (async () => {
     try {
       const vaultCtx = await vaultRead(dbClient, sessionId);
-      const photos = collectAllPhotos(vaultCtx);
+      const photos = collectAllPhotos(state);
       if (photos.length) console.log(`[${sessionId}] Including ${photos.length} clinical photo(s) in H1/H2`);
       const patientRecord = vaultCtx.patient_record || {};
       const gps = vaultCtx.gps || {};
       const districtCode = gps.district_code || 'WB_UNKNOWN';
       const baseline = loadBaselineDiseases();
-      const epi = loadEpiPrior(districtCode, new Date().getMonth() + 1);
+      const epi = loadEpiPrior(districtCode, state.local_month ?? new Date().getMonth() + 1);
 
       console.log(`[${sessionId}] History Call 1: extracting chief complaint from ${audioBuffers.length} segment(s)`);
       let t0 = Date.now();
@@ -322,11 +350,11 @@ async function handleMarkerB(ws, state, t) {
   (async () => {
     try {
       const vaultCtx = await vaultRead(dbClient, sessionId);
-      const photos = collectAllPhotos(vaultCtx);
+      const photos = collectAllPhotos(state);
       if (photos.length) console.log(`[${sessionId}] Including ${photos.length} clinical photo(s) in D1/D2/D3`);
       const gps = vaultCtx.gps || {};
       const baseline = loadBaselineDiseases();
-      const epi = loadEpiPrior(gps.district_code || 'WB_UNKNOWN', new Date().getMonth() + 1);
+      const epi = loadEpiPrior(gps.district_code || 'WB_UNKNOWN', state.local_month ?? new Date().getMonth() + 1);
 
       console.log(`[${sessionId}] Diagnosis Call 1: extracting concepts from ${audioBuffers.length} segment(s)`);
       let t0 = Date.now();
@@ -500,8 +528,8 @@ async function handleSessionEnd(ws, state, t) {
 
   // Async: concatenate phase audio per phase and archive to Supabase Storage.
   // Does not block session close — fires in background.
-  const { sessionId, dbClient, phaseAudioBuffers } = state;
-  concatAndArchiveAudio(sessionId, phaseAudioBuffers, dbClient).then(() => {
+  const { sessionId, dbClient, phaseAudioBuffers, phasePhotoBuffers } = state;
+  concatAndArchiveAudio(sessionId, phaseAudioBuffers, phasePhotoBuffers, dbClient).then(() => {
     console.log(`[${sessionId}] Audio archive complete`);
   }).catch(err => {
     console.error(`[${sessionId}] Audio archive error: ${err.message}`);
@@ -542,6 +570,9 @@ export function mountWebSocket(app) {
           state = new SessionState(sessionId, pool);
           state.nurseId = claims.nurse_id || claims.user_id;
           state.userId = claims.user_id;
+          if (msg.local_month && msg.local_month >= 1 && msg.local_month <= 12) {
+            state.local_month = msg.local_month;
+          }
           _active.set(sessionId, state);
           wsSend(ws, { type: 'session_ready', session_id: sessionId, is_new_patient: Object.keys(patientRecord).length === 0 });
           wsSend(ws, { type: 'ping', ping_ts: Date.now() });

@@ -15,7 +15,6 @@ import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { getPool, vaultRead, vaultSetNested } from '../lib/db.js';
 import { requireAuth } from '../lib/auth.js';
 import { _active } from '../orchestrator.js';
 
@@ -87,16 +86,14 @@ router.post('/:sessionId/audio-segment', requireAuth, uploadFields, async (req, 
     const totalBytes = sessionState.phaseAudioBuffers[phase].reduce((s, b) => s + b.length, 0);
     console.log(`[${sessionId}] Buffered segment ${segmentIndex} phase=${phase} size=${audioBuffer.length}B total=${totalSegments} segs (${(totalBytes / 1024).toFixed(0)}KB)`);
 
-    // Handle photos — store as base64 in vault
+    // Handle photos — buffer in session state; archived to S3 at session end (same pattern as audio)
     if (photoFiles.length > 0) {
-      const pool = getPool();
-      const photosArray = photoFiles.map(f => ({
-        mimeType: f.mimetype || 'image/jpeg',
-        data: fs.readFileSync(f.path).toString('base64'),
-      }));
-      await vaultSetNested(pool, sessionId, ['session_photos', `phase_${phase}`], photosArray);
-      photoFiles.forEach(f => { try { fs.unlinkSync(f.path); } catch {} });
-      console.log(`[${sessionId}] ${photoFiles.length} photo(s) stored in vault for phase ${phase}`);
+      for (const f of photoFiles) {
+        const photoBuffer = fs.readFileSync(f.path);
+        sessionState.phasePhotoBuffers[phase].push({ buffer: photoBuffer, mimeType: f.mimetype || 'image/jpeg' });
+        try { fs.unlinkSync(f.path); } catch {}
+      }
+      console.log(`[${sessionId}] ${photoFiles.length} photo(s) buffered in memory for phase ${phase}`);
     }
 
     res.json({

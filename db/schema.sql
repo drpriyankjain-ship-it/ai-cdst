@@ -97,9 +97,12 @@ CREATE TABLE sessions (
 --   "doctor_auth_at": "2024-09-14T14:10:00Z",
 --   "doctor_notes": "Approved. Confirm weight-based dosing.",
 --
---   -- PHOTOS (written by photo upload route, keyed by phase)
+--   -- PHOTOS (written async at session end alongside audio — same pattern)
+--   -- During the session, photos are buffered in server RAM (phasePhotoBuffers in SessionState).
+--   -- At session end, each photo is uploaded to Supabase Storage and its URL recorded here.
+--   -- Photos are compressed + resized to max 1280px on the mobile before upload.
 --   "session_photos": {
---     "phase_1": [ { "mimeType": "image/jpeg", "data": "<base64>" } ],
+--     "phase_1": [ { "mimeType": "image/jpeg", "url": "https://.../phase1_0.jpg" } ],
 --     "phase_2": [ ... ]
 --   },
 --

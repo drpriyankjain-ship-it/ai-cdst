@@ -146,12 +146,13 @@ class WSService {
   /**
    * Initialize a new session
    */
-  initSession(patientId, patientName, gps = {}) {
+  initSession(patientId, patientName, gps = {}, local_month = null) {
     return this._send({
       type: 'init',
       patient_id: patientId,
       patient_name: patientName,
       gps,
+      local_month,
     });
   }
 
