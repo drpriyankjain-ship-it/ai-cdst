@@ -5,7 +5,8 @@
  */
 
 const WS_RECONNECT_DELAY = 2000;
-const WS_MAX_RECONNECTS = 5;
+const WS_MAX_RECONNECTS = 10;
+const WS_KEEPALIVE_INTERVAL = 30000; // 30s — keeps connection alive past nginx/ELB idle timeout
 
 class WSService {
   constructor() {
@@ -16,6 +17,7 @@ class WSService {
     this.reconnectAttempts = 0;
     this.listeners = {};
     this._intentionalClose = false;
+    this._keepaliveInterval = null;
   }
 
   /**
@@ -29,7 +31,8 @@ class WSService {
   /**
    * Register event listeners
    * Events: session_ready, stage_token, stage_complete, error, 
-   *         transcript, audio_confirmed, session_closed, connection_state
+   *         transcript, audio_confirmed, session_closed, connection_state,
+   *         session_reconnected
    */
   on(event, callback) {
     if (!this.listeners[event]) this.listeners[event] = [];
@@ -55,6 +58,22 @@ class WSService {
     this._doConnect();
   }
 
+  _startKeepalive() {
+    this._stopKeepalive();
+    this._keepaliveInterval = setInterval(() => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this._send({ type: 'pong', ping_ts: Date.now() });
+      }
+    }, WS_KEEPALIVE_INTERVAL);
+  }
+
+  _stopKeepalive() {
+    if (this._keepaliveInterval) {
+      clearInterval(this._keepaliveInterval);
+      this._keepaliveInterval = null;
+    }
+  }
+
   _doConnect() {
     if (this.ws) {
       try { this.ws.close(); } catch {}
@@ -71,6 +90,13 @@ class WSService {
       console.log('[WS] Connected');
       this.reconnectAttempts = 0;
       this._emit('connection_state', { state: 'connected' });
+      this._startKeepalive();
+
+      // If we have an active session, auto-reconnect it on the server side
+      if (this.sessionId) {
+        console.log(`[WS] Auto-reconnecting session ${this.sessionId}`);
+        this.reconnectSession(this.sessionId);
+      }
     };
 
     this.ws.onmessage = (event) => {
@@ -90,10 +116,11 @@ class WSService {
     this.ws.onclose = (event) => {
       console.log(`[WS] Closed: code=${event.code} reason=${event.reason}`);
       this._emit('connection_state', { state: 'disconnected' });
+      this._stopKeepalive();
 
       if (!this._intentionalClose && this.reconnectAttempts < WS_MAX_RECONNECTS) {
         this.reconnectAttempts++;
-        const delay = WS_RECONNECT_DELAY * this.reconnectAttempts;
+        const delay = WS_RECONNECT_DELAY * Math.min(this.reconnectAttempts, 5); // cap backoff at 10s
         console.log(`[WS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
         this._emit('connection_state', { state: 'reconnecting', attempt: this.reconnectAttempts });
         setTimeout(() => this._doConnect(), delay);
@@ -106,6 +133,10 @@ class WSService {
       case 'session_ready':
         this.sessionId = msg.session_id;
         this._emit('session_ready', msg);
+        break;
+      case 'session_reconnected':
+        console.log(`[WS] Session reconnected: ${msg.session_id}`);
+        this._emit('session_reconnected', msg);
         break;
       case 'stage_token':
         this._emit('stage_token', { stage: msg.stage, token: msg.token });
@@ -123,6 +154,12 @@ class WSService {
         this._emit('session_closed', msg);
         break;
       case 'error':
+        // Auto-reconnect session if server lost state
+        if (msg.code === 'SESSION_LOST' && this.sessionId) {
+          console.log(`[WS] Server lost session state — reconnecting ${this.sessionId}`);
+          this.reconnectSession(this.sessionId);
+          return; // Don't propagate to UI
+        }
         this._emit('error', msg);
         break;
       case 'ping':
@@ -213,6 +250,7 @@ class WSService {
    */
   disconnect() {
     this._intentionalClose = true;
+    this._stopKeepalive();
     if (this.ws) {
       try { this.ws.close(1000, 'Client disconnect'); } catch {}
       this.ws = null;

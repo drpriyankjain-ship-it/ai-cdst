@@ -473,11 +473,37 @@ export function mountWebSocket(app) {
           // Measure initial network RTT
           wsSend(ws, { type: 'ping', ping_ts: Date.now() });
           console.log(`[${sessionId}] Session started — patient=${msg.patient_id}`);
+        } else if (msgType === 'reconnect' && !state && msg.session_id) {
+          // Restore session state from vault after WS reconnection
+          const sid = msg.session_id;
+          console.log(`[${sid}] Reconnect request from user ${claims.user_id}`);
+          try {
+            const vault = await vaultRead(pool, sid);
+            if (!vault) {
+              wsSend(ws, { type: 'error', code: 'SESSION_NOT_FOUND', message: `Session ${sid} not found` });
+              return;
+            }
+            state = await SessionState.fromVault(sid, pool);
+            state.nurseId = claims.nurse_id || claims.user_id;
+            state.userId = claims.user_id;
+            _active.set(sid, state);
+            wsSend(ws, { type: 'session_reconnected', session_id: sid });
+            // Re-measure network RTT
+            wsSend(ws, { type: 'ping', ping_ts: Date.now() });
+            console.log(`[${sid}] Session reconnected — state restored from vault`);
+          } catch (e) {
+            console.error(`[${sid}] Reconnect failed:`, e.message);
+            wsSend(ws, { type: 'error', code: 'RECONNECT_ERROR', message: e.message });
+          }
         } else if (msgType === 'marker' && state) {
           const marker = msg.marker;
           if (marker === 'history_complete') await handleMarkerA(ws, state, msg.t);
           else if (marker === 'diagnosis_complete') await handleMarkerB(ws, state, msg.t);
           else if (marker === 'management_complete') await handleMarkerC(ws, state, msg.t);
+        } else if (msgType === 'marker' && !state) {
+          // Marker received but session state is lost — tell client to reconnect
+          console.warn(`[WS] Marker received without session state — asking client to reconnect`);
+          wsSend(ws, { type: 'error', code: 'SESSION_LOST', message: 'Session state lost. Please reconnect with session_id.' });
         } else if (msgType === 'session_end' && state) {
           await handleSessionEnd(ws, state, msg.t);
         } else if (msgType === 'audio_uploaded' && state) {

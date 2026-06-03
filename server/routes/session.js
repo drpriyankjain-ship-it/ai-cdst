@@ -14,7 +14,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { getPool, vaultRead, vaultAppendTranscript, vaultSetNested, upsertSessionAudio } from '../lib/db.js';
 import { requireAuth } from '../lib/auth.js';
-import { gemini } from '../lib/llmClient.js';
+import { generateWithCascade, responseText } from '../lib/llmClient.js';
+import { TIER_FAST } from '../lib/modelConfig.js';
 import { uploadAudioToStorage } from '../lib/storage.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -50,40 +51,41 @@ const uploadFields = upload.fields([
 
 /**
  * Transcribe audio file using Gemini (supports Hindi/English code-switching)
+ * Uses model cascade so deprecated models are automatically skipped.
  */
 async function transcribeWithGemini(filePath, mimeType) {
   const audioBuffer = fs.readFileSync(filePath);
   const base64Audio = audioBuffer.toString('base64');
 
-  const response = await gemini.models.generateContent({
-    model: 'gemini-2.0-flash',
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          {
-            inlineData: {
-              mimeType: mimeType || 'audio/mp4',
-              data: base64Audio,
-            },
+  const contents = [
+    {
+      role: 'user',
+      parts: [
+        {
+          inlineData: {
+            mimeType: mimeType || 'audio/mp4',
+            data: base64Audio,
           },
-          {
-            text: 'Transcribe this audio recording of a nurse-patient clinical consultation. ' +
-              'The conversation may be in Hindi, English, or a mix of both. ' +
-              'Output ONLY the transcript text in the original language(s) spoken. ' +
-              'Do not add any commentary, labels, or formatting — just the raw transcript.',
-          },
-        ],
-      },
-    ],
-    config: {
-      thinkingConfig: { thinkingBudget: 0 },
-      maxOutputTokens: 8000,
+        },
+        {
+          text: 'Transcribe this audio recording of a nurse-patient clinical consultation. ' +
+            'The conversation may be in Hindi, English, or a mix of both. ' +
+            'Output ONLY the transcript text in the original language(s) spoken. ' +
+            'Do not add any commentary, labels, or formatting — just the raw transcript.',
+        },
+      ],
     },
+  ];
+
+  const { response, meta } = await generateWithCascade(TIER_FAST, contents, {
+    thinkingConfig: { thinkingBudget: 0 },
+    maxOutputTokens: 8000,
   });
 
-  const transcript = response.text || '';
+  const transcript = responseText(response) || '';
   const duration = audioBuffer.length / (16000 * 2); // rough estimate for display
+
+  console.log(`[Transcription] Model used: ${meta.model_used}, cost: $${meta.cost_usd.toFixed(6)}`);
 
   return { transcript: transcript.trim(), confidence: 0.95, duration };
 }

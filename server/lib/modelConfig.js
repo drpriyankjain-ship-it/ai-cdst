@@ -5,9 +5,9 @@
  * Direct port of model_config.py
  */
 
-export const TIER_FAST              = ['gemini-2.5-flash-lite', 'gemini-2.0-flash', 'gemini-2.5-flash'];
-export const TIER_STANDARD          = ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.0-flash'];
-export const TIER_STANDARD_CRITICAL = ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'];
+export const TIER_FAST              = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
+export const TIER_STANDARD          = ['gemini-3.5-flash', 'gemini-2.5-flash'];
+export const TIER_STANDARD_CRITICAL = ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.5-pro'];
 
 // ── History Stage ────────────────────────────────────────────────────────────
 export const MODEL_H1_CHIEF_COMPLAINT = TIER_FAST;       // extract_chief_complaint — extraction only

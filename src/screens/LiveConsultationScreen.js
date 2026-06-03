@@ -22,6 +22,7 @@ import {
 
 const AUTH_TOKEN_KEY = '@nurseai_auth_token';
 const API_BASE = process.env.EXPO_PUBLIC_API_URL || (__DEV__ ? 'http://172.20.10.2:3000' : 'https://v2.nurseai.in');
+const PROCESSING_TIMEOUT_MS = 90000; // 90s — if no response, show error
 
 const PHASE_LABELS = {
   1: {title: 'Phase 1: Opening', instruction: 'Ask patient name, age, village, and chief complaint (~30 seconds)', marker: 'history_complete', next: 'Finish Opening →'},
@@ -44,6 +45,8 @@ const LiveConsultationScreen = ({navigation}) => {
   const recordingRef = useRef(null);
   const recordingIntervalRef = useRef(null);
   const sessionStartRef = useRef(null);
+  const processingTimeoutRef = useRef(null);
+  const lastMarkerPhaseRef = useRef(null);
 
   // AI output state
   const [streamingText, setStreamingText] = useState('');
@@ -92,6 +95,11 @@ const LiveConsultationScreen = ({navigation}) => {
       }),
 
       wsService.on('stage_complete', ({stage, data, timing}) => {
+        // Clear processing timeout — server responded
+        if (processingTimeoutRef.current) {
+          clearTimeout(processingTimeoutRef.current);
+          processingTimeoutRef.current = null;
+        }
         setIsProcessing(false);
         setStreamingText('');
         setStreamingLabel('');
@@ -133,8 +141,21 @@ const LiveConsultationScreen = ({navigation}) => {
       wsService.on('error', (err) => {
         console.error('[LiveConsultation] Error:', err);
         if (err.code === 'HISTORY_STAGE_ERROR' || err.code === 'DIAGNOSIS_STAGE_ERROR' || err.code === 'MANAGEMENT_STAGE_ERROR') {
+          // Clear processing timeout — server responded (with error)
+          if (processingTimeoutRef.current) {
+            clearTimeout(processingTimeoutRef.current);
+            processingTimeoutRef.current = null;
+          }
           setIsProcessing(false);
-          Alert.alert('Pipeline Error', err.message || 'An error occurred during analysis. Please try again.');
+          setStreamingLabel('');
+          Alert.alert(
+            'Analysis Failed',
+            err.message || 'An error occurred during analysis.',
+            [
+              { text: 'Start New Consultation', style: 'destructive', onPress: () => { wsService.disconnect(); handleNewSession(); } },
+              { text: 'OK', style: 'default' },
+            ]
+          );
         }
       }),
 
@@ -326,7 +347,49 @@ const LiveConsultationScreen = ({navigation}) => {
     // Send marker to trigger LLM pipeline
     setStreamingLabel('AI is analyzing...');
     const elapsed = sessionStartRef.current ? Math.round((Date.now() - sessionStartRef.current) / 1000) : 0;
+    lastMarkerPhaseRef.current = currentPhase;
     wsService.sendMarker(phaseInfo.marker, elapsed);
+
+    // Start processing timeout — if server never responds, let user recover
+    if (processingTimeoutRef.current) clearTimeout(processingTimeoutRef.current);
+    processingTimeoutRef.current = setTimeout(() => {
+      processingTimeoutRef.current = null;
+      setIsProcessing(false);
+      setStreamingLabel('');
+      Vibration.vibrate(400);
+      Alert.alert(
+        'Analysis Timed Out',
+        'The server did not respond in time. This may be due to a network issue or server error.',
+        [
+          {
+            text: 'Retry',
+            onPress: () => {
+              // Re-send the marker for the same phase
+              setIsProcessing(true);
+              setStreamingLabel('AI is analyzing... (retry)');
+              const retryElapsed = sessionStartRef.current ? Math.round((Date.now() - sessionStartRef.current) / 1000) : 0;
+              wsService.sendMarker(phaseInfo.marker, retryElapsed);
+              // Restart timeout
+              processingTimeoutRef.current = setTimeout(() => {
+                processingTimeoutRef.current = null;
+                setIsProcessing(false);
+                setStreamingLabel('');
+                Alert.alert(
+                  'Still No Response',
+                  'The server is not responding. Please start a new consultation.',
+                  [{ text: 'Start New Consultation', onPress: () => { wsService.disconnect(); handleNewSession(); } }]
+                );
+              }, PROCESSING_TIMEOUT_MS);
+            },
+          },
+          {
+            text: 'Start New Consultation',
+            style: 'destructive',
+            onPress: () => { wsService.disconnect(); handleNewSession(); },
+          },
+        ]
+      );
+    }, PROCESSING_TIMEOUT_MS);
 
     // Clear photos for next phase
     setPhotos([]);
@@ -358,6 +421,11 @@ const LiveConsultationScreen = ({navigation}) => {
   }, [stopRecording]);
 
   const handleNewSession = useCallback(() => {
+    // Clear any pending processing timeout
+    if (processingTimeoutRef.current) {
+      clearTimeout(processingTimeoutRef.current);
+      processingTimeoutRef.current = null;
+    }
     setSessionState('idle');
     setPatientName('');
     setPatientId('');
@@ -373,6 +441,7 @@ const LiveConsultationScreen = ({navigation}) => {
     setRecordingSeconds(0);
     setSessionId(null);
     setPhotos([]);
+    setIsProcessing(false);
   }, []);
 
   // ---------------------------------------------------------------------------

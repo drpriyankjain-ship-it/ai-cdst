@@ -22,7 +22,6 @@ const PRICING = {
   'gemini-2.5-flash':      { input: 0.30, output: 2.50 },
   'gemini-2.5-flash-lite': { input: 0.10, output: 0.40 },
   'gemini-2.5-pro':        { input: 1.25, output: 10.00 },
-  'gemini-2.0-flash':      { input: 0.10, output: 0.40 },
 };
 
 /**
@@ -151,7 +150,7 @@ export async function generateWithCascade(models, contents, config = {}) {
     } catch (err) {
       const code = err.status || err.code || 0;
       const msg = (err.message || '').toLowerCase();
-      const shouldCascade = CASCADE_STATUSES.has(code) || msg.includes('503') || msg.includes('429') || msg.includes('unavailable') || msg.includes('overloaded') || msg.includes('resource_exhausted');
+      const shouldCascade = CASCADE_STATUSES.has(code) || msg.includes('503') || msg.includes('429') || msg.includes('unavailable') || msg.includes('overloaded') || msg.includes('resource_exhausted') || msg.includes('no longer available') || msg.includes('not found');
       if (!shouldCascade) throw err;
       lastErr = err;
       console.warn(`[LLM] Gemini ${code || 'error'} on ${model} — cascading to next model`);
