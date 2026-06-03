@@ -38,8 +38,7 @@ cdst/
 │   │   └── storage.js              # S3-compatible audio storage
 │   ├── routes/
 │   │   ├── auth.js                 # POST /api/auth/...
-│   │   ├── audio.js                # POST /api/audio/... (audio upload + transcription)
-│   │   ├── session.js              # GET/POST /api/session/...
+│   │   ├── session.js              # POST /api/session/:id/audio-segment + status/doctor-auth
 │   │   ├── dashboard.js            # GET /api/dashboard/...
 │   │   └── transcripts.js          # GET /api/transcripts/...
 │   └── scripts/
@@ -62,6 +61,7 @@ cdst/
 │   ├── formulary_wb.json           # SHC-HWC essential medicines (MoHFW Operational Guidelines, Annexures 1 & 2)
 │   ├── escalation_rules.json       # Rule engine configuration (MO reviewed)
 │   ├── must_not_miss.json          # Must-not-miss diagnoses list (MO reviewed) — loaded by Diagnosis Stage
+│   ├── generic_proforma.json       # Static fallback questionnaire returned when H1 fails twice
 │   └── rag_disease_aliases.json    # Disease alias map for STG ingestion disease tagging
 ├── db/
 │   └── schema.sql                  # Postgres schema reference
@@ -80,7 +80,8 @@ cdst/
 │   │   ├── continuous_stream_pipeline.html   # Audio streaming architecture diagram
 │   │   ├── cdst_engineering_overview.html    # Engineering overview diagram
 │   │   ├── rag_brief.md                      # Engineering brief for RAG setup
-│   │   └── rag_implementation_status.md      # Corpus ingestion status and smoke test results
+│   │   ├── rag_implementation_status.md      # Corpus ingestion status and smoke test results
+│   │   └── audio_streaming_redesign.md       # Short-segment Gemini audio architecture — implemented
 │   ├── clinical/
 │   │   ├── MO_REVIEW_CHECKLIST.md            # Site onboarding checklist for Medical Officers
 │   │   ├── bedside_tools_crosscheck.md       # Guideline citations for bedside_tools.json
@@ -111,7 +112,7 @@ cdst/
 | Backend | Node.js — Express + express-ws |
 | Database | Postgres + pgvector (hosted on Supabase) |
 | Object storage | S3-compatible (audio files) |
-| STT | Deepgram streaming WebSocket |
+| STT | Gemini audio inline input — no separate STT service |
 | LLM | Gemini via Google Gemini API (`@google/genai` SDK) — model assignments in `server/lib/modelConfig.js` |
 | Embeddings | sentence-transformers/all-MiniLM-L6-v2 (384-dim) |
 | Mobile | React Native (Expo 54) |
@@ -124,8 +125,11 @@ cdst/
 ## The consultation flow
 
 A single WebSocket opens when the nurse starts the session and stays open
-until the session ends. Audio is uploaded in chunks via REST (`/api/audio/`),
-transcribed via Deepgram, and the transcript is accumulated server-side.
+until the session ends. The app records in 12-second rolling m4a segments;
+each completed segment is uploaded immediately via REST to the server, which
+buffers it in memory by phase. At each marker press, the server passes all
+buffered segments for that phase directly to Gemini (H1/D1/M1) as multi-part
+audio inlineData — Gemini transcribes and reasons in a single call.
 The nurse presses three buttons:
 
 **Marker A** — ~30 seconds in. Patient has stated name, age, village, chief
@@ -144,9 +148,11 @@ Button presses send a lightweight JSON control message over the same WebSocket:
 `{ "type": "marker", "marker": "history_complete", "t": 94.3 }` where t is
 session-relative seconds.
 
-The nurse never reviews or discards recordings. Audio is uploaded in chunks during
-the session and assembled post-session. The complete audio is uploaded to S3 in the
-background (async, does not block the nurse) with a 3650-day (10-year) retention policy.
+The nurse never reviews or discards recordings. At session end, the server
+concatenates each phase's buffered segments into a single properly-muxed m4a
+using `fluent-ffmpeg` and archives one file per phase to Supabase Storage
+(`sessions/{sessionId}/phase{N}.m4a`). Retention: 3650 days (10 years).
+The ffmpeg concat runs async after session close and does not block the nurse.
 
 ---
 
@@ -169,19 +175,15 @@ HTTP); the orchestrator imports from historyStage, diagnosisStage, and managemen
 
 { "type": "session_end",    "t": 742.0 }
 
-{ "type": "audio_uploaded", "url": "s3://...", "codec": "opus",
-  "duration_seconds": 742, "size_bytes": 1893422 }
-
 { "type": "pong",           "ping_ts": 1234567890 }
-
-{ "type": "transcription_timing", "transcription_ms": 340 }
 ```
 
 **Server → Client:**
 ```
 { "type": "session_ready",   "session_id": "sess_abc123", "is_new_patient": true }
 { "type": "ping",            "ping_ts": 1234567890 }
-{ "type": "transcript",      "text": "...", "is_final": true }
+{ "type": "retry_marker",    "marker": "history_complete|diagnosis_complete|management_complete",
+  "reason": "no_audio_buffered|gemini_error" }
 { "type": "stage_complete",  "stage": "history|diagnosis|management", "data": {...} }
 { "type": "session_closed",  "risk_tier": "low|high" }
 { "type": "audio_confirmed" }
@@ -190,7 +192,9 @@ HTTP); the orchestrator imports from historyStage, diagnosisStage, and managemen
 
 Note: there are no `stage_token` streaming messages. All stage calls are
 non-streaming — the full structured result arrives in `stage_complete`.
-Audio is not sent over the WebSocket; it goes via REST (`POST /api/audio/`).
+Audio is not sent over the WebSocket; 12-second m4a segments go via REST
+(`POST /api/session/:id/audio-segment`). No Deepgram — Gemini transcribes
+directly from the buffered audio at each marker press.
 
 ### Authentication
 
@@ -207,32 +211,38 @@ reliably send custom headers).
    `session_ready` with a generated session_id, then immediately sends a `ping`
    to measure network RTT.
 
-2. **Audio** — audio chunks are uploaded via `POST /api/audio/` (REST, not
-   WebSocket). The route appends transcript segments to the Vault. Each upload
-   response includes transcription timing which the client reports back via
-   `transcription_timing`.
+2. **Audio segments** — the app records in 12-second rolling m4a segments.
+   Each completed segment is uploaded via `POST /api/session/:id/audio-segment`
+   with a `phase` tag (1/2/3). The server reads it into a Buffer and appends to
+   `state.phaseAudioBuffers[phase]`. No transcription at upload time.
+   Segments are not written to disk beyond the multer temp file (deleted immediately).
 
-3. **Deepgram transcripts** — `DeepgramClient` receives final and interim
-   transcript events. Final transcripts are appended to `state.transcriptFull` in
-   memory and flushed to `sessions.data.transcript_full` in Postgres via
-   `vaultAppendTranscript()`.
-
-4. **Marker A (history_complete)** — reads phase 1 transcript from Vault.
-   Writes `marker_a_at` to Vault. Runs History Stage sequentially:
-   - H1: extracts chief complaint
-   - H2: generates questionnaire + validates it; writes to Vault
+3. **Marker A (history_complete)** — passes `state.phaseAudioBuffers[1]` to
+   History Stage. Writes `marker_a_at` to Vault. Sets `currentPhase = 2`.
+   Retry logic: if buffer is empty → sends `retry_marker` to client; second failure →
+   returns static generic proforma (`data/generic_proforma.json`).
+   Runs History Stage sequentially:
+   - H1: receives audio buffers, transcribes phase 1, extracts chief complaint;
+     `transcript` field written to `transcript_segments.phase_1` in Vault.
+   - H2: generates questionnaire + validates it; writes to Vault.
    Sends `stage_complete` with the full questionnaire JSON.
 
-5. **Marker B (diagnosis_complete)** — reads phase 2 transcript from Vault.
-   Writes `marker_b_at`. Runs Diagnosis Stage sequentially:
-   - D1: extracts medical concepts; updates pregnancy status in demographics if found
-   - D2: generates differential; writes to Vault
-   - D3: generates clarifying questions (needs validated DDx); writes to Vault
+4. **Marker B (diagnosis_complete)** — passes `state.phaseAudioBuffers[2]` to
+   Diagnosis Stage. Writes `marker_b_at`. Sets `currentPhase = 3`.
+   Same retry logic (no generic fallback for D1 — returns structured error + flags
+   case for immediate doctor review on second failure).
+   Runs Diagnosis Stage sequentially:
+   - D1: receives audio buffers, transcribes phase 2, extracts medical concepts;
+     updates pregnancy status in demographics if found; `transcript` written to Vault.
+   - D2: generates differential; writes to Vault.
+   - D3: generates clarifying questions (needs validated DDx); writes to Vault.
    Sends `stage_complete` with differential + clarifying questions.
 
-6. **Marker C (management_complete)** — reads phase 3 transcript from Vault.
-   Writes `marker_c_at`. Runs Management Stage (`runManagementStage`):
-   - M1 + RAG retrieval in parallel via `Promise.all`
+5. **Marker C (management_complete)** — passes `state.phaseAudioBuffers[3]` to
+   Management Stage. Writes `marker_c_at`.
+   Runs Management Stage (`runManagementStage`):
+   - M1 (receives audio buffers, transcribes phase 3, extracts clarifying findings;
+     `transcript` written to Vault) + RAG retrieval in parallel via `Promise.all`
    - M2: problem list + prescription
    - M3 + M4 in parallel via `Promise.all`
    - Rule engine: deterministic safety check
@@ -240,15 +250,17 @@ reliably send custom headers).
    `risk_assessment`. HIGH risk triggers `notifyDoctor()` (stub — replace with FCM/SMS).
    On completion, writes a `patient_log` row and a `session_metrics` aggregate.
 
-7. **Session end** — writes `session_ended_at`, `session_duration_seconds`, and
-   final `transcript_segments` to Vault. Audio upload is the device's
-   responsibility; when it calls `audio_uploaded`, the Vault receives the S3 URL
-   and a `retain_until` date (3650 days / 10 years from upload).
+6. **Session end** — writes `session_ended_at`, `session_duration_seconds`, and
+   final session metadata to Vault. Fires `concatAndArchiveAudio()` async in
+   background: `fluent-ffmpeg` produces one muxed `phase_N.m4a` per phase, uploads
+   to Supabase Storage, updates Vault `audio` field with three phase URLs and
+   `retain_until` (3650 days). Sends `audio_confirmed` over WebSocket when all
+   three phases are archived.
 
 ### REST endpoints
 
 - `POST /api/auth/...` — login, register, OTP verification
-- `POST /api/audio/...` — audio chunk upload and transcription
+- `POST /api/session/:id/audio-segment` — buffer a 12-second m4a segment server-side
 - `GET  /api/session/:id/status` — stage completion status and risk tier
 - `POST /api/session/:id/doctor-auth` — approve / modify / reject with optional notes
 - `GET  /api/dashboard/...` — case list for doctor review queue
@@ -263,9 +275,11 @@ reliably send custom headers).
 
 **Two LLM calls, no RAG.**
 
-Call 1 (~900ms): Extracts chief complaint from the ~30s phase 1 transcript.
+Call 1 (~900ms): Receives phase 1 audio buffers (multi-part inlineData) directly.
+Transcribes the ~30s audio and extracts the chief complaint in a single Gemini call.
 At this point only name, age, village, chief complaint, and duration are known.
-Nothing else. The schema has many null fields by design.
+Nothing else. The schema has many null fields by design. The `transcript` field
+in the output is written to `transcript_segments.phase_1` in the Vault.
 
 Call 2 (~1.3s): Generates a structured contextualised questionnaire.
 Uses `buildPatientRecordContext()` to determine field by field what is already
@@ -275,7 +289,8 @@ gets a short verification pass for changed fields only. The nurse never specifie
 visit type — the stage reasons it from the patient record state.
 
 Supports clinical photos: if `session_photos` are present in the Vault, they are
-passed as multimodal content to both H1 and H2 calls via `buildMultimodalContent()`.
+passed as multimodal content to H1 via `buildAudioContent()` and to H2 via
+`buildMultimodalContent()`.
 
 The questionnaire output includes `patient_record_fields` — a structured object
 the Diagnosis Stage's concept extractor uses as a schema for what to populate
@@ -285,7 +300,9 @@ from the phase 2 transcript.
 
 **Three LLM calls, no RAG.**
 
-Call 1 (~900ms): Extracts structured medical concepts from the phase 2 transcript.
+Call 1 (~900ms): Receives phase 2 audio buffers. Transcribes and extracts structured
+medical concepts in a single Gemini call. `transcript` written to `transcript_segments.phase_2`.
+Full description: extracts structured medical concepts from the phase 2 audio.
 Negatives are as important as positives. Ambiguous or qualified patient answers
 (e.g. "sometimes", "not sure") are captured separately in `uncertain_findings`
 rather than collapsed into positives or negatives. Prior encounter history is read
@@ -325,7 +342,8 @@ unspecified). The must_not_miss override is one-directional: it can only set
 **Four LLM calls, RAG in Call 2.**
 
 Call 1 (~900ms) + RAG retrieval run in parallel via `Promise.all`:
-- Call 1 extracts clarifying findings from phase 3 transcript
+- Call 1 receives phase 3 audio buffers; transcribes and extracts clarifying findings
+  in a single Gemini call; `transcript` written to `transcript_segments.phase_3` in Vault.
 - RAG retrieves STG chunks for ALL DDx diagnoses + known established conditions
   (provisional diagnosis not yet determined; any DDx entry could be selected)
 
@@ -404,7 +422,8 @@ differential_table, clarifying_questions,
 clarifying_findings, problem_list, risk_assessment, triage_output,
 stg_retrieval: { context, chunks_by_disease, ... },  — RAG audit metadata
 session_photos: { phase_1: [...], phase_2: [...], phase_3: [...] },
-audio: { url, codec, duration_seconds, upload_status, retain_until },
+audio: { phase_1_url, phase_2_url, phase_3_url, upload_status, retain_until,
+         retention_days, archived_at },
 risk_tier, doctor_auth_status,
 confirmation: { rdt_result, treatment_response, doctor_agreed,
                 confidence_weight, committed_to_layer3 }

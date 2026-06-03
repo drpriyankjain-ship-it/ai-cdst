@@ -53,6 +53,7 @@ export function loadFormulary() {
 export const SCHEMA_CLARIFYING_FINDINGS = {
   type: 'object',
   properties: {
+    transcript: { type: 'string' },
     answers_to_clarifying_questions: { type: 'array', items: { type: 'object', properties: { question: { type: 'string' }, answer: { type: 'string' } }, required: ['question', 'answer'] } },
     bedside_examination_findings: { type: 'array', items: { type: 'object', properties: { observation: { type: 'string' }, result: { type: 'string' } }, required: ['observation', 'result'] } },
     new_symptoms: { type: 'array', items: { type: 'string' } },
@@ -66,7 +67,7 @@ export const SCHEMA_CLARIFYING_FINDINGS = {
       },
     },
   },
-  required: ['answers_to_clarifying_questions', 'bedside_examination_findings', 'new_symptoms', 'vitals_found'],
+  required: ['transcript', 'answers_to_clarifying_questions', 'bedside_examination_findings', 'new_symptoms', 'vitals_found'],
 };
 
 const PRESCRIPTION_ITEM_SCHEMA = {

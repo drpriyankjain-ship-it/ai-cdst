@@ -22,6 +22,7 @@ import useKeyboardCentering from '../hooks/useKeyboardCentering';
 
 const CURRENT_PATIENT_KEY = '@nurseai_current_patient';
 const GEMINI_RETRY_CACHE_KEY = '@nurseai_gemini_retry';
+const SEGMENT_DURATION_MS = 12000; // 12-second rolling segments
 const GEMINI_RETRY_WINDOW_MS = 30 * 60 * 1000;
 const GEMINI_RETRY_DELAY_MS = 60 * 1000;
 const GEMINI_RETRY_MAX_ATTEMPTS = 3;
@@ -286,6 +287,11 @@ const RecordPage = ({navigation}) => {
     bmi: '',
   });
   const recordingRef = useRef(null);
+  // Rolling segment loop state
+  const segmentTimerRef = useRef(null);
+  const segmentIndexRef = useRef(0);
+  const segmentUrisRef = useRef([]); // accumulates all completed segment URIs
+  const segmentUploadCountRef = useRef(0); // completed uploads
   const answerRecordingRef = useRef(null);
   const answerRecordingStartRef = useRef(null);
   const answerRecordingIntervalRef = useRef(null);
@@ -384,6 +390,62 @@ const RecordPage = ({navigation}) => {
     [patientId, patientName, persistRetryState]
   );
 
+  const RECORDING_OPTIONS = {
+    android: {
+      extension: '.m4a',
+      outputFormat: Audio.AndroidOutputFormat.MPEG_4,
+      audioEncoder: Audio.AndroidAudioEncoder.AAC,
+      sampleRate: 22050,
+      numberOfChannels: 1,
+      bitRate: 64000,
+    },
+    ios: {
+      extension: '.m4a',
+      outputFormat: Audio.IOSOutputFormat.MPEG4AAC,
+      audioQuality: Audio.IOSAudioQuality.MEDIUM,
+      sampleRate: 22050,
+      numberOfChannels: 1,
+      bitRate: 64000,
+    },
+    web: { mimeType: 'audio/webm', bitsPerSecond: 64000 },
+  };
+
+  // Upload a completed segment in the background (fire-and-forget for UX)
+  const uploadSegmentBackground = useCallback((uri, index) => {
+    apiService.uploadAudio({ uri, patientName: patientName.trim(), patientId: patientId.trim() })
+      .then(() => { segmentUploadCountRef.current++; })
+      .catch((err) => console.warn(`Segment ${index} upload failed:`, err));
+  }, [patientName, patientId]);
+
+  // Start the next recording segment and schedule the one after it.
+  // Keeps rolling until segmentTimerRef.current is cleared.
+  const startNextSegment = useCallback(async () => {
+    try {
+      const { recording } = await Audio.Recording.createAsync(RECORDING_OPTIONS);
+      recordingRef.current = recording;
+
+      segmentTimerRef.current = setTimeout(async () => {
+        try {
+          await recording.stopAndUnloadAsync();
+          const uri = recording.getURI();
+          if (uri) {
+            const idx = segmentIndexRef.current++;
+            segmentUrisRef.current.push(uri);
+            uploadSegmentBackground(uri, idx);
+          }
+        } catch (err) {
+          console.warn('Segment rotation error:', err);
+        }
+        // Immediately start the next segment if still recording
+        if (segmentTimerRef.current !== null) {
+          startNextSegment();
+        }
+      }, SEGMENT_DURATION_MS);
+    } catch (err) {
+      console.warn('startNextSegment error:', err);
+    }
+  }, [uploadSegmentBackground]);
+
   const startRecording = useCallback(async () => {
     if (!canStartRecording) {
       Alert.alert('Required Fields', 'Please enter both Patient Name and Patient ID before recording.');
@@ -402,6 +464,10 @@ const RecordPage = ({navigation}) => {
         await recordingRef.current.stopAndUnloadAsync().catch(() => {});
         recordingRef.current = null;
       }
+      if (segmentTimerRef.current) {
+        clearTimeout(segmentTimerRef.current);
+        segmentTimerRef.current = null;
+      }
 
       const permission = await Audio.requestPermissionsAsync();
       if (!permission.granted) {
@@ -417,31 +483,14 @@ const RecordPage = ({navigation}) => {
         staysActiveInBackground: false,
       });
 
-      const {recording} = await Audio.Recording.createAsync(
-        {
-          android: {
-            extension: '.m4a',
-            outputFormat: Audio.AndroidOutputFormat.MPEG_4,
-            audioEncoder: Audio.AndroidAudioEncoder.AAC,
-            sampleRate: 22050,
-            numberOfChannels: 1,
-            bitRate: 64000,
-          },
-          ios: {
-            extension: '.m4a',
-            outputFormat: Audio.IOSOutputFormat.MPEG4AAC,
-            audioQuality: Audio.IOSAudioQuality.MEDIUM,
-            sampleRate: 22050,
-            numberOfChannels: 1,
-            bitRate: 64000,
-          },
-          web: {
-            mimeType: 'audio/webm',
-            bitsPerSecond: 64000,
-          },
-        }
-      );
-      recordingRef.current = recording;
+      // Reset segment state for new session
+      segmentIndexRef.current = 0;
+      segmentUrisRef.current = [];
+      segmentUploadCountRef.current = 0;
+      // sentinel — non-null means loop is active
+      segmentTimerRef.current = 'PENDING';
+
+      await startNextSegment();
       recordingStartRef.current = Date.now();
       setRecordingSeconds(0);
       setIsRecording(true);
@@ -966,6 +1015,12 @@ const RecordPage = ({navigation}) => {
     try {
       setIsRecording(false);
 
+      // Stop the segment loop
+      if (segmentTimerRef.current && segmentTimerRef.current !== 'PENDING') {
+        clearTimeout(segmentTimerRef.current);
+      }
+      segmentTimerRef.current = null; // signals loop to stop
+
       const recording = recordingRef.current;
       if (!recording) {
         Alert.alert('Error', 'No active recording found.');
@@ -973,8 +1028,6 @@ const RecordPage = ({navigation}) => {
       }
 
       const status = await recording.getStatusAsync();
-      console.log('Recording status before stop:', JSON.stringify(status));
-
       if (!status.isDoneRecording && status.isRecording) {
         await recording.stopAndUnloadAsync();
       } else {
@@ -995,18 +1048,25 @@ const RecordPage = ({navigation}) => {
       }
 
       const durationMs = status.durationMillis || 0;
-      if (durationMs < 500) {
+      if (durationMs < 500 && segmentUrisRef.current.length === 0) {
         Alert.alert('Recording Too Short', 'The recording appears to be empty. Please try again.');
         return;
       }
 
-      console.log(`Recording stopped: duration=${durationMs}ms, uri=${uri}`);
-      promptPhotoUpload(uri);
+      // Add final segment and upload it
+      const idx = segmentIndexRef.current++;
+      segmentUrisRef.current.push(uri);
+      uploadSegmentBackground(uri, idx);
+
+      // Use the final segment URI for the photo-prompt / upload flow
+      const uploadUri = uri;
+      console.log(`Recording stopped: segments=${segmentUrisRef.current.length} duration=${durationMs}ms`);
+      promptPhotoUpload(uploadUri);
     } catch (error) {
       console.error('Error stopping recording:', error);
       Alert.alert('Error', 'Failed to stop recording. Please try again.');
     }
-  }, [promptPhotoUpload]);
+  }, [promptPhotoUpload, uploadSegmentBackground]);
 
   useEffect(() => {
     if (!isRecording) {
@@ -1075,6 +1135,11 @@ const RecordPage = ({navigation}) => {
 
     return () => {
       unsubscribe();
+      // Stop segment loop
+      if (segmentTimerRef.current && segmentTimerRef.current !== 'PENDING') {
+        clearTimeout(segmentTimerRef.current);
+      }
+      segmentTimerRef.current = null;
       if (recordingRef.current) {
         recordingRef.current.stopAndUnloadAsync().catch(() => {});
         recordingRef.current = null;

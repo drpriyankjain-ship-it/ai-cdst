@@ -1,0 +1,51 @@
+{
+  "opening_context": "AI analysis was unavailable at Marker A. Use this standard proforma to conduct the patient history interview. Cover all sections in order.",
+  "known_and_verified": [],
+  "sections": [
+    {
+      "section_title": "Presenting Complaint — SOCRATES",
+      "rationale": "Core symptom characterisation — always required regardless of chief complaint.",
+      "questions": [
+        { "question": "Where exactly is the problem? Can you point to it?", "follow_up": "Does it spread or move anywhere?", "discriminates": "Site and radiation" },
+        { "question": "When did this start? Did it come on suddenly or gradually?", "follow_up": "What were you doing when it began?", "discriminates": "Onset and mode" },
+        { "question": "How would you describe it — sharp, dull, burning, cramping, pressing?", "follow_up": "Has the character changed since it started?", "discriminates": "Character of symptom" },
+        { "question": "Does anything make it better or worse — food, rest, position, movement, medicines?", "follow_up": "Have you tried any treatment? Did it help?", "discriminates": "Exacerbating and relieving factors" },
+        { "question": "Is it constant or does it come and go? How long does each episode last?", "follow_up": "Is it getting better, worse, or staying the same?", "discriminates": "Timing and progression" },
+        { "question": "On a scale of 0 to 10, how severe is it right now? At its worst?", "follow_up": "Is it affecting your ability to eat, sleep, or do daily activities?", "discriminates": "Severity and functional impact" }
+      ]
+    },
+    {
+      "section_title": "Associated Symptoms",
+      "rationale": "Key system-level positives and negatives.",
+      "questions": [
+        { "question": "Do you have fever? Any chills or shivering?", "follow_up": "How high was the temperature? Continuous or comes and goes?", "discriminates": "Febrile illness vs non-febrile" },
+        { "question": "Any nausea, vomiting, or loose stools?", "follow_up": "How many times? Any blood?", "discriminates": "GI involvement" },
+        { "question": "Any cough, difficulty breathing, or chest pain?", "follow_up": "Cough dry or with sputum? Any blood?", "discriminates": "Respiratory and cardiac" },
+        { "question": "Any headache, dizziness, or confusion?", "follow_up": "Any fits, fainting, or loss of consciousness?", "discriminates": "Neurological — must-not-miss" },
+        { "question": "Any pain or burning when passing urine? Any changes in urine colour?", "follow_up": "Any swelling in face, legs, or feet?", "discriminates": "Renal and urinary" }
+      ]
+    },
+    {
+      "section_title": "Functional Impact",
+      "rationale": "Illness trajectory and ADL impact.",
+      "questions": [
+        { "question": "How is this illness affecting your daily activities — eating, working, caring for family?", "follow_up": "Have you had to stop any normal activities?", "discriminates": "Functional limitation and severity" },
+        { "question": "Since it started, is it getting better, worse, or staying the same?", "follow_up": "Has anything happened recently that might have triggered this?", "discriminates": "Trajectory — guides urgency" }
+      ]
+    }
+  ],
+  "mandatory_safety_questions": [
+    { "question": "When was your last menstrual period? Are you pregnant or could you be pregnant?", "reason": "Pregnancy affects diagnosis, drug safety, and management — mandatory for all females aged 12–50" },
+    { "question": "What medicines are you currently taking — tablets, injections, syrups, or herbal remedies?", "reason": "Drug interactions and contraindications must be checked before prescribing" },
+    { "question": "Have you ever had a bad reaction or allergy to any medicine or food?", "reason": "Allergy check is mandatory before any prescription" }
+  ],
+  "prior_encounter_flags": [],
+  "patient_record_fields": {
+    "past_medical_history": [],
+    "family_history": [],
+    "social_history": {},
+    "current_medications": [],
+    "allergies": [],
+    "immunisation_flags": []
+  }
+}

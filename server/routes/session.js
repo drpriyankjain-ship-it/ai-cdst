@@ -1,10 +1,13 @@
 /**
- * CDST — Session Routes (audio upload + Gemini transcription)
- * =============================================================
- * POST /api/session/:sessionId/upload-audio
- *   - Accepts .m4a audio file upload
- *   - Transcribes via Gemini (handles Hindi/English natively)
- *   - Stores transcript in session vault
+ * CDST — Session Routes
+ * =====================
+ * POST /api/session/:sessionId/audio-segment
+ *   Receives a 12-second m4a segment from the app and buffers it in the
+ *   in-memory session state. No transcription at upload time — audio is
+ *   passed to Gemini in bulk at each marker press (H1/D1/M1).
+ *
+ * Photos are still accepted here and stored as base64 in the vault,
+ * identical to the previous implementation.
  */
 
 import { Router } from 'express';
@@ -12,20 +15,18 @@ import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { getPool, vaultRead, vaultAppendTranscript, vaultSetNested, upsertSessionAudio } from '../lib/db.js';
+import { getPool, vaultRead, vaultSetNested } from '../lib/db.js';
 import { requireAuth } from '../lib/auth.js';
-import { gemini } from '../lib/llmClient.js';
-import { uploadAudioToStorage } from '../lib/storage.js';
+import { _active } from '../orchestrator.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOAD_DIR = path.join(__dirname, '..', 'uploads');
 
-// Ensure upload dir exists
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const upload = multer({
   dest: UPLOAD_DIR,
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB max
+  limits: { fileSize: 50 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (file.fieldname === 'photos') {
       const imgExts = ['.jpg', '.jpeg', '.png', '.heic', '.heif', '.webp'];
@@ -35,11 +36,8 @@ const upload = multer({
     }
     const allowed = ['.m4a', '.mp4', '.wav', '.webm', '.ogg', '.mp3', '.aac'];
     const ext = path.extname(file.originalname || '').toLowerCase();
-    if (allowed.includes(ext) || file.mimetype?.startsWith('audio/')) {
-      cb(null, true);
-    } else {
-      cb(new Error(`Unsupported format: ${ext || file.mimetype}`));
-    }
+    if (allowed.includes(ext) || file.mimetype?.startsWith('audio/')) return cb(null, true);
+    return cb(new Error(`Unsupported format: ${ext || file.mimetype}`));
   },
 });
 
@@ -48,144 +46,67 @@ const uploadFields = upload.fields([
   { name: 'photos', maxCount: 10 },
 ]);
 
-/**
- * Transcribe audio file using Gemini (supports Hindi/English code-switching)
- */
-async function transcribeWithGemini(filePath, mimeType) {
-  const audioBuffer = fs.readFileSync(filePath);
-  const base64Audio = audioBuffer.toString('base64');
-
-  const response = await gemini.models.generateContent({
-    model: 'gemini-2.0-flash',
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          {
-            inlineData: {
-              mimeType: mimeType || 'audio/mp4',
-              data: base64Audio,
-            },
-          },
-          {
-            text: 'Transcribe this audio recording of a nurse-patient clinical consultation. ' +
-              'The conversation may be in Hindi, English, or a mix of both. ' +
-              'Output ONLY the transcript text in the original language(s) spoken. ' +
-              'Do not add any commentary, labels, or formatting — just the raw transcript.',
-          },
-        ],
-      },
-    ],
-    config: {
-      thinkingConfig: { thinkingBudget: 0 },
-      maxOutputTokens: 8000,
-    },
-  });
-
-  const transcript = response.text || '';
-  const duration = audioBuffer.length / (16000 * 2); // rough estimate for display
-
-  return { transcript: transcript.trim(), confidence: 0.95, duration };
-}
-
 const router = Router();
 
 /**
- * POST /api/session/:sessionId/upload-audio
- * Body: multipart/form-data with 'audio' file field + 'phase' field (1, 2, or 3)
+ * POST /api/session/:sessionId/audio-segment
+ * Body: multipart/form-data
+ *   - audio: m4a file (required)
+ *   - phase: 1 | 2 | 3 (required)
+ *   - segment_index: integer (for logging)
+ *   - photos: image files (optional, up to 10)
  */
-router.post('/:sessionId/upload-audio', requireAuth, uploadFields, async (req, res) => {
+router.post('/:sessionId/audio-segment', requireAuth, uploadFields, async (req, res) => {
   const { sessionId } = req.params;
   const phase = parseInt(req.body.phase || '1', 10);
+  const segmentIndex = parseInt(req.body.segment_index || '0', 10);
   const audioFile = req.files?.audio?.[0];
   const photoFiles = req.files?.photos || [];
 
   if (!audioFile) {
+    photoFiles.forEach(f => { try { fs.unlinkSync(f.path); } catch {} });
     return res.status(400).json({ error: 'No audio file provided' });
   }
 
-  console.log(`[${sessionId}] Audio upload: phase=${phase} size=${audioFile.size} mime=${audioFile.mimetype} photos=${photoFiles.length}`);
-
   try {
-    const pool = getPool();
+    // Read audio into buffer and clean up temp file immediately
+    const audioBuffer = fs.readFileSync(audioFile.path);
+    try { fs.unlinkSync(audioFile.path); } catch {}
 
-    // Check session exists
-    const vault = await vaultRead(pool, sessionId);
-    if (!vault) {
-      return res.status(404).json({ error: 'Session not found' });
+    // Find the active session and append to its phase buffer
+    const sessionState = _active.get(sessionId);
+    if (!sessionState) {
+      photoFiles.forEach(f => { try { fs.unlinkSync(f.path); } catch {} });
+      return res.status(404).json({ error: 'Session not active — segment received after session close or before init' });
     }
 
-    // Transcribe with Gemini
-    console.log(`[${sessionId}] Transcribing phase ${phase} audio with Gemini...`);
-    const transcriptionStart = Date.now();
-    const { transcript, confidence, duration } = await transcribeWithGemini(
-      audioFile.path,
-      audioFile.mimetype || 'audio/mp4'
-    );
-    const transcription_ms = Date.now() - transcriptionStart;
-    console.log(`[${sessionId}] Transcript (phase ${phase}): "${transcript.slice(0, 100)}..." (confidence=${confidence}, duration=${duration.toFixed(1)}s, transcription_ms=${transcription_ms})`);
+    if (!sessionState.phaseAudioBuffers[phase]) sessionState.phaseAudioBuffers[phase] = [];
+    sessionState.phaseAudioBuffers[phase].push(audioBuffer);
 
-    // Store transcript in vault
-    const phaseKey = `phase_${phase}`;
-    await vaultSetNested(pool, sessionId, ['transcript_segments', phaseKey], transcript);
+    const totalSegments = sessionState.phaseAudioBuffers[phase].length;
+    const totalBytes = sessionState.phaseAudioBuffers[phase].reduce((s, b) => s + b.length, 0);
+    console.log(`[${sessionId}] Buffered segment ${segmentIndex} phase=${phase} size=${audioBuffer.length}B total=${totalSegments} segs (${(totalBytes / 1024).toFixed(0)}KB)`);
 
-    // Also append to full transcript
-    await vaultAppendTranscript(pool, sessionId, transcript);
-
-    // Upload audio to Supabase Storage (Patient_audios bucket)
-    let storageUrl = null;
-    try {
-      const { publicUrl } = await uploadAudioToStorage(
-        audioFile.path,
-        sessionId,
-        phase,
-        audioFile.mimetype || 'audio/mp4'
-      );
-      storageUrl = publicUrl;
-      console.log(`[${sessionId}] Audio iteration ${phase} uploaded to Supabase Storage`);
-    } catch (storageErr) {
-      console.error(`[${sessionId}] Supabase Storage upload failed:`, storageErr.message);
-    }
-
-    // Process photos — store as base64 in vault for Gemini
+    // Handle photos — store as base64 in vault
     if (photoFiles.length > 0) {
+      const pool = getPool();
       const photosArray = photoFiles.map(f => ({
         mimeType: f.mimetype || 'image/jpeg',
         data: fs.readFileSync(f.path).toString('base64'),
       }));
       await vaultSetNested(pool, sessionId, ['session_photos', `phase_${phase}`], photosArray);
-      console.log(`[${sessionId}] ${photoFiles.length} photo(s) stored in vault for phase ${phase}`);
-      // Clean up photo temp files
       photoFiles.forEach(f => { try { fs.unlinkSync(f.path); } catch {} });
+      console.log(`[${sessionId}] ${photoFiles.length} photo(s) stored in vault for phase ${phase}`);
     }
 
-    // Clean up audio temp file
-    try { fs.unlinkSync(audioFile.path); } catch {}
-
-    // Persist metadata + transcript to session_audio table
-    await upsertSessionAudio(pool, sessionId, phase, {
-      file_path: storageUrl || audioFile.path,
-      file_size_bytes: audioFile.size,
-      mime_type: audioFile.mimetype || 'audio/mp4',
-      duration_seconds: duration,
-      transcript,
-      transcript_engine: 'gemini',
-      upload_status: storageUrl ? 'transcribed' : 'failed',
-    });
-    console.log(`[${sessionId}] Audio iteration ${phase} saved to session_audio`);
-
     res.json({
-      success: true,
-      transcript,
-      confidence,
-      duration,
+      ok: true,
       phase,
-      photoCount: photoFiles.length,
-      transcription_ms,
-      server_received_at: Date.now(),
+      segment_index: segmentIndex,
+      buffered_segments: totalSegments,
     });
   } catch (err) {
-    console.error(`[${sessionId}] Transcription error:`, err.message);
+    console.error(`[${sessionId}] Segment buffer error:`, err.message);
     try { if (audioFile?.path) fs.unlinkSync(audioFile.path); } catch {}
     photoFiles.forEach(f => { try { fs.unlinkSync(f.path); } catch {} });
     res.status(500).json({ error: err.message });
@@ -193,4 +114,3 @@ router.post('/:sessionId/upload-audio', requireAuth, uploadFields, async (req, r
 });
 
 export default router;
-

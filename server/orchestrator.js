@@ -5,74 +5,51 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
-import { DeepgramClient } from '@deepgram/sdk';
-import { getPool, vaultInit, vaultRead, vaultUpdate, vaultSetNested, vaultAppendTranscript, loadPatientRecord, insertLlmResult, insertPipelineFailure, insertSessionMetrics } from './lib/db.js';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { getPool, vaultInit, vaultRead, vaultUpdate, vaultSetNested, loadPatientRecord, insertLlmResult, insertPipelineFailure, insertSessionMetrics } from './lib/db.js';
 import { verifyJwt } from './lib/auth.js';
 import { loadBaselineDiseases, loadEpiPrior } from './lib/epiUtils.js';
-import { buildMultimodalContent } from './lib/llmClient.js';
 import { extractChiefComplaint, generateQuestionnaire, validateQuestionnaire, extractPatientRecordUpdate } from './stages/historyStage.js';
-import { extractMedicalConcepts, generateDifferential, validateDifferential, generateClarifyingQuestions, runDiagnosisStage } from './stages/diagnosisStage.js';
+import { extractMedicalConcepts, generateDifferential, validateDifferential, generateClarifyingQuestions } from './stages/diagnosisStage.js';
 import { runManagementStage } from './stages/managementStage.js';
+import { uploadAudioToStorage } from './lib/storage.js';
 
-const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY || '';
-const DEEPGRAM_LANGUAGE = process.env.DEEPGRAM_LANGUAGE || 'hi';
-
-// ---------------------------------------------------------------------------
-// Deepgram live STT helper (SDK v5 API)
-// ---------------------------------------------------------------------------
-
-async function startDeepgramSTT(ws, state) {
-  if (!DEEPGRAM_API_KEY) {
-    console.log(`[${state.sessionId}] No DEEPGRAM_API_KEY — live transcript disabled`);
-    return null;
-  }
-
+// ffmpeg for phase-level audio concatenation at session end
+let _ffmpeg = null;
+async function getFfmpeg() {
+  if (_ffmpeg) return _ffmpeg;
   try {
-    const deepgram = new DeepgramClient({ apiKey: DEEPGRAM_API_KEY });
-
-    const socket = await deepgram.listen.v1.createConnection({
-      model: 'nova-3',
-      language: DEEPGRAM_LANGUAGE,
-      smart_format: true,
-      interim_results: true,
-      utterance_end_ms: 1500,
-      vad_events: true,
-      encoding: 'linear16',
-      sample_rate: 16000,
-      channels: 1,
-    });
-
-    socket.on('message', async (data) => {
-      if (data.type === 'Results' && data.channel?.alternatives?.[0]) {
-        const transcript = data.channel.alternatives[0].transcript;
-        if (!transcript) return;
-        const isFinal = data.is_final;
-        wsSend(ws, { type: 'transcript', text: transcript, is_final: isFinal });
-        await state.appendTranscript(transcript, isFinal);
-      }
-    });
-
-    socket.on('error', (err) => {
-      console.error(`[${state.sessionId}] Deepgram error:`, err);
-    });
-
-    socket.on('close', () => {
-      console.log(`[${state.sessionId}] Deepgram connection closed`);
-    });
-
-    socket.connect();
-    await socket.waitForOpen();
-
-    console.log(`[${state.sessionId}] Deepgram STT started — model=nova-3 language=${DEEPGRAM_LANGUAGE}`);
-    return socket;
-  } catch (err) {
-    console.error(`[${state.sessionId}] Failed to start Deepgram:`, err);
+    const { default: ffmpegInstaller } = await import('@ffmpeg-installer/ffmpeg');
+    const { default: ffmpegModule } = await import('fluent-ffmpeg');
+    ffmpegModule.setFfmpegPath(ffmpegInstaller.path);
+    _ffmpeg = ffmpegModule;
+    return _ffmpeg;
+  } catch {
+    console.warn('[FFMPEG] fluent-ffmpeg not available — phase audio will be uploaded as individual segments');
     return null;
   }
 }
 
-// Active sessions registry
-const _active = new Map();
+// Generic proforma fallback — loaded once
+let _genericProforma = null;
+function loadGenericProforma() {
+  if (_genericProforma) return _genericProforma;
+  try {
+    const dataDir = fs.existsSync(path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'data'))
+      ? path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'data')
+      : path.join(path.dirname(new URL(import.meta.url).pathname), 'data');
+    _genericProforma = JSON.parse(fs.readFileSync(path.join(dataDir, 'generic_proforma.json'), 'utf-8'));
+  } catch {
+    console.warn('[WARN] Could not load generic_proforma.json');
+    _genericProforma = { sections: [], mandatory_safety_questions: [], opening_context: 'Use this standard proforma to conduct the history.' };
+  }
+  return _genericProforma;
+}
+
+// Active sessions registry — exported for use by audio-segment route
+export const _active = new Map();
 
 // ---------------------------------------------------------------------------
 // Session state
@@ -82,41 +59,20 @@ class SessionState {
   constructor(sessionId, dbClient) {
     this.sessionId = sessionId;
     this.dbClient = dbClient;
-    this.transcriptFull = '';
-    this.phase1End = '';
-    this.phase2End = '';
     this.markerAAt = null;
     this.markerBAt = null;
     this.markerCAt = null;
-    this.dg = null;
-    this.ringBuffer = [];
     this.nurseId = null;
     this.userId = null;
+    // Phase audio buffers — arrays of Buffer objects, one per 12s segment
+    this.phaseAudioBuffers = { 1: [], 2: [], 3: [] };
+    this.currentPhase = 1;
+    this.markerRetryCount = { 1: 0, 2: 0, 3: 0 };
     // Timing
     this.networkRttMs = null;
-    this.phaseStartAt = null;   // Date.now() when marker received
-    this.lastTranscriptionMs = null; // from upload response
-    this.phaseTimings = [];     // accumulated per-phase timing breakdowns
-  }
-
-  async appendTranscript(text, isFinal) {
-    if (isFinal && text.trim()) {
-      this.transcriptFull += text + ' ';
-      await vaultAppendTranscript(this.dbClient, this.sessionId, text);
-    }
-  }
-
-  static async fromVault(sessionId, dbClient) {
-    const state = new SessionState(sessionId, dbClient);
-    const ctx = await vaultRead(dbClient, sessionId);
-    const segs = ctx.transcript_segments || {};
-    state.transcriptFull = ctx.transcript_full || '';
-    state.phase1End = segs.phase_1 || '';
-    state.phase2End = state.phase1End + (segs.phase_2 || '');
-    state.markerAAt = ctx.marker_a_at;
-    state.markerBAt = ctx.marker_b_at;
-    state.markerCAt = ctx.marker_c_at;
-    return state;
+    this.phaseStartAt = null;
+    this.lastTranscriptionMs = null;
+    this.phaseTimings = [];
   }
 }
 
@@ -139,7 +95,6 @@ function notifyDoctor(sessionId, triageOutput) {
 
 /**
  * Collect all photos from vault across all phases.
- * Returns a flat array of { mimeType, data } objects.
  */
 function collectAllPhotos(vaultCtx) {
   const sessionPhotos = vaultCtx.session_photos || {};
@@ -182,7 +137,6 @@ function buildPhaseTiming(state, callMetas, stageName) {
     timestamp: now,
   };
 
-  // Compute percentage breakdown
   if (phaseTotal && phaseTotal > 0) {
     const pct = (v) => v ? parseFloat(((v / phaseTotal) * 100).toFixed(1)) : 0;
     timing.breakdown = {
@@ -192,12 +146,87 @@ function buildPhaseTiming(state, callMetas, stageName) {
     };
   }
 
-  // Accumulate for DB write and reset
   state.phaseTimings.push(timing);
   state.lastTranscriptionMs = null;
   state.phaseStartAt = null;
 
   return timing;
+}
+
+// ---------------------------------------------------------------------------
+// Audio archive — ffmpeg concat per phase + Supabase Storage upload
+// Runs asynchronously after session end; does not block the nurse.
+// ---------------------------------------------------------------------------
+
+async function concatAndArchiveAudio(sessionId, phaseAudioBuffers, dbClient) {
+  const ffmpeg = await getFfmpeg();
+  const audioUrls = {};
+  const retainUntil = new Date(Date.now() + 3650 * 86400000).toISOString();
+
+  for (const phase of [1, 2, 3]) {
+    const buffers = phaseAudioBuffers[phase] || [];
+    if (!buffers.length) continue;
+
+    let audioPath = null;
+    let tmpDir = null;
+
+    try {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `cdst-${sessionId}-p${phase}-`));
+
+      if (buffers.length === 1) {
+        // Single segment — write directly, no concat needed
+        audioPath = path.join(tmpDir, 'audio.m4a');
+        fs.writeFileSync(audioPath, buffers[0]);
+      } else if (ffmpeg) {
+        // Multiple segments — concat with ffmpeg
+        const segPaths = buffers.map((buf, i) => {
+          const p = path.join(tmpDir, `seg${i}.m4a`);
+          fs.writeFileSync(p, buf);
+          return p;
+        });
+        const listPath = path.join(tmpDir, 'list.txt');
+        fs.writeFileSync(listPath, segPaths.map(p => `file '${p}'`).join('\n'));
+        audioPath = path.join(tmpDir, 'audio.m4a');
+        await new Promise((resolve, reject) => {
+          ffmpeg()
+            .input(listPath)
+            .inputOptions(['-f', 'concat', '-safe', '0'])
+            .outputOptions(['-c', 'copy'])
+            .save(audioPath)
+            .on('end', resolve)
+            .on('error', reject);
+        });
+      } else {
+        // ffmpeg unavailable — upload first segment only, log warning
+        console.warn(`[${sessionId}] ffmpeg unavailable — uploading phase ${phase} segment 0 of ${buffers.length} only`);
+        audioPath = path.join(tmpDir, 'audio.m4a');
+        fs.writeFileSync(audioPath, buffers[0]);
+      }
+
+      const { publicUrl } = await uploadAudioToStorage(audioPath, sessionId, phase, 'audio/mp4');
+      audioUrls[`phase_${phase}_url`] = publicUrl;
+      console.log(`[${sessionId}] Phase ${phase} audio archived: ${publicUrl}`);
+    } catch (err) {
+      console.error(`[${sessionId}] Phase ${phase} audio archive failed: ${err.message}`);
+    } finally {
+      if (tmpDir) {
+        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+      }
+    }
+  }
+
+  if (Object.keys(audioUrls).length) {
+    await vaultUpdate(dbClient, sessionId, {
+      audio: {
+        ...audioUrls,
+        upload_status: 'complete',
+        retain_until: retainUntil,
+        retention_days: 3650,
+        archived_at: new Date().toISOString(),
+      },
+    });
+    console.log(`[${sessionId}] Audio vault updated with ${Object.keys(audioUrls).length} phase URL(s)`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -210,43 +239,63 @@ async function handleMarkerA(ws, state, t) {
   await vaultUpdate(state.dbClient, state.sessionId, { marker_a_at: t });
 
   const { sessionId, dbClient } = state;
-  // Read phase 1 transcript from vault (populated by audio upload route)
-  const currentVault = await vaultRead(dbClient, sessionId);
-  const phase1 = (currentVault.transcript_segments || {}).phase_1 || state.transcriptFull || '';
-  console.log(`[${sessionId}] Marker A — phase 1 transcript length: ${phase1.length}`);
+  const audioBuffers = state.phaseAudioBuffers[1];
+  state.currentPhase = 2;
+
+  // Fallback: empty buffer
+  if (!audioBuffers.length) {
+    if (state.markerRetryCount[1] < 1) {
+      state.markerRetryCount[1]++;
+      console.warn(`[${sessionId}] Marker A — no audio buffered yet, requesting retry`);
+      wsSend(ws, { type: 'retry_marker', marker: 'history_complete', reason: 'audio_not_ready' });
+      return;
+    }
+    // Second failure — return generic proforma
+    console.warn(`[${sessionId}] Marker A retry failed — returning generic proforma`);
+    const proforma = loadGenericProforma();
+    await vaultUpdate(dbClient, sessionId, { questionnaire: proforma, history_stage_status: 'generic_fallback' });
+    wsSend(ws, { type: 'stage_complete', stage: 'history', data: proforma, fallback: true });
+    return;
+  }
 
   (async () => {
     try {
       const vaultCtx = await vaultRead(dbClient, sessionId);
       const photos = collectAllPhotos(vaultCtx);
-      if (photos.length) console.log(`[${sessionId}] Including ${photos.length} clinical photo(s) in Gemini calls`);
+      if (photos.length) console.log(`[${sessionId}] Including ${photos.length} clinical photo(s) in H1/H2`);
       const patientRecord = vaultCtx.patient_record || {};
       const gps = vaultCtx.gps || {};
       const districtCode = gps.district_code || 'WB_UNKNOWN';
       const baseline = loadBaselineDiseases();
       const epi = loadEpiPrior(districtCode, new Date().getMonth() + 1);
 
-      console.log(`[${sessionId}] History Call 1: extracting chief complaint`);
+      console.log(`[${sessionId}] History Call 1: extracting chief complaint from ${audioBuffers.length} segment(s)`);
       let t0 = Date.now();
-      const h1 = await extractChiefComplaint(phase1, vaultCtx, photos);
+      const h1 = await extractChiefComplaint(audioBuffers, vaultCtx, photos);
       const chief = h1.result;
       h1.meta.latency_ms = Date.now() - t0;
       await insertLlmResult(dbClient, sessionId, 'H1_chief_complaint', 'history', 1, chief, { ...h1.meta });
+
+      // Write transcript to vault
+      if (chief.transcript) {
+        await vaultSetNested(dbClient, sessionId, ['transcript_segments', 'phase_1'], chief.transcript);
+      }
       await vaultUpdate(dbClient, sessionId, { chief_complaint: chief });
 
-      let h2Meta = {};
       console.log(`[${sessionId}] History Call 2: generating questionnaire`);
       const t1 = Date.now();
       const h2 = await generateQuestionnaire(chief, vaultCtx, baseline, epi, patientRecord, photos);
       const questionnaire = validateQuestionnaire(h2.result);
       h2.meta.latency_ms = Date.now() - t1;
-      h2Meta = h2.meta;
       await insertLlmResult(dbClient, sessionId, 'H2_questionnaire', 'history', 2, questionnaire, { ...h2.meta });
       const stub = extractPatientRecordUpdate(questionnaire, chief, sessionId);
-      await vaultUpdate(dbClient, sessionId, { questionnaire, patient_record_stub: stub, history_stage_status: 'complete', history_stage_completed_at: new Date().toISOString() });
+      await vaultUpdate(dbClient, sessionId, {
+        questionnaire, patient_record_stub: stub,
+        history_stage_status: 'complete', history_stage_completed_at: new Date().toISOString(),
+      });
       wsSend(ws, {
         type: 'stage_complete', stage: 'history', data: questionnaire,
-        timing: buildPhaseTiming(state, [h1.meta, h2Meta], 'history'),
+        timing: buildPhaseTiming(state, [h1.meta, h2.meta], 'history'),
       });
       console.log(`[${sessionId}] History stage complete`);
     } catch (exc) {
@@ -263,26 +312,45 @@ async function handleMarkerB(ws, state, t) {
   const { sessionId, dbClient } = state;
   await vaultUpdate(dbClient, sessionId, { marker_b_at: t });
 
-  // Read phase 2 transcript from vault (populated by audio upload route)
-  const currentVault = await vaultRead(dbClient, sessionId);
-  const phase2 = (currentVault.transcript_segments || {}).phase_2 || '';
-  console.log(`[${sessionId}] Marker B — phase 2 transcript length: ${phase2.length}`);
+  const audioBuffers = state.phaseAudioBuffers[2];
+  state.currentPhase = 3;
+
+  // Fallback: empty buffer
+  if (!audioBuffers.length) {
+    if (state.markerRetryCount[2] < 1) {
+      state.markerRetryCount[2]++;
+      console.warn(`[${sessionId}] Marker B — no audio buffered, requesting retry`);
+      wsSend(ws, { type: 'retry_marker', marker: 'diagnosis_complete', reason: 'audio_not_ready' });
+      return;
+    }
+    console.warn(`[${sessionId}] Marker B retry failed — flagging for full doctor review`);
+    wsSend(ws, {
+      type: 'error', code: 'DIAGNOSIS_AUDIO_UNAVAILABLE',
+      message: 'AI analysis unavailable — use clinical judgment. This consultation is flagged for full doctor review.',
+    });
+    return;
+  }
 
   (async () => {
     try {
       let vaultCtx = await vaultRead(dbClient, sessionId);
       const photos = collectAllPhotos(vaultCtx);
-      if (photos.length) console.log(`[${sessionId}] Including ${photos.length} clinical photo(s) in diagnosis`);
+      if (photos.length) console.log(`[${sessionId}] Including ${photos.length} clinical photo(s) in D1/D2/D3`);
       const gps = vaultCtx.gps || {};
       const baseline = loadBaselineDiseases();
       const epi = loadEpiPrior(gps.district_code || 'WB_UNKNOWN', new Date().getMonth() + 1);
 
-      console.log(`[${sessionId}] Diagnosis Call 1: extracting concepts`);
+      console.log(`[${sessionId}] Diagnosis Call 1: extracting concepts from ${audioBuffers.length} segment(s)`);
       let t0 = Date.now();
-      const d1 = await extractMedicalConcepts(phase2, vaultCtx, photos);
+      const d1 = await extractMedicalConcepts(audioBuffers, vaultCtx, photos);
       const concepts = d1.result;
       d1.meta.latency_ms = Date.now() - t0;
       await insertLlmResult(dbClient, sessionId, 'D1_medical_concepts', 'diagnosis', 3, concepts, { ...d1.meta });
+
+      // Write transcript to vault
+      if (concepts.transcript) {
+        await vaultSetNested(dbClient, sessionId, ['transcript_segments', 'phase_2'], concepts.transcript);
+      }
       await vaultUpdate(dbClient, sessionId, { extracted_concepts: concepts });
 
       if (concepts.pregnancy_status != null) {
@@ -291,13 +359,11 @@ async function handleMarkerB(ws, state, t) {
         vaultCtx = await vaultRead(dbClient, sessionId);
       }
 
-      let d2Meta = {};
       console.log(`[${sessionId}] Diagnosis Call 2: generating differential`);
       const t1 = Date.now();
       const d2 = await generateDifferential(concepts, vaultCtx, baseline, epi, photos);
       const ddx = d2.result;
       d2.meta.latency_ms = Date.now() - t1;
-      d2Meta = d2.meta;
       await insertLlmResult(dbClient, sessionId, 'D2_differential', 'diagnosis', 4, ddx, { ...d2.meta });
       await vaultUpdate(dbClient, sessionId, { differential_table: ddx });
 
@@ -307,12 +373,15 @@ async function handleMarkerB(ws, state, t) {
       const clarifying = d3.result;
       d3.meta.latency_ms = Date.now() - t2;
       await insertLlmResult(dbClient, sessionId, 'D3_clarifying_questions', 'diagnosis', 5, clarifying, { ...d3.meta });
-      await vaultUpdate(dbClient, sessionId, { clarifying_questions: clarifying, diagnosis_stage_status: 'complete', diagnosis_stage_completed_at: new Date().toISOString() });
+      await vaultUpdate(dbClient, sessionId, {
+        clarifying_questions: clarifying,
+        diagnosis_stage_status: 'complete', diagnosis_stage_completed_at: new Date().toISOString(),
+      });
 
       wsSend(ws, {
         type: 'stage_complete', stage: 'diagnosis',
         data: { differential: ddx, clarifying_questions: clarifying },
-        timing: buildPhaseTiming(state, [d1.meta, d2Meta, d3.meta], 'diagnosis'),
+        timing: buildPhaseTiming(state, [d1.meta, d2.meta, d3.meta], 'diagnosis'),
       });
       console.log(`[${sessionId}] Diagnosis stage complete`);
     } catch (exc) {
@@ -329,15 +398,34 @@ async function handleMarkerC(ws, state, t) {
   const { sessionId, dbClient } = state;
   await vaultUpdate(dbClient, sessionId, { marker_c_at: t });
 
-  // Read phase 3 transcript from vault (populated by audio upload route)
-  const currentVault = await vaultRead(dbClient, sessionId);
-  const phase3 = (currentVault.transcript_segments || {}).phase_3 || '';
-  console.log(`[${sessionId}] Marker C — phase 3 transcript length: ${phase3.length}`);
+  const audioBuffers = state.phaseAudioBuffers[3];
+
+  // Fallback: empty buffer
+  if (!audioBuffers.length) {
+    if (state.markerRetryCount[3] < 1) {
+      state.markerRetryCount[3]++;
+      console.warn(`[${sessionId}] Marker C — no audio buffered, requesting retry`);
+      wsSend(ws, { type: 'retry_marker', marker: 'management_complete', reason: 'audio_not_ready' });
+      return;
+    }
+    console.warn(`[${sessionId}] Marker C retry failed — flagging for full doctor review`);
+    wsSend(ws, {
+      type: 'error', code: 'MANAGEMENT_AUDIO_UNAVAILABLE',
+      message: 'AI analysis unavailable — use clinical judgment. This consultation is flagged for full doctor review.',
+    });
+    return;
+  }
 
   (async () => {
     try {
-      console.log(`[${sessionId}] Management stage: pipeline starting`);
-      const result = await runManagementStage(sessionId, phase3, dbClient);
+      console.log(`[${sessionId}] Management stage: pipeline starting (${audioBuffers.length} segment(s))`);
+      const result = await runManagementStage(sessionId, audioBuffers, dbClient);
+
+      // Write transcript to vault from M1 output
+      const m1Transcript = result.clarifying_findings?.transcript;
+      if (m1Transcript) {
+        await vaultSetNested(dbClient, sessionId, ['transcript_segments', 'phase_3'], m1Transcript);
+      }
 
       const triage = result.triage || {};
       const riskTier = result.rule_engine?.final_risk_tier || 'high';
@@ -350,7 +438,7 @@ async function handleMarkerC(ws, state, t) {
       if (riskTier === 'HIGH') notifyDoctor(sessionId, triage);
       console.log(`[${sessionId}] Management stage complete — risk_tier=${riskTier}`);
 
-      // Write to patient_log — stores proforma, clarifying questions, and management plan distinctly
+      // Write to patient_log
       try {
         const vaultFinal = await vaultRead(dbClient, sessionId);
         await dbClient.query(
@@ -380,8 +468,6 @@ async function handleMarkerC(ws, state, t) {
         const gps = vaultFinal.gps || {};
         const sessionStart = vaultFinal.session_started_at ? new Date(vaultFinal.session_started_at).getTime() : null;
         const e2eDuration = sessionStart ? Date.now() - sessionStart : null;
-
-        // Aggregate timing from all phases
         const totalTranscriptionMs = state.phaseTimings.reduce((s, p) => s + (p.transcription_ms || 0), 0);
         const totalServerOverheadMs = state.phaseTimings.reduce((s, p) => s + (p.server_overhead_ms || 0), 0);
 
@@ -415,22 +501,24 @@ async function handleMarkerC(ws, state, t) {
 async function handleSessionEnd(ws, state, t) {
   const vaultCtx = await vaultRead(state.dbClient, state.sessionId);
   const riskTier = vaultCtx.risk_tier || 'unknown';
-  const phase3 = state.markerCAt ? state.transcriptFull.slice(state.phase2End.length) : '';
 
   await vaultUpdate(state.dbClient, state.sessionId, {
     session_ended_at: new Date().toISOString(),
     session_duration_seconds: t,
-    transcript_segments: {
-      phase_1: state.phase1End,
-      phase_2: state.transcriptFull.slice(state.phase1End.length, state.phase2End.length),
-      phase_3: phase3,
-    },
   });
 
-  if (state.dg) { try { state.dg.finish(); } catch {} }
   _active.delete(state.sessionId);
   wsSend(ws, { type: 'session_closed', risk_tier: riskTier });
   console.log(`[${state.sessionId}] Session closed — risk_tier=${riskTier} duration=${t}s`);
+
+  // Async: concatenate phase audio per phase and archive to Supabase Storage.
+  // Does not block session close — fires in background.
+  const { sessionId, dbClient, phaseAudioBuffers } = state;
+  concatAndArchiveAudio(sessionId, phaseAudioBuffers, dbClient).then(() => {
+    console.log(`[${sessionId}] Audio archive complete`);
+  }).catch(err => {
+    console.error(`[${sessionId}] Audio archive error: ${err.message}`);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -448,7 +536,6 @@ export function mountWebSocket(app) {
     try { claims = verifyJwt(token); } catch (e) { console.log('[WS] JWT verify failed:', e.message); ws.close(4001, e.message); return; }
     console.log('[WS] Auth OK — user:', claims.user_id, 'email:', claims.email);
 
-    // Use pool directly instead of dedicated client to avoid connection exhaustion
     const pool = getPool();
     let state = null;
 
@@ -470,7 +557,6 @@ export function mountWebSocket(app) {
           state.userId = claims.user_id;
           _active.set(sessionId, state);
           wsSend(ws, { type: 'session_ready', session_id: sessionId, is_new_patient: Object.keys(patientRecord).length === 0 });
-          // Measure initial network RTT
           wsSend(ws, { type: 'ping', ping_ts: Date.now() });
           console.log(`[${sessionId}] Session started — patient=${msg.patient_id}`);
         } else if (msgType === 'marker' && state) {
@@ -481,16 +567,25 @@ export function mountWebSocket(app) {
         } else if (msgType === 'session_end' && state) {
           await handleSessionEnd(ws, state, msg.t);
         } else if (msgType === 'audio_uploaded' && state) {
-          await vaultUpdate(pool, state.sessionId, { audio: { upload_status: 'confirmed', url: msg.url, codec: msg.codec, duration_seconds: msg.duration_seconds, size_bytes: msg.size_bytes, retain_until: new Date(Date.now() + 3650 * 86400000).toISOString() } });
+          // Legacy: client notifies that it has uploaded full session audio externally
+          await vaultUpdate(pool, state.sessionId, {
+            audio: {
+              upload_status: 'client_confirmed',
+              url: msg.url,
+              codec: msg.codec,
+              duration_seconds: msg.duration_seconds,
+              size_bytes: msg.size_bytes,
+              retain_until: new Date(Date.now() + 3650 * 86400000).toISOString(),
+              retention_days: 3650,
+            },
+          });
           wsSend(ws, { type: 'audio_confirmed' });
         } else if (msgType === 'pong' && state) {
-          // Client responded to our ping — calculate RTT
           if (msg.ping_ts) {
             state.networkRttMs = Date.now() - msg.ping_ts;
             console.log(`[${state.sessionId}] Network RTT: ${state.networkRttMs}ms`);
           }
         } else if (msgType === 'transcription_timing' && state) {
-          // Client reports transcription timing from upload response
           state.lastTranscriptionMs = msg.transcription_ms || null;
         }
       } catch (err) {
@@ -501,14 +596,7 @@ export function mountWebSocket(app) {
 
     ws.on('close', () => {
       console.log('[WS] Connection closed');
-      if (state) {
-        _active.delete(state.sessionId);
-        // Clean up Deepgram
-        if (state.dg) {
-          try { state.dg.close(); } catch {}
-          state.dg = null;
-        }
-      }
+      if (state) _active.delete(state.sessionId);
     });
   });
 }

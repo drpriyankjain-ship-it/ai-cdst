@@ -10,7 +10,7 @@
  */
 
 import { vaultRead, vaultUpdate } from '../lib/db.js';
-import { generateWithCascade, parseJsonResponse, responseText, buildMultimodalContent } from '../lib/llmClient.js';
+import { generateWithCascade, parseJsonResponse, responseText, buildAudioContent } from '../lib/llmClient.js';
 import { MODEL_H1_CHIEF_COMPLAINT, MODEL_H2_QUESTIONNAIRE } from '../lib/modelConfig.js';
 import { stateFromDistrictCode } from '../lib/epiUtils.js';
 
@@ -121,6 +121,7 @@ function buildPatientRecordFields() {
 const SCHEMA_CHIEF_COMPLAINT = {
   type: 'object',
   properties: {
+    transcript:               { type: 'string' },
     patient_name:             { type: 'string', nullable: true },
     age:                      { type: 'string', nullable: true },
     village:                  { type: 'string', nullable: true },
@@ -133,7 +134,7 @@ const SCHEMA_CHIEF_COMPLAINT = {
     language_of_consultation: { type: 'string' },
   },
   required: [
-    'patient_name', 'age', 'village', 'chief_complaint',
+    'transcript', 'patient_name', 'age', 'village', 'chief_complaint',
     'additional_complaints', 'duration', 'severity_if_mentioned',
     'spontaneous_history', 'red_flags_mentioned', 'language_of_consultation',
   ],
@@ -228,17 +229,17 @@ const FIRST_VISIT_HISTORY_QUESTIONS = {
 // Call 1 — Extract chief complaint from ~30 second opening
 // ---------------------------------------------------------------------------
 
-export async function extractChiefComplaint(transcriptSegment, vaultContext, photos = []) {
+export async function extractChiefComplaint(audioBuffers, vaultContext, photos = []) {
   const demographics = vaultContext.demographics || {};
   const prompt = [
-    'Extract the chief complaint from this brief nurse-patient consultation ' +
-    'opening. The recording is approximately 30 seconds — the nurse asked ' +
-    'name, age, village, chief complaint, and duration. Extract only what is explicitly stated.',
+    'Listen to this audio recording of a nurse-patient consultation opening (~30 seconds). ' +
+    'The nurse asked name, age, village, chief complaint, and duration. ' +
+    'Extract only what is explicitly stated.',
     `PATIENT DEMOGRAPHICS (from registration if any):\n${JSON.stringify(demographics, null, 2)}`,
-    `TRANSCRIPT (phase 1, ~30 seconds):\n${transcriptSegment}`,
     photos.length > 0 ? 'The nurse has also attached clinical photos. Note any visible findings (rash, swelling, wound, etc.) in spontaneous_history and red_flags_mentioned if relevant.' : '',
     'INSTRUCTIONS:\n' +
-    '- Extract only what is explicitly stated in the transcript\n' +
+    '- transcript: verbatim transcription of everything spoken in the audio\n' +
+    '- Extract only what is explicitly stated in the audio\n' +
     '- patient_name, age, village: verbatim from the opening exchange\n' +
     '- duration: patient\'s own words — do not interpret or convert\n' +
     '- spontaneous_history: anything volunteered beyond the direct questions\n' +
@@ -246,11 +247,11 @@ export async function extractChiefComplaint(transcriptSegment, vaultContext, pho
     '- This is ~30 seconds. Most fields will be null. Do not infer.',
   ].filter(Boolean).join('\n\n');
 
-  const contents = buildMultimodalContent(prompt, photos);
+  const contents = buildAudioContent(prompt, audioBuffers, 'audio/mp4', photos);
   const { response, meta } = await generateWithCascade(
     MODEL_H1_CHIEF_COMPLAINT,
     contents,
-    { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json', responseSchema: SCHEMA_CHIEF_COMPLAINT, maxOutputTokens: 600 },
+    { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json', responseSchema: SCHEMA_CHIEF_COMPLAINT, maxOutputTokens: 800 },
   );
   const result = parseJsonResponse(responseText(response));
   return { result, meta };
@@ -420,13 +421,13 @@ export function extractPatientRecordUpdate(questionnaire, chiefComplaint, sessio
 // Main pipeline
 // ---------------------------------------------------------------------------
 
-export async function runHistoryStage(sessionId, transcriptSegment, dbClient) {
+export async function runHistoryStage(sessionId, audioBuffers, dbClient) {
   const vaultContext = await vaultRead(dbClient, sessionId);
   const patientRecord = vaultContext.patient_record || {};
 
   // Call 1
   console.log(`[${sessionId}] History stage Call 1: extracting chief complaint`);
-  const chiefComplaint = await extractChiefComplaint(transcriptSegment, vaultContext);
+  const chiefComplaint = await extractChiefComplaint(audioBuffers, vaultContext);
   await vaultUpdate(dbClient, sessionId, { chief_complaint: chiefComplaint });
 
   // Nudge path
