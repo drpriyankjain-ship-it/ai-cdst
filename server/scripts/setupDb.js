@@ -111,6 +111,79 @@ async function run() {
   `);
   console.log('  audio_records ✓');
 
+  // 7. LLM Results
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS llm_results (
+      id            SERIAL PRIMARY KEY,
+      session_id    TEXT NOT NULL REFERENCES sessions(session_id),
+      call_name     TEXT NOT NULL,
+      stage         TEXT NOT NULL,
+      call_order    INT NOT NULL,
+      model_used    TEXT,
+      input_tokens  INT,
+      output_tokens INT,
+      latency_ms    INT,
+      cost_usd      NUMERIC(10,6),
+      result        JSONB NOT NULL DEFAULT '{}',
+      error         TEXT,
+      created_at    TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+  console.log('  llm_results ✓');
+
+  // 8. Pipeline Failures
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS pipeline_failures (
+      id          SERIAL PRIMARY KEY,
+      session_id  TEXT REFERENCES sessions(session_id),
+      user_id     TEXT,
+      stage       TEXT,
+      call_name   TEXT,
+      error_code  TEXT,
+      error_msg   TEXT,
+      created_at  TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+  console.log('  pipeline_failures ✓');
+
+  // 9. Session Metrics
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS session_metrics (
+      session_id               TEXT PRIMARY KEY REFERENCES sessions(session_id),
+      user_id                  TEXT,
+      patient_id               TEXT,
+      total_llm_calls          INT,
+      total_input_tokens       INT,
+      total_output_tokens      INT,
+      total_cost_usd           NUMERIC(10,6),
+      total_latency_ms         INT,
+      e2e_duration_ms          INT,
+      gps_lat                  NUMERIC(9,6),
+      gps_lon                  NUMERIC(9,6),
+      district_code            TEXT,
+      risk_tier                TEXT,
+      pipeline_status          TEXT,
+      network_rtt_ms           INT,
+      total_transcription_ms   INT,
+      total_server_overhead_ms INT,
+      phase_timings            JSONB,
+      created_at               TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+  console.log('  session_metrics ✓');
+
+  // 10. Case Queue
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS case_queue (
+      session_id  TEXT PRIMARY KEY REFERENCES sessions(session_id),
+      risk_tier   TEXT NOT NULL,
+      status      TEXT NOT NULL DEFAULT 'active',
+      cleared_at  TIMESTAMPTZ,
+      created_at  TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+  console.log('  case_queue ✓');
+
   // Create indexes (safe with IF NOT EXISTS)
   await client.query('CREATE INDEX IF NOT EXISTS idx_audio_records_user ON audio_records(user_id);');
   await client.query('CREATE INDEX IF NOT EXISTS idx_audio_records_status ON audio_records(status);');
@@ -119,6 +192,17 @@ async function run() {
   await client.query('CREATE INDEX IF NOT EXISTS stg_chunks_section_idx ON stg_chunks(section);');
   await client.query('CREATE UNIQUE INDEX IF NOT EXISTS stg_chunks_source_content_hash_idx ON stg_chunks(source, content_hash);');
   await client.query(`CREATE INDEX IF NOT EXISTS stg_chunks_embedding_idx ON stg_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);`);
+  await client.query('CREATE INDEX IF NOT EXISTS idx_llm_results_session ON llm_results(session_id);');
+  await client.query('CREATE INDEX IF NOT EXISTS idx_llm_results_call_name ON llm_results(call_name);');
+  await client.query('CREATE INDEX IF NOT EXISTS idx_llm_results_model ON llm_results(model_used);');
+  await client.query('CREATE INDEX IF NOT EXISTS idx_pipeline_failures_session ON pipeline_failures(session_id);');
+  await client.query('CREATE INDEX IF NOT EXISTS idx_pipeline_failures_created ON pipeline_failures(created_at);');
+  await client.query('CREATE INDEX IF NOT EXISTS idx_pipeline_failures_user ON pipeline_failures(user_id);');
+  await client.query('CREATE INDEX IF NOT EXISTS idx_session_metrics_user ON session_metrics(user_id);');
+  await client.query('CREATE INDEX IF NOT EXISTS idx_session_metrics_created ON session_metrics(created_at);');
+  await client.query('CREATE INDEX IF NOT EXISTS idx_session_metrics_risk ON session_metrics(risk_tier);');
+  await client.query('CREATE INDEX IF NOT EXISTS idx_case_queue_status ON case_queue(status, created_at);');
+  await client.query('CREATE INDEX IF NOT EXISTS idx_case_queue_risk ON case_queue(risk_tier);');
   console.log('  indexes ✓');
 
   // Updated_at trigger function

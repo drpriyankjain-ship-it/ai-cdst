@@ -78,22 +78,6 @@ router.post('/upload', requireAuth, upload.single('audio'), async (req, res) => 
       [recordId, userId, patientName, patientId, req.file.path, transcript, JSON.stringify(aiSuggestion)]
     );
 
-    // Also write to patient_log — stores AI proforma from the upload flow
-    try {
-      await pool.query(
-        `INSERT INTO patient_log (patient_id, audio_record_id, source, proforma, management_plan)
-         VALUES ($1, $2, 'upload', $3, $4)`,
-        [
-          patientId,
-          recordId,
-          JSON.stringify({ transcript_summary: aiSuggestion.summary, assessment: aiSuggestion.assessment }),
-          JSON.stringify({ suggestions: aiSuggestion.suggestions, red_flags: aiSuggestion.redFlags, diagnosis: aiSuggestion.diagnosis }),
-        ]
-      );
-    } catch (logErr) {
-      console.error('[AUDIO] patient_log write failed:', logErr.message);
-    }
-
     res.json({
       success: true, id: recordId, transcript,
       geminiSuggestion: aiSuggestion, status: 'completed',

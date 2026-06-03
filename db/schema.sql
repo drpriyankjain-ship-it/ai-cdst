@@ -323,3 +323,104 @@ CREATE TABLE doctor_clinic_assignments (
     clinic_id       TEXT NOT NULL REFERENCES clinics(clinic_id),
     PRIMARY KEY (doctor_id, clinic_id)
 );
+
+
+-- ============================================================
+-- LLM Results — per-call output and operational metadata
+-- One row per LLM call. 9 rows per completed session (H1-H2,
+-- D1-D3, M1-M4). Source of truth for cost and latency tracking.
+-- session_metrics aggregates from this table.
+-- ============================================================
+CREATE TABLE llm_results (
+    id            SERIAL PRIMARY KEY,
+    session_id    TEXT NOT NULL REFERENCES sessions(session_id),
+    call_name     TEXT NOT NULL,        -- e.g. 'H1_chief_complaint', 'D2_differential'
+    stage         TEXT NOT NULL,        -- 'history' | 'diagnosis' | 'management'
+    call_order    INT NOT NULL,         -- 1-9, global order across all stages
+    model_used    TEXT,
+    input_tokens  INT,
+    output_tokens INT,
+    latency_ms    INT,
+    cost_usd      NUMERIC(10,6),
+    result        JSONB NOT NULL DEFAULT '{}',
+    error         TEXT,
+    created_at    TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX ON llm_results (session_id);
+CREATE INDEX ON llm_results (call_name);
+CREATE INDEX ON llm_results (model_used);
+
+
+-- ============================================================
+-- Pipeline Failures — durable error log
+-- Written on any stage exception. Console logs are ephemeral;
+-- this table survives server restarts and enables failure rate
+-- monitoring by stage, call, and error type.
+-- ============================================================
+CREATE TABLE pipeline_failures (
+    id          SERIAL PRIMARY KEY,
+    session_id  TEXT REFERENCES sessions(session_id),
+    user_id     TEXT,
+    stage       TEXT,                   -- 'history' | 'diagnosis' | 'management'
+    call_name   TEXT,
+    error_code  TEXT,                   -- 'LLM_503' | 'LLM_429' | 'PARSE_ERROR' | 'ENOENT' | 'UNKNOWN'
+    error_msg   TEXT,
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX ON pipeline_failures (session_id);
+CREATE INDEX ON pipeline_failures (created_at);
+CREATE INDEX ON pipeline_failures (user_id);
+
+
+-- ============================================================
+-- Session Metrics — per-session aggregate
+-- Written once after Marker C. Denormalized from llm_results
+-- for fast analytics dashboard queries. ON CONFLICT upsert
+-- allows the orchestrator to rewrite it if Marker C retries.
+-- ============================================================
+CREATE TABLE session_metrics (
+    session_id               TEXT PRIMARY KEY REFERENCES sessions(session_id),
+    user_id                  TEXT,
+    patient_id               TEXT,
+    total_llm_calls          INT,
+    total_input_tokens       INT,
+    total_output_tokens      INT,
+    total_cost_usd           NUMERIC(10,6),
+    total_latency_ms         INT,
+    e2e_duration_ms          INT,
+    gps_lat                  NUMERIC(9,6),
+    gps_lon                  NUMERIC(9,6),
+    district_code            TEXT,
+    risk_tier                TEXT,
+    pipeline_status          TEXT,      -- 'complete' | 'partial' | 'failed'
+    network_rtt_ms           INT,
+    total_transcription_ms   INT,
+    total_server_overhead_ms INT,
+    phase_timings            JSONB,
+    created_at               TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX ON session_metrics (user_id);
+CREATE INDEX ON session_metrics (created_at);
+CREATE INDEX ON session_metrics (risk_tier);
+
+
+-- ============================================================
+-- Case Queue — nurse dashboard workflow state
+-- One row per completed session (written at Marker C).
+-- Tracks only dashboard status; all clinical data is in the
+-- vault (sessions.data). Dashboard joins with sessions to read
+-- patient ID, triage output, etc.
+-- ============================================================
+CREATE TABLE case_queue (
+    session_id  TEXT PRIMARY KEY REFERENCES sessions(session_id),
+    risk_tier   TEXT NOT NULL,                   -- 'LOW' | 'HIGH'
+    status      TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'cleared'
+    cleared_at  TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX ON case_queue (status, created_at);
+CREATE INDEX ON case_queue (risk_tier);

@@ -455,28 +455,15 @@ async function handleMarkerC(ws, state, t) {
       if (riskTier === 'HIGH') notifyDoctor(sessionId, triage);
       console.log(`[${sessionId}] Management stage complete — risk_tier=${riskTier}`);
 
-      // Write to patient_log
+      // Write to case_queue — nurse dashboard workflow state
       try {
-        const vaultFinal = await vaultRead(dbClient, sessionId);
         await dbClient.query(
-          `INSERT INTO patient_log (patient_id, session_id, source, proforma, clarifying_questions, management_plan)
-           VALUES ($1, $2, 'live', $3, $4, $5)`,
-          [
-            vaultFinal.patient_id || vaultFinal.demographics?.patient_id || '',
-            sessionId,
-            JSON.stringify(vaultFinal.questionnaire || null),
-            JSON.stringify(vaultFinal.clarifying_questions || null),
-            JSON.stringify({
-              problem_list: result.problem_list || null,
-              triage_output: triage,
-              risk_assessment: result.risk_assessment || null,
-              risk_tier: riskTier,
-            }),
-          ]
+          `INSERT INTO case_queue (session_id, risk_tier) VALUES ($1, $2) ON CONFLICT (session_id) DO NOTHING`,
+          [sessionId, riskTier]
         );
-        console.log(`[${sessionId}] patient_log entry created`);
+        console.log(`[${sessionId}] case_queue entry created`);
       } catch (logErr) {
-        console.error(`[${sessionId}] patient_log write failed:`, logErr.message);
+        console.error(`[${sessionId}] case_queue write failed:`, logErr.message);
       }
 
       // Write session_metrics aggregate

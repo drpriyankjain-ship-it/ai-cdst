@@ -133,6 +133,28 @@ Tools needed: `retrieve_stg()`, `check_formulary()`, `flag_drug_interaction()`.
 
 ---
 
+### 12. Multi-state GPS and epi prior expansion
+**Not blocking WB pilot. Required before deploying to any non-WB site.**
+
+The current GPS implementation (`src/utils/districtLookup.js`) only resolves
+district codes for the 23 West Bengal districts. Sessions in any other state
+fall back to `WB_UNKNOWN`, which silently drops the Layer 2 epi prior and logs
+a warning. The lat/lng coordinates are still stored in the Vault.
+
+Two things are needed to support additional states:
+1. **District name → code mappings** — add entries for target-state districts to
+   `src/utils/districtLookup.js`. The code prefix convention (`BR_`, `OD_`, etc.)
+   is already in `server/lib/epiUtils.js`'s `DISTRICT_CODE_TO_STATE` map.
+2. **Epi prior data** — add district + seasonal disease weights for those districts
+   to `data/epi_prior_wb.json` (or a new state-specific file). Without this,
+   the district code resolves correctly but `loadEpiPrior` returns empty because
+   no epidemiological data exists for the code.
+
+**Tracking:** the GPS coordinates are always captured regardless of state, so no
+clinical data is lost — only the Layer 2 epi modifier is absent for non-WB sessions.
+
+---
+
 ### 11. Confirmation pipeline — design agentically
 **Not blocking MVP. Required for Layer 3 epi prior.** See [ADR 001](adr/001-agentic-patterns.md).
 
