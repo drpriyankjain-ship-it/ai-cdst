@@ -20,51 +20,87 @@ a remote doctor reviews asynchronously.
 
 ```
 cdst/
-├── history_stage.py            # Two-call pipeline, no RAG
-├── diagnosis_stage.py          # Three-call pipeline, no RAG
-├── management_stage.py         # Four-call pipeline, RAG in Call 2
-├── epi_utils.py                # Shared epi utilities — imported by all three stages
-├── model_config.py             # LLM model assignments for all 9 pipeline calls — edit here to change models
-├── llm_client.py               # Shared Gemini client instance (reads GEMINI_API_KEY)
-├── orchestrator.py             # WebSocket session orchestrator — central component
+├── server/                         # Live Node.js backend (Express + express-ws)
+│   ├── index.js                    # Entry point — port 3000, mounts routes + WS
+│   ├── orchestrator.js             # WebSocket session orchestrator — central component
+│   ├── stages/
+│   │   ├── historyStage.js         # Two-call pipeline, no RAG
+│   │   ├── diagnosisStage.js       # Three-call pipeline, no RAG
+│   │   ├── managementStage.js      # Four-call pipeline, RAG in Call 2
+│   │   └── managementHelpers.js    # Validation, rule engine, schema constants
+│   ├── lib/
+│   │   ├── llmClient.js            # Shared Gemini client (reads GEMINI_API_KEY)
+│   │   ├── modelConfig.js          # LLM model assignments for all 9 pipeline calls — edit here
+│   │   ├── epiUtils.js             # Shared epi utilities
+│   │   ├── db.js                   # Postgres/Supabase connection pool + vault helpers
+│   │   ├── auth.js                 # JWT sign/verify middleware
+│   │   ├── email.js                # OTP email delivery
+│   │   └── storage.js              # S3-compatible audio storage
+│   ├── routes/
+│   │   ├── auth.js                 # POST /api/auth/...
+│   │   ├── audio.js                # POST /api/audio/... (audio upload + transcription)
+│   │   ├── session.js              # GET/POST /api/session/...
+│   │   ├── dashboard.js            # GET /api/dashboard/...
+│   │   └── transcripts.js          # GET /api/transcripts/...
+│   └── scripts/
+│       ├── setupDb.js              # Create all tables + indexes against Supabase/Postgres
+│       └── seedUser.js             # Seed a test user
+├── src/                            # React Native mobile app (Expo 54)
+│   ├── screens/                    # LiveConsultationScreen, HistoryPage, TranscriptPage, etc.
+│   ├── components/                 # Shared UI components
+│   ├── navigation/                 # AppNavigator, AuthNavigator
+│   ├── services/                   # wsService.js, apiService.js, authService.js
+│   ├── context/AuthContext.js
+│   └── styles/
+├── web/                            # Vanilla JS web frontend (served by server/index.js)
+│   ├── index.html
+│   ├── app.js / audio.js / api.js / styles.css
+│   └── screens/                    # dashboard, login, record, history, about
 ├── data/
-│   ├── epi_prior_wb.json       # All 23 WB districts, 4 seasonal buckets
-│   ├── bedside_tools.json      # Constraint list for nurse-available tools
-│   ├── formulary_wb.json       # SHC-HWC essential medicines (MoHFW Operational Guidelines, Annexures 1 & 2)
-│   ├── escalation_rules.json   # Rule engine configuration (MO reviewed)
-│   └── must_not_miss.json      # Must-not-miss diagnoses list (MO reviewed) — loaded by Diagnosis Stage
+│   ├── epi_prior_wb.json           # All 23 WB districts, 4 seasonal buckets
+│   ├── bedside_tools.json          # Constraint list for nurse-available tools
+│   ├── formulary_wb.json           # SHC-HWC essential medicines (MoHFW Operational Guidelines, Annexures 1 & 2)
+│   ├── escalation_rules.json       # Rule engine configuration (MO reviewed)
+│   ├── must_not_miss.json          # Must-not-miss diagnoses list (MO reviewed) — loaded by Diagnosis Stage
+│   └── rag_disease_aliases.json    # Disease alias map for STG ingestion disease tagging
 ├── db/
-│   └── schema.sql              # Postgres schema: sessions, stg_chunks,
-│                               # patient_records, confirmed_encounters
+│   └── schema.sql                  # Postgres schema reference
 ├── docs/
 │   ├── decisions/
-│   │   ├── DECISIONS_OPEN.md   # All unresolved questions — grouped by who must answer them
+│   │   ├── DECISIONS_OPEN.md       # All unresolved questions — grouped by who must answer them
 │   │   └── adr/
-│   │       ├── README.md                     # ADR index — read before proposing architectural changes
-│   │       ├── 001-agentic-patterns.md       # Which parts of the pipeline should be agentic vs fixed
-│   │       └── 002-history-intake-approach.md # Fixed vs LLM-generated background history questions
+│   │       ├── README.md           # ADR index — read before proposing architectural changes
+│   │       ├── 001-agentic-patterns.md
+│   │       ├── 002-history-intake-approach.md
+│   │       ├── 003-problem-oriented-management.md
+│   │       ├── 004-model-tier-selection.md
+│   │       └── 005-diagnosis-stage-ttft.md
 │   ├── arch/
 │   │   ├── cdst_full_pipeline.html           # Full system architecture diagram
 │   │   ├── continuous_stream_pipeline.html   # Audio streaming architecture diagram
-│   │   └── rag_brief.md                      # Engineering brief for RAG setup
+│   │   ├── cdst_engineering_overview.html    # Engineering overview diagram
+│   │   ├── rag_brief.md                      # Engineering brief for RAG setup
+│   │   └── rag_implementation_status.md      # Corpus ingestion status and smoke test results
 │   ├── clinical/
 │   │   ├── MO_REVIEW_CHECKLIST.md            # Site onboarding checklist for Medical Officers
 │   │   ├── bedside_tools_crosscheck.md       # Guideline citations for bedside_tools.json
 │   │   ├── high_risk_escalation_rules.md     # Human-readable guide to escalation_rules.json
-│   │   └── source-materials/                 # Raw source PDFs (MoHFW guidelines, STG volumes)
+│   │   ├── RAG source/                       # Approved source PDFs for STG ingestion
+│   │   └── source-materials/                 # Raw MoHFW guideline PDFs
 │   └── validation/
-│       ├── run_NNN_<patient>_<date>.md       # Per-run narrative notes
-│       ├── validation_1_english.txt          # Test transcript (english, patient FKP1192)
-│       └── validation_output_<timestamp>.json # Raw JSON output from validate_pipeline.py runs
+│       ├── validation_1_english.txt          # Test transcript (patient FKP1192)
+│       └── run_NNN_<patient>_<date>.md       # Per-run narrative notes
 ├── scripts/
-│   └── ingest_stg.py           # STG embedding pipeline (chunk → embed → pgvector)
+│   ├── ingest_stg.py               # STG embedding pipeline (chunk → embed → pgvector)
+│   ├── query_stg.py                # Smoke-test retrieval against the live corpus
+│   └── rag_source_manifest.json    # Stable source labels for the ingestion pipeline
 ├── evals/
-│   └── validate_pipeline.py    # End-to-end pipeline eval harness — run against transcripts in docs/validation/
-└── CLAUDE.md                   # This file
+│   └── validate_pipeline.py        # End-to-end pipeline eval harness
+├── python_pipeline/                # Archived — original Python implementation. Not in active use.
+│                                   # Live pipeline is server/. Do not make changes here.
+├── App.js                          # React Native entry point
+└── CLAUDE.md                       # This file
 ```
-
-Note: all Python files are at the repo root (not in subdirectories). The tree above
-shows logical grouping only.
 
 ---
 
@@ -72,14 +108,15 @@ shows logical grouping only.
 
 | Component | Choice |
 |---|---|
-| Backend | FastAPI (Python) |
-| Database | Postgres + pgvector extension |
+| Backend | Node.js — Express + express-ws |
+| Database | Postgres + pgvector (hosted on Supabase) |
 | Object storage | S3-compatible (audio files) |
 | STT | Deepgram streaming WebSocket |
-| LLM | Gemini via Google Gemini API (`google-genai` SDK) — model assignments in `model_config.py` |
+| LLM | Gemini via Google Gemini API (`@google/genai` SDK) — model assignments in `server/lib/modelConfig.js` |
 | Embeddings | sentence-transformers/all-MiniLM-L6-v2 (384-dim) |
-| Mobile | React Native |
-| Auth | JWT, role-based: nurse / doctor / admin |
+| Mobile | React Native (Expo 54) |
+| Web | Vanilla JS — served as static files by the Node.js server |
+| Auth | JWT (HS256), role-based: nurse / doctor / admin; OTP email verification |
 | Target region | All India (piloting in West Bengal — 23 districts) |
 
 ---
@@ -87,40 +124,37 @@ shows logical grouping only.
 ## The consultation flow
 
 A single WebSocket opens when the nurse starts the session and stays open
-until the session ends. Audio streams continuously to the server. Deepgram
-transcribes it in real time. The nurse presses three buttons:
+until the session ends. Audio is uploaded in chunks via REST (`/api/audio/`),
+transcribed via Deepgram, and the transcript is accumulated server-side.
+The nurse presses three buttons:
 
 **Marker A** — ~30 seconds in. Patient has stated name, age, village, chief
 complaint, duration. Nothing else is known. History Stage fires.
-Target: questionnaire first token on screen within 1.5s.
-Actual measured: H1 blocks ~0.9s, then H2 streams — first token ~1.2s. ✓
+Target: questionnaire on screen within 1.5s.
+Actual measured: H1 ~0.9s + H2 ~1.3s = full questionnaire in ~2.2s. No streaming.
 
 **Marker B** — after 3-4 minute structured interview. Diagnosis Stage fires.
-Target: differential starts streaming within 1.5s. Full pipeline ~5-6s.
-Actual measured: D1 blocks ~4.9s, then D2 streams — first token ~5.2s. Target
-not met; see ADR 005 for options. Full D-stage: ~17s.
+Target: differential within 1.5s. Actual: D1 ~4.9s + D2 ~3.2s + D3 ~1.4s = ~9.5s total.
+Target not met; see ADR 005 for options.
 
 **Marker C** — after 1-2 minute clarifying questions phase. Management Stage
-fires. Full pipeline ~7-8s including rule engine.
-Actual measured: M1+RAG blocks ~2.1s, then M2 streams — first token ~2.4s.
-Full M-stage: ~22s (M3+M4 run in parallel — see Management Stage below).
+fires. Full pipeline ~22s (M3+M4 run in parallel).
 
 Button presses send a lightweight JSON control message over the same WebSocket:
-`{ "marker": "history_complete", "t": 94.3 }` where t is session-relative seconds.
+`{ "type": "marker", "marker": "history_complete", "t": 94.3 }` where t is
+session-relative seconds.
 
-The nurse never reviews or discards recordings. Audio is never stored as discrete
-files during the session — it is a continuous stream. Post-session, the complete
-audio is packaged and uploaded to S3 in the background (async, does not block the
-nurse) with a 90-day retention policy.
+The nurse never reviews or discards recordings. Audio is uploaded in chunks during
+the session and assembled post-session. The complete audio is uploaded to S3 in the
+background (async, does not block the nurse) with a 90-day retention policy.
 
 ---
 
-## Session orchestrator (orchestrator.py)
+## Session orchestrator (server/orchestrator.js)
 
-**Built.** The central component — a FastAPI WebSocket server that owns the full
-session lifecycle. All stage functions are called directly from the orchestrator
-(not via HTTP); the orchestrator imports from history_stage, diagnosis_stage, and
-management_stage.
+The central component — an Express WebSocket server that owns the full session
+lifecycle. All stage functions are called directly from the orchestrator (not via
+HTTP); the orchestrator imports from historyStage, diagnosisStage, and managementStage.
 
 ### WebSocket protocol
 
@@ -130,10 +164,6 @@ management_stage.
   "gps": { "district": "Murshidabad", "district_code": "WB_MSD",
            "lat": 24.18, "lng": 88.27 } }
 
-{ "type": "reconnect", "session_id": "sess_abc123" }
-
-{ "type": "audio",     "data": "<base64 opus chunk>", "t": 12.4 }
-
 { "type": "marker",    "marker": "history_complete|diagnosis_complete|management_complete",
   "t": 94.3 }
 
@@ -141,108 +171,117 @@ management_stage.
 
 { "type": "audio_uploaded", "url": "s3://...", "codec": "opus",
   "duration_seconds": 742, "size_bytes": 1893422 }
+
+{ "type": "pong",           "ping_ts": 1234567890 }
+
+{ "type": "transcription_timing", "transcription_ms": 340 }
 ```
 
 **Server → Client:**
 ```
 { "type": "session_ready",   "session_id": "sess_abc123", "is_new_patient": true }
+{ "type": "ping",            "ping_ts": 1234567890 }
 { "type": "transcript",      "text": "...", "is_final": true }
-{ "type": "stage_token",     "stage": "history|diagnosis|management", "token": "..." }
 { "type": "stage_complete",  "stage": "history|diagnosis|management", "data": {...} }
 { "type": "session_closed",  "risk_tier": "low|high" }
 { "type": "audio_confirmed" }
 { "type": "error",           "code": "AUTH_FAILED|SESSION_NOT_FOUND|...", "message": "..." }
 ```
 
+Note: there are no `stage_token` streaming messages. All stage calls are
+non-streaming — the full structured result arrives in `stage_complete`.
+Audio is not sent over the WebSocket; it goes via REST (`POST /api/audio/`).
+
 ### Authentication
 
-JWT Bearer token in the Authorization header at WebSocket upgrade time.
-Expected claims: `{ "nurse_id": "N-001", "role": "nurse", "clinic_id": "C-042" }`.
+JWT Bearer token accepted from the `Authorization` header OR from a `?token=`
+query parameter at WebSocket upgrade time (React Native WebSocket does not
+reliably send custom headers).
 `JWT_SECRET` and `JWT_ALGORITHM` are environment variables.
 
 ### Session lifecycle
 
 1. **Init** — client sends `init` with patient_id, nurse_id, GPS.
-   Orchestrator loads patient record from `patient_records` (empty dict for new
-   patients). Calls `vault_init()` to create the Vault document. Returns
-   `session_ready` with a generated session_id.
+   Orchestrator loads patient record from `patient_records` (empty object for new
+   patients). Calls `vaultInit()` to create the Vault document. Returns
+   `session_ready` with a generated session_id, then immediately sends a `ping`
+   to measure network RTT.
 
-2. **Audio stream** — client sends base64 opus chunks continuously. Orchestrator
-   decodes and forwards bytes to Deepgram. Each chunk is appended to a server-side
-   ring buffer (last ~60s, 600-element deque) for reconnect replay.
+2. **Audio** — audio chunks are uploaded via `POST /api/audio/` (REST, not
+   WebSocket). The route appends transcript segments to the Vault. Each upload
+   response includes transcription timing which the client reports back via
+   `transcription_timing`.
 
-3. **Deepgram transcripts** — `DeepgramConnection` class receives final and interim
-   transcript events. Final transcripts are appended to `state.transcript_full` in
+3. **Deepgram transcripts** — `DeepgramClient` receives final and interim
+   transcript events. Final transcripts are appended to `state.transcriptFull` in
    memory and flushed to `sessions.data.transcript_full` in Postgres via
-   `vault_append_transcript()` (uses `jsonb_set` + string concat, not a full rewrite).
+   `vaultAppendTranscript()`.
 
-4. **Marker A (history_complete)** — orchestrator snapshots `transcript_full` as
-   `phase_1_end`. Writes `marker_a_at` and `transcript_segments.phase_1` to Vault.
-   Fires two concurrent asyncio tasks:
-   - `stream_questionnaire()` — tokens streamed to client as `stage_token` messages
-   - `generate_questionnaire()` + `validate_questionnaire()` — structured JSON written
-     to Vault; `patient_record_stub` also written for Diagnosis Stage to use
-   First token reaches nurse within ~1.2s of button press (H1 ~0.9s + H2 streaming TTFT).
+4. **Marker A (history_complete)** — reads phase 1 transcript from Vault.
+   Writes `marker_a_at` to Vault. Runs History Stage sequentially:
+   - H1: extracts chief complaint
+   - H2: generates questionnaire + validates it; writes to Vault
+   Sends `stage_complete` with the full questionnaire JSON.
 
-5. **Marker B (diagnosis_complete)** — slices phase 2 transcript (marker A → B).
-   Writes to Vault. Fires two concurrent tasks:
-   - `stream_differential()` — tokens to client
-   - `generate_differential()` + `validate_differential()` — structured DDx to Vault
-   Then runs `generate_clarifying_questions()` sequentially (needs the validated DDx).
-   All three writes go to Vault before `stage_complete` is sent.
+5. **Marker B (diagnosis_complete)** — reads phase 2 transcript from Vault.
+   Writes `marker_b_at`. Runs Diagnosis Stage sequentially:
+   - D1: extracts medical concepts; updates pregnancy status in demographics if found
+   - D2: generates differential; writes to Vault
+   - D3: generates clarifying questions (needs validated DDx); writes to Vault
+   Sends `stage_complete` with differential + clarifying questions.
 
-6. **Marker C (management_complete)** — slices phase 3 transcript (marker B → C).
-   Writes to Vault. Fires two concurrent tasks via `asyncio.gather`:
-   - `stream_management()` — prose Dx + Rx tokens streamed to nurse as `stage_token`
-     messages (display only — structured output comes separately)
-   - `run_management_stage()` — all four LLM calls, RAG, rule engine, Vault writes
-   On completion, `stage_complete` carries `triage_output`, `risk_tier`,
-   `problem_list`, and `risk_assessment`. HIGH risk cases trigger
-   `_notify_doctor()` (stub — replace with FCM/SMS).
+6. **Marker C (management_complete)** — reads phase 3 transcript from Vault.
+   Writes `marker_c_at`. Runs Management Stage (`runManagementStage`):
+   - M1 + RAG retrieval in parallel via `Promise.all`
+   - M2: problem list + prescription
+   - M3 + M4 in parallel via `Promise.all`
+   - Rule engine: deterministic safety check
+   Sends `stage_complete` with `triage_output`, `risk_tier`, `problem_list`,
+   `risk_assessment`. HIGH risk triggers `notifyDoctor()` (stub — replace with FCM/SMS).
+   On completion, writes a `patient_log` row and a `session_metrics` aggregate.
 
-7. **Reconnect** — client sends `{ "type": "reconnect", "session_id": "..." }`.
-   Orchestrator checks the in-memory `_active` registry; if the server restarted,
-   rebuilds `SessionState` from the Vault via `SessionState.from_vault()`. Client
-   then flushes its ring buffer of audio chunks which are forwarded to a fresh
-   Deepgram connection.
+7. **Session end** — writes `session_ended_at`, `session_duration_seconds`, and
+   final `transcript_segments` to Vault. Audio upload is the device's
+   responsibility; when it calls `audio_uploaded`, the Vault receives the S3 URL
+   and a `retain_until` date (90 days from upload).
 
-8. **Session end** — writes `session_ended_at`, `session_duration_seconds`, and
-   final `transcript_segments` to Vault. Closes Deepgram. Audio upload is the
-   device's responsibility; when it calls `audio_uploaded`, the Vault receives
-   the S3 URL and a `retain_until` date (90 days from upload).
+### REST endpoints
 
-### REST endpoints on the orchestrator
-
-- `GET  /session/{id}/status` — returns stage completion status and risk tier
-  (used by the doctor review queue)
-- `POST /session/{id}/doctor-auth` — doctor records approve / modify / reject
-  with optional notes and modified prescription
+- `POST /api/auth/...` — login, register, OTP verification
+- `POST /api/audio/...` — audio chunk upload and transcription
+- `GET  /api/session/:id/status` — stage completion status and risk tier
+- `POST /api/session/:id/doctor-auth` — approve / modify / reject with optional notes
+- `GET  /api/dashboard/...` — case list for doctor review queue
+- `GET  /api/transcripts/...` — session transcript retrieval
 - `GET  /health` — liveness check
 
 ---
 
 ## The three stages
 
-### History Stage (history_stage.py)  [fixed pipeline]
+### History Stage (server/stages/historyStage.js)  [fixed pipeline]
 
 **Two LLM calls, no RAG.**
 
-Call 1 (~700ms): Extracts chief complaint from the ~30s phase 1 transcript.
+Call 1 (~900ms): Extracts chief complaint from the ~30s phase 1 transcript.
 At this point only name, age, village, chief complaint, and duration are known.
 Nothing else. The schema has many null fields by design.
 
-Call 2 (~1.3s, streaming): Generates a structured contextualised questionnaire.
-Uses `build_patient_record_context()` to determine field by field what is already
+Call 2 (~1.3s): Generates a structured contextualised questionnaire.
+Uses `buildPatientRecordContext()` to determine field by field what is already
 known vs what needs to be collected. A new patient gets a full intake (past medical
 history, family history, social history, medications, allergies). A returning patient
 gets a short verification pass for changed fields only. The nurse never specifies
-visit type — the agent reasons it from the patient record state.
+visit type — the stage reasons it from the patient record state.
+
+Supports clinical photos: if `session_photos` are present in the Vault, they are
+passed as multimodal content to both H1 and H2 calls via `buildMultimodalContent()`.
 
 The questionnaire output includes `patient_record_fields` — a structured object
 the Diagnosis Stage's concept extractor uses as a schema for what to populate
 from the phase 2 transcript.
 
-### Diagnosis Stage (diagnosis_stage.py)  [fixed pipeline]
+### Diagnosis Stage (server/stages/diagnosisStage.js)  [fixed pipeline]
 
 **Three LLM calls, no RAG.**
 
@@ -250,22 +289,24 @@ Call 1 (~900ms): Extracts structured medical concepts from the phase 2 transcrip
 Negatives are as important as positives. Ambiguous or qualified patient answers
 (e.g. "sometimes", "not sure") are captured separately in `uncertain_findings`
 rather than collapsed into positives or negatives. Prior encounter history is read
-from `patient_record.encounters` in the Vault. Output written to Vault independently.
+from `patient_record.encounters` in the Vault. If pregnancy status is detected,
+it is immediately written to `demographics.pregnancy_status` in the Vault before D2
+runs (pregnancy affects differential and rule engine).
 
-Call 2 (~3.2s, streaming): Generates ranked differential (4-6 conditions) using
+Call 2 (~3.2s): Generates ranked differential (4-6 conditions) using
 LLM general knowledge + two-layer epidemiological prior. No RAG. Layer 1 is a
 checklist of common presentations to consider — not a mandatory anchor. The
 presenting complaint always dominates both layers. `discriminating_tests` records
 all clinically relevant investigations (bedside, lab, or imaging); Call 3 filters
 to what is bedside-feasible.
 
-Call 3 (~1.4s, streaming): Generates gap analysis and clarifying questions,
+Call 3 (~1.4s): Generates gap analysis and clarifying questions,
 constrained to tools in `bedside_tools.json`. `uncertain_findings` from Call 1
 are surfaced as priority re-ask candidates if discriminating for the differential.
 
 **Must-not-miss diagnoses** are loaded at runtime from `data/must_not_miss.json`
 (34 diagnoses across 8 categories, MO-maintained). The flag is enforced
-**deterministically** in `validate_differential()` via bidirectional substring
+**deterministically** in `validateDifferential()` via bidirectional substring
 matching — not by LLM instruction. This ensures the flag is reliably set even
 when model outputs vary across versions or providers.
 
@@ -274,21 +315,21 @@ when model outputs vary across versions or providers.
 `must_not_miss`, `regionally_specific`, `reasoning`, `discriminating_tests`
 (all test types — bedside, lab, imaging), `referral_required`.
 
-`validate_differential()` runs after every LLM differential call. Missing fields
+`validateDifferential()` runs after every LLM differential call. Missing fields
 get safe defaults and a logged warning. `icd10_code` default is `R69` (illness
 unspecified). The must_not_miss override is one-directional: it can only set
 `true`, never downgrade a model-returned `true` to `false`.
 
-### Management Stage (management_stage.py)  [fixed pipeline — planned: agentic]
+### Management Stage (server/stages/managementStage.js)  [fixed pipeline — planned: agentic]
 
 **Four LLM calls, RAG in Call 2.**
 
-Call 1 (~900ms) + RAG retrieval run in parallel via `asyncio.gather`:
+Call 1 (~900ms) + RAG retrieval run in parallel via `Promise.all`:
 - Call 1 extracts clarifying findings from phase 3 transcript
 - RAG retrieves STG chunks for ALL DDx diagnoses + known established conditions
   (provisional diagnosis not yet determined; any DDx entry could be selected)
 
-Call 2 (~6.5s, streaming): Generates a **problem list** — all distinct clinical issues
+Call 2 (~6.5s): Generates a **problem list** — all distinct clinical issues
 in the encounter: the acute presenting complaint plus any established conditions,
 incidental findings, or deferred items. Each problem has type
 (`acute_new | established | incidental | deferred`), an assessment, and a plan.
@@ -296,16 +337,16 @@ Every prescription item carries a `for_problem` attribution integer.
 STG context from RAG grounds the prescription. Local formulary constrains drug
 selection. `stg_source` must be cited per drug. Output key: `problem_list`.
 
-`validate_problem_list()` runs after Call 2. Sanitizes degenerate ICD-10 strings
+`validateProblemList()` runs after Call 2. Sanitizes degenerate ICD-10 strings
 (e.g. repetition loops from constrained generation), truncates oversized fields,
 fills missing required fields with safe defaults, and normalises confidence values.
-Analogous to `validate_differential()` in the Diagnosis Stage.
+Analogous to `validateDifferential()` in the Diagnosis Stage.
 
 Diagnostic confidence (`high|moderate|low`) is extracted directly from Call 2's
-`problem_list[first_acute].assessment.confidence` in Python and passed to the rule
-engine as `acute_confidence` — not re-derived from Call 3 to avoid LLM relay errors.
+`problem_list[first_acute].assessment.confidence` in JavaScript and passed to the
+rule engine as `acuteConfidence` — not re-derived from Call 3 to avoid LLM relay errors.
 
-**Calls 3 and 4 run in parallel via `asyncio.gather`** — both depend only on Call 2.
+**Calls 3 and 4 run in parallel via `Promise.all`** — both depend only on Call 2.
 
 Call 3 (~8s): Five-dimension risk assessment — no RAG, pure LLM reasoning:
 1. Diagnostic uncertainty — what if the acute provisional Dx is wrong?
@@ -317,12 +358,12 @@ Output: `mitigation_plan.overall_risk_tier` (LOW|HIGH) and `risk_tier_rationale`
 
 Call 4 (~7s): Patient instructions in plain language, referral assessment, doctor
 handoff package. Does NOT receive Call 3's risk assessment as input — runs in
-parallel. `prescription_issued` is built in Python from Call 2's `problem_list` —
+parallel. `prescription_issued` is built in JavaScript from Call 2's `problem_list` —
 not LLM-generated — so the authoritative drug record cannot be paraphrased or have
 items dropped.
 
 **Rule engine** runs deterministically after both Call 3 and Call 4 complete. Can
-only escalate LOW → HIGH, never downgrade. After the rule engine runs, Python
+only escalate LOW → HIGH, never downgrade. After the rule engine runs, JavaScript
 injects into Call 4's output:
 - `triage.tier` — final tier from rule engine
 - `triage.action` — canonical nurse instruction string (not LLM-generated)
@@ -330,8 +371,9 @@ injects into Call 4's output:
 - `doctor_handoff.authorization_required_by` — computed from final tier
 
 These fields are injected from deterministic sources rather than LLM-generated
-because they are the primary safety-critical decisions the nurse acts on. This logic has been extracted into a separate, data-driven configuration
-file (`escalation_rules.json`). This allows Medical Officers (MOs) to curate and update
+because they are the primary safety-critical decisions the nurse acts on. This logic
+has been extracted into a separate, data-driven configuration file
+(`escalation_rules.json`). This allows Medical Officers (MOs) to curate and update
 clinical policies, vital thresholds, red flags, and sensitive scenarios (like pregnancy)
 independently of code deployments.
 Hard stops configured in the JSON include:
@@ -360,6 +402,8 @@ marker_a_at, marker_b_at, marker_c_at (session-relative seconds),
 chief_complaint, extracted_concepts, questionnaire,
 differential_table, clarifying_questions,
 clarifying_findings, problem_list, risk_assessment, triage_output,
+stg_retrieval: { context, chunks_by_disease, ... },  — RAG audit metadata
+session_photos: { phase_1: [...], phase_2: [...], phase_3: [...] },
 audio: { url, codec, duration_seconds, upload_status, retain_until },
 risk_tier, doctor_auth_status,
 confirmation: { rdt_result, treatment_response, doctor_agreed,
@@ -377,7 +421,7 @@ Injected directly into History and Diagnosis Stage prompts. Never retrieved.
 All 23 WB districts. Four seasons: winter (Dec-Feb), pre_monsoon (Mar-May),
 monsoon (Jun-Sep), post_monsoon (Oct-Nov). Weights are relative (0-1),
 NOT absolute incidence rates. Sources: IDSP, NVBDCP, ICMR-NICED.
-The `MONTH_TO_SEASON` dict maps month numbers to season keys.
+The `MONTH_TO_SEASON` map maps month numbers to season keys.
 If district not found: returns empty string, logs a warning, agent continues.
 
 **Layer 3** — `confirmed_encounters` table. The app's own accumulating encounter
@@ -392,8 +436,6 @@ Provisional diagnoses NEVER influence Layer 3 or patient records.
 
 ## Patient records
 
-Two tables serve different purposes:
-
 `sessions` — full raw session JSONB, forever, immutable. The audit trail.
 
 `patient_records` — compact structured summary per patient. Written only from
@@ -401,9 +443,16 @@ confirmed encounters. This is what the History Stage reads at the next visit.
 Contains: demographics, known_conditions, known_allergies, current_medications,
 family_history, social_history, encounters (last 5 confirmed), significant_history.
 
+`users` — app user accounts (nurses, doctors, admins). Email + password with OTP
+verification. Distinct from `patient_records` — users are staff, not patients.
+
+`patient_log` — written after each Marker C completion. Stores the proforma
+(questionnaire), clarifying questions, and management plan as distinct JSONB columns
+per session, linked to patient_id.
+
 **Critical:** The orchestrator loads the patient record from `patient_records`
 at session start and writes it into the Vault under `patient_record`. The History
-History Stage reads `vault_context["patient_record"]` — empty dict for new patients.
+Stage reads `vaultContext.patient_record` — empty object for new patients.
 
 Past medical history, medications, allergies, and family/social history are
 collected during the phase 2 interview (questionnaire phase), NOT upfront.
@@ -422,17 +471,23 @@ A hallucinated drug dose causes patient harm. The Diagnosis Stage's differential
 generation and gap analysis uses LLM general clinical knowledge, which is reliable
 for this task and does not benefit from retrieval.
 
-**Vector store:** `stg_chunks` table in Postgres with pgvector.
-Schema: `chunk_id, source, disease, section, content, embedding vector(384)`.
+**Vector store:** `stg_chunks` table in Postgres/Supabase with pgvector.
+Schema: `chunk_id, source, disease, section, content, content_hash, embedding vector(384)`.
 IVFFlat index with lists=100 for ANN search. Similarity threshold: 0.55.
-Top-k: 8 chunks per diagnosis, max 2 diagnoses = 16 chunks max in prompt.
+Same-disease fallback threshold: 0.40. Top-k: 8 chunks per diagnosis.
 
-**Documents to embed** (see `docs/rag_brief.md` for full detail):
-- NHM Standard Treatment Guidelines — all volumes
-- NVBDCP malaria treatment protocol (ACT dosing by weight band)
+`stg_retrieval` audit metadata (chunks retrieved, diseases queried, source citations)
+is stored in the Vault per session so prescriptions can be traced back to source chunks.
+
+**Current corpus (1,426 chunks in Supabase):** ICMR STW volumes 1, 3, 4, and
+PTB/EPTB guidelines. See `docs/arch/rag_implementation_status.md` for ingestion
+details and smoke test results.
+
+**Missing — do not rely on prescriptions for these conditions:**
+- NVBDCP malaria ACT protocol (CRITICAL for malaria Rx dosing)
 - NHM kala-azar operational guidelines
-- West Bengal state drug formulary (SHC-HWC level — populated from MoHFW Operational Guidelines)
 - RNTCP/NTP TB treatment guidelines
+- WB state protocol addenda
 
 **Formulary is NOT in the vector store.** It is a small JSON file injected
 directly into the Call 2 prompt. One file per clinic type (PHC vs CHC).
@@ -445,7 +500,7 @@ should be verified before going live.
 ## Doctor authorization
 
 **LOW risk:** Async doctor review. Nurse proceeds with treatment plan.
-Doctor reviews within 4 hours. No response = ratified.
+Doctor reviews within 24 hours. No response = ratified.
 
 **HIGH risk:** Synchronous. Nurse calls doctor or refers immediately.
 Do not proceed without doctor contact.
@@ -462,24 +517,38 @@ and questions for doctor. One-tap approve / modify / reject.
 ## STG ingest pipeline (scripts/ingest_stg.py)
 
 **Built.** CLI tool — chunks STG documents (~350 tokens, 50-token overlap), embeds
-with MiniLM-L6-v2, inserts into `stg_chunks` pgvector table. Safe to re-run (exact
-duplicates skipped by content fingerprint). See script header for full usage and flags.
+with MiniLM-L6-v2, inserts into `stg_chunks` pgvector table. Infers disease tags
+from chunk heading/content using `data/rag_disease_aliases.json`. Infers section
+type (`treatment`, `dosing`, `referral`, etc.). Safe to re-run — exact duplicates
+skipped by `content_hash`. Source replacement via `--replace-source`.
 
-Documents to ingest (priority order): NHM STG all volumes, NVBDCP malaria ACT
-protocol (CRITICAL for Rx), NHM kala-azar guidelines, RNTCP/NTP TB guidelines,
+```bash
+DATABASE_URL="postgresql://..." python3 scripts/ingest_stg.py \
+  --dir "docs/clinical/RAG source" \
+  --manifest scripts/rag_source_manifest.json \
+  --replace-source
+```
+
+Smoke-test retrieval:
+```bash
+DATABASE_URL="postgresql://..." python3 scripts/query_stg.py --diagnosis tuberculosis
+```
+
+Priority ingestion order: NHM STG all volumes, NVBDCP malaria ACT protocol
+(CRITICAL for Rx), NHM kala-azar guidelines, RNTCP/NTP TB guidelines,
 WB state protocol addenda.
 
 **Do not ingest `formulary_wb.json`** — injected directly into Call 2 prompts, not the vector store.
 
-Retrieval parameters: similarity threshold 0.55, top-8 chunks per diagnosis,
-max 2 diagnoses = 16 chunks per Call 2 prompt.
+Retrieval parameters: similarity threshold 0.55, same-disease fallback 0.40,
+top-8 chunks per diagnosis.
 
 ---
 
 ## Outstanding questions
 
-All open decisions — including the three blocking questions below — are tracked
-with full context in [`docs/decisions/DECISIONS_OPEN.md`](docs/decisions/DECISIONS_OPEN.md), grouped
+All open decisions are tracked with full context in
+[`docs/decisions/DECISIONS_OPEN.md`](docs/decisions/DECISIONS_OPEN.md), grouped
 by who needs to answer them (Product/Clinical Lead, Medical Officer, Engineering).
 
 The three questions that must be resolved before building the remaining components:
@@ -560,23 +629,15 @@ explicit discussion:
 - **Formulary is a JSON file, not a vector store.** It is small, structured,
   and injected directly into prompts. It must be per-clinic and kept current.
 
+- **No parallel streaming + structured calls.** An earlier design ran a streaming
+  LLM call for nurse display alongside a separate non-streaming call for structured
+  JSON, with both running in parallel. This was removed: the two calls could diverge
+  silently, showing the nurse output that differed from the structured record.
+  All pipeline calls are now non-streaming; the full structured result is sent in
+  `stage_complete`.
+
 - **Safety-critical output fields are injected from deterministic sources, not relayed by LLM.**
   `triage.tier`, `triage.action`, `triage.rationale`, `authorization_required_by`, and
-  `must_not_miss` flags are set in Python from the rule engine and `validate_*()` functions —
-  not passed through an LLM call. LLM relay introduces paraphrasing and omission risk on
-  the fields a nurse acts on most directly.
-
-| db/schema.sql | Complete | sessions, stg_chunks, patient_records, confirmed_encounters |
-| data/epi_prior_wb.json | Complete | All 23 WB districts, 4 seasons, sourced from IDSP/NVBDCP |
-| data/bedside_tools.json | Complete | Nurse-available tools constraint list |
-| data/formulary_wb.json | Complete | SHC-HWC essential medicines from MoHFW Operational Guidelines Annexures 1 & 2 |
-| data/must_not_miss.json | Complete | 34 must-not-miss diagnoses across 8 categories; loaded by Diagnosis Stage at runtime |
-| data/escalation_rules.json | Complete | Rule engine config — vital thresholds, red flags, diagnosis/drug hard-stops |
-| docs/decisions/DECISIONS_OPEN.md | Complete | All unresolved questions grouped by owner (Product, MO, Engineering) |
-| docs/arch/rag_brief.md | Complete | Engineering brief for RAG setup |
-| docs/decisions/adr/README.md | Complete | ADR index — read before proposing architectural changes |
-| docs/arch/cdst_full_pipeline.html | Complete | Full system architecture diagram |
-| docs/arch/continuous_stream_pipeline.html | Complete | Audio streaming architecture diagram |
-| docs/clinical/MO_REVIEW_CHECKLIST.md | Complete | Step-by-step site onboarding checklist for Medical Officers |
-| docs/clinical/bedside_tools_crosscheck.md | Complete | Guideline citations for bedside_tools.json |
-| docs/clinical/high_risk_escalation_rules.md | Complete | Human-readable guide to escalation_rules.json |
+  `must_not_miss` flags are set in JavaScript from the rule engine and `validate*()`
+  functions — not passed through an LLM call. LLM relay introduces paraphrasing and
+  omission risk on the fields a nurse acts on most directly.

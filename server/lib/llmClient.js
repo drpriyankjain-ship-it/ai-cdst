@@ -160,38 +160,4 @@ export async function generateWithCascade(models, contents, config = {}) {
   throw lastErr;
 }
 
-/**
- * Try each model in order for streaming; cascade only if no tokens yielded yet.
- */
-export async function* streamWithCascade(models, contents, config = {}) {
-  let lastErr = null;
-  for (const model of models) {
-    try {
-      let modelConfig = { ...config };
-      if (!model.includes('2.5') && modelConfig.thinkingConfig) {
-        delete modelConfig.thinkingConfig;
-      }
-      let started = false;
-      const stream = await gemini.models.generateContentStream({
-        model,
-        contents,
-        config: modelConfig,
-      });
-      for await (const chunk of stream) {
-        started = true;
-        yield chunk;
-      }
-      return;
-    } catch (err) {
-      const code = err.status || err.code || 0;
-      const msg = (err.message || '').toLowerCase();
-      const shouldCascade = CASCADE_STATUSES.has(code) || msg.includes('503') || msg.includes('429') || msg.includes('unavailable') || msg.includes('overloaded') || msg.includes('resource_exhausted');
-      if (err._started || !shouldCascade) throw err;
-      lastErr = err;
-      console.warn(`[LLM] Gemini ${code || 'error'} on ${model} (pre-stream) — cascading to next model`);
-    }
-  }
-  throw lastErr;
-}
-
 export { gemini };

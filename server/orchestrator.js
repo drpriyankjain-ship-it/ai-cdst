@@ -10,9 +10,9 @@ import { getPool, vaultInit, vaultRead, vaultUpdate, vaultSetNested, vaultAppend
 import { verifyJwt } from './lib/auth.js';
 import { loadBaselineDiseases, loadEpiPrior } from './lib/epiUtils.js';
 import { buildMultimodalContent } from './lib/llmClient.js';
-import { extractChiefComplaint, generateQuestionnaire, validateQuestionnaire, extractPatientRecordUpdate, streamQuestionnaire } from './stages/historyStage.js';
-import { extractMedicalConcepts, generateDifferential, validateDifferential, streamDifferential, generateClarifyingQuestions, runDiagnosisStage } from './stages/diagnosisStage.js';
-import { runManagementStage, streamManagement } from './stages/managementStage.js';
+import { extractChiefComplaint, generateQuestionnaire, validateQuestionnaire, extractPatientRecordUpdate } from './stages/historyStage.js';
+import { extractMedicalConcepts, generateDifferential, validateDifferential, generateClarifyingQuestions, runDiagnosisStage } from './stages/diagnosisStage.js';
+import { runManagementStage } from './stages/managementStage.js';
 
 const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY || '';
 const DEEPGRAM_LANGUAGE = process.env.DEEPGRAM_LANGUAGE || 'hi';
@@ -235,26 +235,15 @@ async function handleMarkerA(ws, state, t) {
       await vaultUpdate(dbClient, sessionId, { chief_complaint: chief });
 
       let h2Meta = {};
-      const doStructured = async () => {
-        const t1 = Date.now();
-        const h2 = await generateQuestionnaire(chief, vaultCtx, baseline, epi, patientRecord, photos);
-        let q = validateQuestionnaire(h2.result);
-        h2.meta.latency_ms = Date.now() - t1;
-        h2Meta = h2.meta;
-        await insertLlmResult(dbClient, sessionId, 'H2_questionnaire', 'history', 2, q, { ...h2.meta });
-        const stub = extractPatientRecordUpdate(q, chief, sessionId);
-        await vaultUpdate(dbClient, sessionId, { questionnaire: q, patient_record_stub: stub, history_stage_status: 'complete', history_stage_completed_at: new Date().toISOString() });
-        return q;
-      };
-
-      const doStream = async () => {
-        for await (const token of streamQuestionnaire(chief, vaultCtx, baseline, epi, patientRecord)) {
-          wsSend(ws, { type: 'stage_token', stage: 'history', token });
-        }
-      };
-
-      console.log(`[${sessionId}] History Call 2: streaming + structured`);
-      const [questionnaire] = await Promise.all([doStructured(), doStream()]);
+      console.log(`[${sessionId}] History Call 2: generating questionnaire`);
+      const t1 = Date.now();
+      const h2 = await generateQuestionnaire(chief, vaultCtx, baseline, epi, patientRecord, photos);
+      const questionnaire = validateQuestionnaire(h2.result);
+      h2.meta.latency_ms = Date.now() - t1;
+      h2Meta = h2.meta;
+      await insertLlmResult(dbClient, sessionId, 'H2_questionnaire', 'history', 2, questionnaire, { ...h2.meta });
+      const stub = extractPatientRecordUpdate(questionnaire, chief, sessionId);
+      await vaultUpdate(dbClient, sessionId, { questionnaire, patient_record_stub: stub, history_stage_status: 'complete', history_stage_completed_at: new Date().toISOString() });
       wsSend(ws, {
         type: 'stage_complete', stage: 'history', data: questionnaire,
         timing: buildPhaseTiming(state, [h1.meta, h2Meta], 'history'),
@@ -303,24 +292,14 @@ async function handleMarkerB(ws, state, t) {
       }
 
       let d2Meta = {};
-      const doStructured = async () => {
-        const t1 = Date.now();
-        const d2 = await generateDifferential(concepts, vaultCtx, baseline, epi, photos);
-        const ddx = d2.result;
-        d2.meta.latency_ms = Date.now() - t1;
-        d2Meta = d2.meta;
-        await insertLlmResult(dbClient, sessionId, 'D2_differential', 'diagnosis', 4, ddx, { ...d2.meta });
-        await vaultUpdate(dbClient, sessionId, { differential_table: ddx });
-        return ddx;
-      };
-      const doStream = async () => {
-        for await (const token of streamDifferential(concepts, vaultCtx, baseline, epi)) {
-          wsSend(ws, { type: 'stage_token', stage: 'diagnosis', token });
-        }
-      };
-
-      console.log(`[${sessionId}] Diagnosis Call 2: streaming + structured`);
-      const [ddx] = await Promise.all([doStructured(), doStream()]);
+      console.log(`[${sessionId}] Diagnosis Call 2: generating differential`);
+      const t1 = Date.now();
+      const d2 = await generateDifferential(concepts, vaultCtx, baseline, epi, photos);
+      const ddx = d2.result;
+      d2.meta.latency_ms = Date.now() - t1;
+      d2Meta = d2.meta;
+      await insertLlmResult(dbClient, sessionId, 'D2_differential', 'diagnosis', 4, ddx, { ...d2.meta });
+      await vaultUpdate(dbClient, sessionId, { differential_table: ddx });
 
       console.log(`[${sessionId}] Diagnosis Call 3: clarifying questions`);
       const t2 = Date.now();
@@ -357,16 +336,8 @@ async function handleMarkerC(ws, state, t) {
 
   (async () => {
     try {
-      const vaultCtx = await vaultRead(dbClient, sessionId);
-      const doStream = async () => {
-        for await (const token of streamManagement(phase3, vaultCtx, dbClient)) {
-          wsSend(ws, { type: 'stage_token', stage: 'management', token });
-        }
-      };
-      const doStructured = async () => runManagementStage(sessionId, phase3, dbClient);
-
-      console.log(`[${sessionId}] Management stage: streaming + pipeline starting`);
-      const [result] = await Promise.all([doStructured(), doStream()]);
+      console.log(`[${sessionId}] Management stage: pipeline starting`);
+      const result = await runManagementStage(sessionId, phase3, dbClient);
 
       const triage = result.triage || {};
       const riskTier = result.rule_engine?.final_risk_tier || 'high';
