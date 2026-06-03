@@ -63,7 +63,7 @@ CREATE TABLE sessions (
 --     "upload_status": "complete|pending|failed",
 --     "uploaded_at": "2024-09-14T10:36:05Z",
 --     "retain_until": "2025-01-14",
---     "retention_days": 90
+--     "retention_days": 3650
 --   },
 --
 --   -- AGENT OUTPUTS

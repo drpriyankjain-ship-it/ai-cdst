@@ -146,7 +146,7 @@ session-relative seconds.
 
 The nurse never reviews or discards recordings. Audio is uploaded in chunks during
 the session and assembled post-session. The complete audio is uploaded to S3 in the
-background (async, does not block the nurse) with a 90-day retention policy.
+background (async, does not block the nurse) with a 3650-day (10-year) retention policy.
 
 ---
 
@@ -243,7 +243,7 @@ reliably send custom headers).
 7. **Session end** — writes `session_ended_at`, `session_duration_seconds`, and
    final `transcript_segments` to Vault. Audio upload is the device's
    responsibility; when it calls `audio_uploaded`, the Vault receives the S3 URL
-   and a `retain_until` date (90 days from upload).
+   and a `retain_until` date (3650 days / 10 years from upload).
 
 ### REST endpoints
 

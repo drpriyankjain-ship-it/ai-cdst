@@ -481,7 +481,7 @@ export function mountWebSocket(app) {
         } else if (msgType === 'session_end' && state) {
           await handleSessionEnd(ws, state, msg.t);
         } else if (msgType === 'audio_uploaded' && state) {
-          await vaultUpdate(pool, state.sessionId, { audio: { upload_status: 'confirmed', url: msg.url, codec: msg.codec, duration_seconds: msg.duration_seconds, size_bytes: msg.size_bytes, retain_until: new Date(Date.now() + 90 * 86400000).toISOString() } });
+          await vaultUpdate(pool, state.sessionId, { audio: { upload_status: 'confirmed', url: msg.url, codec: msg.codec, duration_seconds: msg.duration_seconds, size_bytes: msg.size_bytes, retain_until: new Date(Date.now() + 3650 * 86400000).toISOString() } });
           wsSend(ws, { type: 'audio_confirmed' });
         } else if (msgType === 'pong' && state) {
           // Client responded to our ping — calculate RTT
