@@ -59,9 +59,6 @@ class SessionState {
   constructor(sessionId, dbClient) {
     this.sessionId = sessionId;
     this.dbClient = dbClient;
-    this.markerAAt = null;
-    this.markerBAt = null;
-    this.markerCAt = null;
     this.nurseId = null;
     this.userId = null;
     // Phase audio buffers — arrays of Buffer objects, one per 12s segment
@@ -71,7 +68,6 @@ class SessionState {
     // Timing
     this.networkRttMs = null;
     this.phaseStartAt = null;
-    this.lastTranscriptionMs = null;
     this.phaseTimings = [];
   }
 }
@@ -114,16 +110,12 @@ function buildPhaseTiming(state, callMetas, stageName) {
   const now = Date.now();
   const phaseTotal = state.phaseStartAt ? now - state.phaseStartAt : null;
   const geminiMs = callMetas.reduce((sum, m) => sum + (m?.latency_ms || 0), 0) || null;
-  const transcriptionMs = state.lastTranscriptionMs || null;
-  const serverOverhead = phaseTotal && geminiMs
-    ? phaseTotal - geminiMs - (transcriptionMs || 0)
-    : null;
+  const serverOverhead = phaseTotal && geminiMs ? phaseTotal - geminiMs : null;
 
   const timing = {
     stage: stageName || 'unknown',
     phase_total_ms: phaseTotal,
     network_rtt_ms: state.networkRttMs,
-    transcription_ms: transcriptionMs,
     gemini_calls_ms: geminiMs,
     server_overhead_ms: serverOverhead > 0 ? serverOverhead : 0,
     call_count: callMetas.length,
@@ -141,13 +133,11 @@ function buildPhaseTiming(state, callMetas, stageName) {
     const pct = (v) => v ? parseFloat(((v / phaseTotal) * 100).toFixed(1)) : 0;
     timing.breakdown = {
       gemini_pct: pct(geminiMs),
-      transcription_pct: pct(transcriptionMs),
       server_pct: pct(serverOverhead > 0 ? serverOverhead : 0),
     };
   }
 
   state.phaseTimings.push(timing);
-  state.lastTranscriptionMs = null;
   state.phaseStartAt = null;
 
   return timing;
@@ -234,7 +224,6 @@ async function concatAndArchiveAudio(sessionId, phaseAudioBuffers, dbClient) {
 // ---------------------------------------------------------------------------
 
 async function handleMarkerA(ws, state, t) {
-  state.markerAAt = t;
   state.phaseStartAt = Date.now();
   await vaultUpdate(state.dbClient, state.sessionId, { marker_a_at: t });
 
@@ -307,7 +296,6 @@ async function handleMarkerA(ws, state, t) {
 }
 
 async function handleMarkerB(ws, state, t) {
-  state.markerBAt = t;
   state.phaseStartAt = Date.now();
   const { sessionId, dbClient } = state;
   await vaultUpdate(dbClient, sessionId, { marker_b_at: t });
@@ -333,7 +321,7 @@ async function handleMarkerB(ws, state, t) {
 
   (async () => {
     try {
-      let vaultCtx = await vaultRead(dbClient, sessionId);
+      const vaultCtx = await vaultRead(dbClient, sessionId);
       const photos = collectAllPhotos(vaultCtx);
       if (photos.length) console.log(`[${sessionId}] Including ${photos.length} clinical photo(s) in D1/D2/D3`);
       const gps = vaultCtx.gps || {};
@@ -356,7 +344,9 @@ async function handleMarkerB(ws, state, t) {
       if (concepts.pregnancy_status != null) {
         await vaultSetNested(dbClient, sessionId, ['demographics', 'pregnancy_status'], concepts.pregnancy_status);
         if (concepts.lmp) await vaultSetNested(dbClient, sessionId, ['demographics', 'lmp'], concepts.lmp);
-        vaultCtx = await vaultRead(dbClient, sessionId);
+        vaultCtx.demographics = vaultCtx.demographics || {};
+        vaultCtx.demographics.pregnancy_status = concepts.pregnancy_status;
+        if (concepts.lmp) vaultCtx.demographics.lmp = concepts.lmp;
       }
 
       console.log(`[${sessionId}] Diagnosis Call 2: generating differential`);
@@ -393,7 +383,6 @@ async function handleMarkerB(ws, state, t) {
 }
 
 async function handleMarkerC(ws, state, t) {
-  state.markerCAt = t;
   state.phaseStartAt = Date.now();
   const { sessionId, dbClient } = state;
   await vaultUpdate(dbClient, sessionId, { marker_c_at: t });
@@ -468,7 +457,6 @@ async function handleMarkerC(ws, state, t) {
         const gps = vaultFinal.gps || {};
         const sessionStart = vaultFinal.session_started_at ? new Date(vaultFinal.session_started_at).getTime() : null;
         const e2eDuration = sessionStart ? Date.now() - sessionStart : null;
-        const totalTranscriptionMs = state.phaseTimings.reduce((s, p) => s + (p.transcription_ms || 0), 0);
         const totalServerOverheadMs = state.phaseTimings.reduce((s, p) => s + (p.server_overhead_ms || 0), 0);
 
         await insertSessionMetrics(dbClient, {
@@ -482,7 +470,6 @@ async function handleMarkerC(ws, state, t) {
           pipeline_status: 'complete',
           e2e_duration_ms: e2eDuration,
           network_rtt_ms: state.networkRttMs || null,
-          total_transcription_ms: totalTranscriptionMs || null,
           total_server_overhead_ms: totalServerOverheadMs || null,
           phase_timings: state.phaseTimings,
         });
@@ -585,8 +572,6 @@ export function mountWebSocket(app) {
             state.networkRttMs = Date.now() - msg.ping_ts;
             console.log(`[${state.sessionId}] Network RTT: ${state.networkRttMs}ms`);
           }
-        } else if (msgType === 'transcription_timing' && state) {
-          state.lastTranscriptionMs = msg.transcription_ms || null;
         }
       } catch (err) {
         console.error('WS message error:', err);

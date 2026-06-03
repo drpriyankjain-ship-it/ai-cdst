@@ -55,7 +55,6 @@ export async function vaultInit(client, sessionId, patientId, nurseId, gps, pati
     gps,
     patient_record: patientRecord,
     session_started_at: new Date().toISOString(),
-    transcript_full: '',
     transcript_segments: { phase_1: '', phase_2: '', phase_3: '' },
     audio: { upload_status: 'pending', retain_until: null },
     risk_tier: null,
@@ -91,16 +90,6 @@ export async function vaultSetNested(client, sessionId, path, value) {
   );
 }
 
-export async function vaultAppendTranscript(client, sessionId, text) {
-  await client.query(
-    `UPDATE sessions SET data = jsonb_set(
-       data, '{transcript_full}',
-       to_jsonb(coalesce(data->>'transcript_full', '') || $2),
-       true
-     ), updated_at = now() WHERE session_id = $1`,
-    [sessionId, text + ' ']
-  );
-}
 
 export async function loadPatientRecord(client, patientId) {
   const res = await client.query(
