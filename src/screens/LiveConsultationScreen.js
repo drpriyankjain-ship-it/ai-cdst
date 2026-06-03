@@ -158,7 +158,15 @@ const LiveConsultationScreen = ({navigation}) => {
         return;
       }
 
-      // Reset audio mode first (fixes iOS session conflicts)
+      // Ensure any previous recording is fully stopped
+      if (recordingRef.current) {
+        try {
+          await recordingRef.current.stopAndUnloadAsync();
+        } catch {}
+        recordingRef.current = null;
+      }
+
+      // Deactivate audio session first (fixes iOS session conflicts)
       try {
         await Audio.setAudioModeAsync({
           allowsRecordingIOS: false,
@@ -166,8 +174,8 @@ const LiveConsultationScreen = ({navigation}) => {
         });
       } catch {}
 
-      // Small delay to let iOS release the session
-      await new Promise(r => setTimeout(r, 200));
+      // Give iOS time to fully release the audio hardware
+      await new Promise(r => setTimeout(r, 500));
 
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
