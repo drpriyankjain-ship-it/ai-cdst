@@ -95,7 +95,11 @@ export function buildPatientRecordContext(patientRecord) {
 export function isComplaintMissing(chiefComplaint) {
   const value = (chiefComplaint.chief_complaint || '').trim().toLowerCase();
   if (!value) return true;
-  const empty = new Set(['unknown', 'unclear', 'not stated', 'not mentioned', 'n/a', 'none']);
+  const empty = new Set([
+    'unknown', 'unclear', 'not stated', 'not mentioned', 'n/a', 'none',
+    'insufficient_information', 'insufficient information',
+    'no medical complaint', 'no complaint', 'not a medical consultation',
+  ]);
   return empty.has(value);
 }
 
@@ -243,7 +247,14 @@ export async function extractChiefComplaint(transcriptSegment, vaultContext, pho
     '- duration: patient\'s own words — do not interpret or convert\n' +
     '- spontaneous_history: anything volunteered beyond the direct questions\n' +
     '- red_flags_mentioned: only what the patient explicitly stated\n' +
-    '- This is ~30 seconds. Most fields will be null. Do not infer.',
+    '- This is ~30 seconds. Most fields will be null. Do not infer.\n' +
+    '\n' +
+    'CRITICAL — INSUFFICIENT INFORMATION RULE:\n' +
+    '- If the transcript does NOT contain any medical complaint, health symptom, or clinical information — ' +
+    'set chief_complaint to "INSUFFICIENT_INFORMATION" and leave all other fields null/empty.\n' +
+    '- Examples of non-medical content: casual conversation, greetings only, background noise, ' +
+    'unrelated topics (weather, food, politics), silence, or unintelligible audio.\n' +
+    '- Do NOT invent or guess a medical complaint. If no health problem is discussed, say so.',
   ].filter(Boolean).join('\n\n');
 
   const contents = buildMultimodalContent(prompt, photos);
@@ -431,7 +442,7 @@ export async function runHistoryStage(sessionId, transcriptSegment, dbClient) {
 
   // Nudge path
   if (isComplaintMissing(chiefComplaint)) {
-    console.log(`[${sessionId}] History stage: chief complaint missing — nudge sent, Call 2 skipped`);
+    console.log(`[${sessionId}] History stage: chief complaint missing/insufficient — nudge sent, Call 2 skipped`);
     await vaultUpdate(dbClient, sessionId, {
       history_stage_status: 'nudge_required',
       nudge_reason: 'chief_complaint_missing',
@@ -439,7 +450,7 @@ export async function runHistoryStage(sessionId, transcriptSegment, dbClient) {
     return {
       session_id: sessionId,
       nudge: true,
-      nudge_message: 'Chief complaint was not captured clearly. Please ask the patient to describe their problem again and press Marker A once more.',
+      nudge_message: 'The recording did not contain enough medical information to proceed. Please ask the patient to clearly describe their health problem, symptoms, and how long they have had them, then try again.',
     };
   }
 

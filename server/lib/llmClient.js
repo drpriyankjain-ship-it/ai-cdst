@@ -126,6 +126,17 @@ export async function generateWithCascade(models, contents, config = {}) {
       if (!model.includes('2.5') && !model.includes('3-flash') && !model.includes('3.') && modelConfig.thinkingConfig) {
         delete modelConfig.thinkingConfig;
       }
+
+      // Default to low temperature for deterministic, factual clinical output
+      if (modelConfig.temperature == null) {
+        modelConfig.temperature = 0.2;
+      }
+
+      // Default system instruction: clinical safety
+      if (!modelConfig.systemInstruction) {
+        modelConfig.systemInstruction = 'You are a clinical decision support system. Extract and report only what is explicitly present in the provided data. Do not infer, assume, or fabricate information. If the input data is insufficient, state that clearly rather than guessing.';
+      }
+
       const response = await gemini.models.generateContent({
         model,
         contents,

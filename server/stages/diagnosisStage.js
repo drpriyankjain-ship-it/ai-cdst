@@ -214,7 +214,12 @@ export async function extractMedicalConcepts(transcriptSegment, vaultContext, ph
     '- uncertain_findings: list any topic where the patient\'s answer was ambiguous.\n' +
     '- past_medical_history: list chronic/past conditions explicitly mentioned. Empty [] if none.\n' +
     '- current_medications: list drugs currently taking with dose if stated. Empty [] if none.\n' +
-    '- allergies_reported: list allergens with reaction. Empty [] if none.',
+    '- allergies_reported: list allergens with reaction. Empty [] if none.\n' +
+    '\n' +
+    'CRITICAL — INSUFFICIENT INFORMATION RULE:\n' +
+    '- If the transcript does NOT contain meaningful medical symptoms, clinical findings, or patient complaints, ' +
+    'set chief_complaint to "INSUFFICIENT_INFORMATION" and return empty arrays for symptoms, negatives, etc.\n' +
+    '- Do NOT fabricate symptoms or findings. Only extract what is genuinely present in the transcript.',
   ].filter(Boolean).join('\n\n');
 
   const contents = buildMultimodalContent(prompt, photos);
@@ -249,7 +254,19 @@ export async function generateDifferential(concepts, vaultContext, baselineLayer
     '- referral_required=true for any diagnosis needing hospital-level care\n' +
     '- discriminating_tests: list all relevant tests (bedside, lab, or imaging)\n' +
     '- icd10_code: most specific applicable ICD-10 code\n' +
-    '- Base reasoning ONLY on features present — never assume unstated findings',
+    '- Base reasoning ONLY on features present — never assume unstated findings\n' +
+    '\n' +
+    'CRITICAL — INSUFFICIENT INFORMATION RULE:\n' +
+    '- If the extracted clinical concepts contain NO meaningful symptoms or the chief_complaint is ' +
+    '"INSUFFICIENT_INFORMATION" or similar, return a SINGLE entry in the differential with:\n' +
+    '  disease: "Insufficient clinical information for diagnosis"\n' +
+    '  icd10_code: "R69"\n' +
+    '  probability: "low"\n' +
+    '  reasoning: "The available clinical information is not sufficient to generate a meaningful differential diagnosis. ' +
+    'The transcript did not contain adequate medical history, symptoms, or clinical findings."\n' +
+    '  supporting_features: [] (empty)\n' +
+    '- Do NOT fabricate diagnoses when there is insufficient clinical evidence. ' +
+    'It is safer to say "not enough information" than to guess.',
   ].filter(Boolean).join('\n\n');
 
   const contents = buildMultimodalContent(prompt, photos);
