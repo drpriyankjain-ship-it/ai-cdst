@@ -478,6 +478,39 @@ const LiveConsultationScreen = ({navigation}) => {
     setIsProcessing(false);
   }, []);
 
+  const handleTerminateSession = useCallback(() => {
+    Alert.alert(
+      'End Consultation',
+      'Are you sure you want to terminate this consultation? All unsaved progress will be lost.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Terminate',
+          style: 'destructive',
+          onPress: async () => {
+            // Stop recording if active
+            if (recordingRef.current) {
+              try { await recordingRef.current.stopAndUnloadAsync(); } catch {}
+              recordingRef.current = null;
+            }
+            if (recordingIntervalRef.current) {
+              clearInterval(recordingIntervalRef.current);
+              recordingIntervalRef.current = null;
+            }
+            setIsRecording(false);
+            // Notify server and disconnect
+            if (sessionId) {
+              const elapsed = sessionStartRef.current ? Math.round((Date.now() - sessionStartRef.current) / 1000) : 0;
+              wsService.endSession(elapsed);
+            }
+            wsService.disconnect();
+            handleNewSession();
+          },
+        },
+      ]
+    );
+  }, [sessionId, handleNewSession]);
+
   // ---------------------------------------------------------------------------
   // Photo picker
   // ---------------------------------------------------------------------------
@@ -596,9 +629,14 @@ const LiveConsultationScreen = ({navigation}) => {
       <View style={s.header}>
         <View style={s.headerLeft}>
           <View style={[s.liveDot, connectionState === 'connected' ? s.liveDotOn : s.liveDotOff]} />
-          <Text style={s.headerTitle}>{patientName}</Text>
+          <Text style={s.headerTitle} numberOfLines={1}>{patientName}</Text>
         </View>
-        <Text style={s.headerTime}>{formatTime(recordingSeconds)}</Text>
+        <View style={s.headerRight}>
+          <Text style={s.headerTime}>{formatTime(recordingSeconds)}</Text>
+          <TouchableOpacity style={s.terminateBtn} onPress={handleTerminateSession} hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+            <Ionicons name="close" size={16} color="#EF4444" />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Phase indicator */}
@@ -749,6 +787,8 @@ const s = StyleSheet.create({
   liveDotOff: {backgroundColor: '#EF4444'},
   headerTitle: {fontSize: 16, fontWeight: '700', color: '#0F172A'},
   headerTime: {fontSize: 18, fontWeight: '700', color: '#0D9488', fontVariant: ['tabular-nums']},
+  headerRight: {flexDirection: 'row', alignItems: 'center', gap: 10},
+  terminateBtn: {width: 28, height: 28, borderRadius: 14, backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FECACA', alignItems: 'center', justifyContent: 'center'},
 
   // Phase card
   phaseCard: {backgroundColor: '#EFF6FF', borderRadius: 12, padding: 14, marginBottom: 12, borderLeftWidth: 4, borderLeftColor: '#3B82F6'},
