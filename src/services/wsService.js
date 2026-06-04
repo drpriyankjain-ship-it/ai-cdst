@@ -5,8 +5,9 @@
  */
 
 const WS_RECONNECT_DELAY = 2000;
-const WS_MAX_RECONNECTS = 10;
-const WS_KEEPALIVE_INTERVAL = 30000; // 30s — keeps connection alive past nginx/ELB idle timeout
+const WS_MAX_RECONNECTS = 5;
+const WS_KEEPALIVE_INTERVAL = 25000; // 25s — keeps connection alive past nginx idle timeout
+const WS_RAPID_CLOSE_THRESHOLD = 3000; // if connection closes within 3s, count as a failed connect
 
 class WSService {
   constructor() {
@@ -18,21 +19,18 @@ class WSService {
     this.listeners = {};
     this._intentionalClose = false;
     this._keepaliveInterval = null;
+    this._connectedAt = null; // track when connection was established
   }
 
   /**
    * Set the server base URL (called once from config)
    */
   setServerUrl(url) {
-    // Convert http(s) to ws(s)
     this.serverUrl = url.replace(/^http/, 'ws');
   }
 
   /**
    * Register event listeners
-   * Events: session_ready, stage_token, stage_complete, error, 
-   *         transcript, audio_confirmed, session_closed, connection_state,
-   *         session_reconnected
    */
   on(event, callback) {
     if (!this.listeners[event]) this.listeners[event] = [];
@@ -75,20 +73,24 @@ class WSService {
   }
 
   _doConnect() {
+    if (this._intentionalClose) return; // don't reconnect if we intentionally closed
+
     if (this.ws) {
       try { this.ws.close(); } catch {}
       this.ws = null;
     }
 
     const wsUrl = `${this.serverUrl}/session/ws?token=${encodeURIComponent(this.token)}`;
-    console.log(`[WS] Connecting to ${this.serverUrl}/session/ws`);
+    console.log(`[WS] Connecting to ${this.serverUrl}/session/ws (attempt ${this.reconnectAttempts})`);
     this._emit('connection_state', { state: 'connecting' });
 
     this.ws = new WebSocket(wsUrl);
 
     this.ws.onopen = () => {
       console.log('[WS] Connected');
-      this.reconnectAttempts = 0;
+      this._connectedAt = Date.now();
+      // NOTE: Do NOT reset reconnectAttempts here.
+      // Only reset after a message is successfully received (proves connection is stable).
       this._emit('connection_state', { state: 'connected' });
       this._startKeepalive();
 
@@ -102,6 +104,8 @@ class WSService {
     this.ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
+        // Connection is stable — reset reconnect counter
+        this.reconnectAttempts = 0;
         this._handleMessage(msg);
       } catch (e) {
         console.error('[WS] Parse error:', e);
@@ -110,20 +114,33 @@ class WSService {
 
     this.ws.onerror = (error) => {
       console.error('[WS] Error:', error.message);
-      this._emit('error', { code: 'WS_ERROR', message: error.message });
     };
 
     this.ws.onclose = (event) => {
-      console.log(`[WS] Closed: code=${event.code} reason=${event.reason}`);
+      const wasConnectedMs = this._connectedAt ? Date.now() - this._connectedAt : 0;
+      console.log(`[WS] Closed: code=${event.code} reason=${event.reason} after=${wasConnectedMs}ms`);
       this._emit('connection_state', { state: 'disconnected' });
       this._stopKeepalive();
+      this._connectedAt = null;
 
-      if (!this._intentionalClose && this.reconnectAttempts < WS_MAX_RECONNECTS) {
+      if (this._intentionalClose) return; // don't reconnect
+
+      // If connection closed very quickly, it counts as a failed attempt (don't reset counter)
+      // If it lasted a while, reset counter since the connection was stable
+      if (wasConnectedMs > WS_RAPID_CLOSE_THRESHOLD) {
+        this.reconnectAttempts = 0; // was a stable connection, reset for fresh retries
+      }
+
+      if (this.reconnectAttempts < WS_MAX_RECONNECTS) {
         this.reconnectAttempts++;
-        const delay = WS_RECONNECT_DELAY * Math.min(this.reconnectAttempts, 5); // cap backoff at 10s
-        console.log(`[WS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
+        const delay = WS_RECONNECT_DELAY * Math.min(this.reconnectAttempts, 5);
+        console.log(`[WS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${WS_MAX_RECONNECTS})`);
         this._emit('connection_state', { state: 'reconnecting', attempt: this.reconnectAttempts });
         setTimeout(() => this._doConnect(), delay);
+      } else {
+        console.warn(`[WS] Max reconnect attempts (${WS_MAX_RECONNECTS}) reached — giving up`);
+        this._emit('connection_state', { state: 'failed' });
+        this._emit('error', { code: 'WS_MAX_RECONNECTS', message: 'Could not maintain a stable connection to the server.' });
       }
     };
   }
@@ -158,12 +175,11 @@ class WSService {
         if (msg.code === 'SESSION_LOST' && this.sessionId) {
           console.log(`[WS] Server lost session state — reconnecting ${this.sessionId}`);
           this.reconnectSession(this.sessionId);
-          return; // Don't propagate to UI
+          return;
         }
         this._emit('error', msg);
         break;
       case 'ping':
-        // Auto-respond with pong to measure network RTT
         this._send({ type: 'pong', ping_ts: msg.ping_ts });
         break;
       default:
@@ -180,82 +196,39 @@ class WSService {
     return true;
   }
 
-  /**
-   * Initialize a new session
-   */
   initSession(patientId, patientName, gps = {}) {
-    return this._send({
-      type: 'init',
-      patient_id: patientId,
-      patient_name: patientName,
-      gps,
-    });
+    return this._send({ type: 'init', patient_id: patientId, patient_name: patientName, gps });
   }
 
-  /**
-   * Reconnect to an existing session
-   */
   reconnectSession(sessionId) {
-    return this._send({
-      type: 'reconnect',
-      session_id: sessionId,
-    });
+    return this._send({ type: 'reconnect', session_id: sessionId });
   }
 
-  /**
-   * Send audio data (base64 encoded)
-   */
-  sendAudio(base64Data, timestamp) {
-    return this._send({
-      type: 'audio',
-      data: base64Data,
-      t: timestamp,
-    });
-  }
-
-  /**
-   * Send a phase marker
-   * marker: 'history_complete' | 'diagnosis_complete' | 'management_complete'
-   */
   sendMarker(marker, timestamp) {
-    return this._send({
-      type: 'marker',
-      marker,
-      t: timestamp,
-    });
+    return this._send({ type: 'marker', marker, t: timestamp });
   }
 
-  /**
-   * End the session
-   */
   endSession(durationSeconds) {
-    this._send({
-      type: 'session_end',
-      t: durationSeconds,
-    });
+    this._send({ type: 'session_end', t: durationSeconds });
   }
 
-  /**
-   * Send transcription timing back to server for latency breakdown
-   */
   sendTranscriptionTiming(transcriptionMs) {
-    return this._send({
-      type: 'transcription_timing',
-      transcription_ms: transcriptionMs,
-    });
+    return this._send({ type: 'transcription_timing', transcription_ms: transcriptionMs });
   }
 
   /**
-   * Disconnect cleanly
+   * Disconnect cleanly — stops all reconnection
    */
   disconnect() {
     this._intentionalClose = true;
     this._stopKeepalive();
+    this.reconnectAttempts = 0;
     if (this.ws) {
       try { this.ws.close(1000, 'Client disconnect'); } catch {}
       this.ws = null;
     }
     this.sessionId = null;
+    this._connectedAt = null;
     this._emit('connection_state', { state: 'disconnected' });
   }
 
@@ -264,6 +237,5 @@ class WSService {
   }
 }
 
-// Singleton
 const wsService = new WSService();
 export default wsService;

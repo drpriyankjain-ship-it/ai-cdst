@@ -525,8 +525,9 @@ export function mountWebSocket(app) {
       }
     });
 
-    ws.on('close', () => {
-      console.log('[WS] Connection closed');
+    ws.on('close', (code, reason) => {
+      const reasonStr = reason ? reason.toString() : '';
+      console.log(`[WS] Connection closed — code=${code} reason="${reasonStr}" had_session=${!!state}`);
       if (state) {
         _active.delete(state.sessionId);
         // Clean up Deepgram

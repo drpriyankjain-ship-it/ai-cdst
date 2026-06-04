@@ -162,9 +162,26 @@ const LiveConsultationScreen = ({navigation}) => {
       wsService.on('session_closed', (msg) => {
         setSessionState('complete');
       }),
+
+      // Handle WS connection failure (max reconnects reached)
+      wsService.on('connection_state', ({state: connState}) => {
+        if (connState === 'failed') {
+          setIsProcessing(false);
+          setStreamingLabel('');
+          Alert.alert(
+            'Connection Lost',
+            'Could not maintain a connection to the server. Please start a new consultation.',
+            [{ text: 'OK', onPress: () => { wsService.disconnect(); handleNewSession(); } }]
+          );
+        }
+      }),
     ];
 
-    return () => unsubs.forEach(fn => fn());
+    return () => {
+      unsubs.forEach(fn => fn());
+      // Disconnect WS when screen unmounts to prevent background reconnect loops
+      wsService.disconnect();
+    };
   }, []);
 
   // ---------------------------------------------------------------------------
