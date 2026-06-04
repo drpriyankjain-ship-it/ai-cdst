@@ -192,7 +192,7 @@ const LiveConsultationScreen = ({navigation}) => {
     try {
       const permission = await Audio.requestPermissionsAsync();
       if (!permission.granted) {
-        Alert.alert('Permission Required', 'Microphone permission is needed.');
+        Alert.alert('Permission Required', 'Microphone permission is needed. Please enable it in your phone Settings.');
         return;
       }
 
@@ -204,7 +204,7 @@ const LiveConsultationScreen = ({navigation}) => {
         recordingRef.current = null;
       }
 
-      // Deactivate audio session first (fixes iOS session conflicts)
+      // Deactivate audio session first (fixes session conflicts)
       try {
         await Audio.setAudioModeAsync({
           allowsRecordingIOS: false,
@@ -212,8 +212,8 @@ const LiveConsultationScreen = ({navigation}) => {
         });
       } catch {}
 
-      // Give iOS time to fully release the audio hardware
-      await new Promise(r => setTimeout(r, 500));
+      // Give device time to fully release the audio hardware
+      await new Promise(r => setTimeout(r, 800));
 
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
@@ -222,9 +222,26 @@ const LiveConsultationScreen = ({navigation}) => {
         playThroughEarpieceAndroid: false,
       });
 
-      const { recording } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY
-      );
+      // Try to create recording with retry
+      let recording;
+      let lastErr;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const result = await Audio.Recording.createAsync(
+            Audio.RecordingOptionsPresets.HIGH_QUALITY
+          );
+          recording = result.recording;
+          break;
+        } catch (e) {
+          lastErr = e;
+          console.warn(`[Recording] Attempt ${attempt + 1} failed:`, e.message);
+          await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+        }
+      }
+
+      if (!recording) {
+        throw lastErr || new Error('Could not start recording after 3 attempts');
+      }
 
       recordingRef.current = recording;
       setIsRecording(true);
@@ -235,7 +252,7 @@ const LiveConsultationScreen = ({navigation}) => {
       }, 1000);
     } catch (err) {
       console.error('Recording error:', err);
-      Alert.alert('Error', 'Failed to start recording.');
+      Alert.alert('Recording Error', `Failed to start recording: ${err.message}\n\nPlease check that microphone permission is enabled in your phone Settings.`);
     }
   }, []);
 

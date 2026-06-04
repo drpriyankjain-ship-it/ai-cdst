@@ -76,6 +76,12 @@ class WSService {
     if (this._intentionalClose) return; // don't reconnect if we intentionally closed
 
     if (this.ws) {
+      // CRITICAL: Detach all handlers BEFORE closing, so the old WS's onclose
+      // doesn't trigger a phantom reconnect that kills the new connection 2s later
+      this.ws.onopen = null;
+      this.ws.onmessage = null;
+      this.ws.onerror = null;
+      this.ws.onclose = null;
       try { this.ws.close(); } catch {}
       this.ws = null;
     }
