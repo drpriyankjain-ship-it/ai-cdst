@@ -113,5 +113,54 @@ router.post('/:sessionId/audio-segment', requireAuth, uploadFields, async (req, 
     res.status(500).json({ error: err.message });
   }
 });
+// GET /api/session/audio/:audioId — stream an audio file by session_audio.id
+router.get('/audio/:audioId', requireAuth, async (req, res) => {
+  try {
+    const { getPool } = await import('../lib/db.js');
+    const pool = getPool();
+    const { audioId } = req.params;
+
+    const result = await pool.query('SELECT file_path, mime_type FROM session_audio WHERE id = $1', [audioId]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Audio not found' });
+    }
+
+    const { file_path: filePath, mime_type: mimeType } = result.rows[0];
+
+    // If it's a local file path, stream it directly
+    if (!filePath.startsWith('http')) {
+      if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ error: 'Audio file not found on disk' });
+      }
+      res.setHeader('Content-Type', mimeType || 'audio/mp4');
+      res.setHeader('Content-Length', fs.statSync(filePath).size);
+      fs.createReadStream(filePath).pipe(res);
+      return;
+    }
+
+    // Remote URL — proxy it
+    const upstream = await fetch(filePath);
+    if (!upstream.ok) {
+      return res.status(upstream.status).json({ error: 'Upstream audio fetch failed' });
+    }
+    res.setHeader('Content-Type', upstream.headers.get('content-type') || mimeType || 'audio/mp4');
+    const contentLength = upstream.headers.get('content-length');
+    if (contentLength) res.setHeader('Content-Length', contentLength);
+
+    // Stream the body through
+    const reader = upstream.body.getReader();
+    const pump = async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) { res.end(); break; }
+        res.write(Buffer.from(value));
+      }
+    };
+    await pump();
+  } catch (err) {
+    console.error('[SESSION] Audio stream error:', err.message);
+    res.status(500).json({ error: 'Audio streaming failed' });
+  }
+});
 
 export default router;

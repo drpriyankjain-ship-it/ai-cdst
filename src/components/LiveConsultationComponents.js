@@ -4,8 +4,8 @@
  * Reusable cards for the real-time clinical pipeline display.
  */
 
-import React, {useEffect, useRef} from 'react';
-import {View, Text, StyleSheet, ScrollView, Animated} from 'react-native';
+import React, {useState, useEffect, useRef} from 'react';
+import {View, Text, StyleSheet, ScrollView, Animated, Pressable} from 'react-native';
 import {Ionicons} from '@expo/vector-icons';
 
 // ---------------------------------------------------------------------------
@@ -151,6 +151,7 @@ const qc = StyleSheet.create({
 // ---------------------------------------------------------------------------
 
 export const DifferentialCard = ({data}) => {
+  const [expandedIdx, setExpandedIdx] = useState(null);
   if (!data || !data.length) return null;
   return (
     <View style={dc.container}>
@@ -158,26 +159,35 @@ export const DifferentialCard = ({data}) => {
         <Ionicons name="analytics-outline" size={20} color="#7C3AED" />
         <Text style={dc.title}>Differential Diagnosis</Text>
       </View>
-      {data.map((d, i) => (
-        <View key={i} style={dc.row}>
-          <View style={dc.rankBadge}>
-            <Text style={dc.rankText}>{d.rank || i + 1}</Text>
-          </View>
-          <View style={dc.info}>
-            <View style={dc.nameRow}>
-              <Text style={dc.disease}>{d.disease}</Text>
-              {d.must_not_miss && <View style={dc.mnmBadge}><Text style={dc.mnmText}>MNM</Text></View>}
-              {d.referral_required && <View style={dc.refBadge}><Text style={dc.refText}>REF</Text></View>}
+      {data.map((d, i) => {
+        const isExpanded = expandedIdx === i;
+        return (
+          <Pressable
+            key={i}
+            style={dc.row}
+            onPress={() => setExpandedIdx(isExpanded ? null : i)}>
+            <View style={dc.rankBadge}>
+              <Text style={dc.rankText}>{d.rank || i + 1}</Text>
             </View>
-            <View style={dc.probRow}>
-              <View style={[dc.probDot, d.probability === 'high' ? dc.probHigh : d.probability === 'moderate' ? dc.probMod : dc.probLow]} />
-              <Text style={dc.probText}>{d.probability}</Text>
-              <Text style={dc.icd}>{d.icd10_code}</Text>
+            <View style={dc.info}>
+              <View style={dc.nameRow}>
+                <Text style={dc.disease}>{d.disease}</Text>
+                {d.must_not_miss && <View style={dc.mnmBadge}><Text style={dc.mnmText}>MNM</Text></View>}
+                {d.referral_required && <View style={dc.refBadge}><Text style={dc.refText}>REF</Text></View>}
+              </View>
+              <View style={dc.probRow}>
+                <View style={[dc.probDot, d.probability === 'high' ? dc.probHigh : d.probability === 'moderate' ? dc.probMod : dc.probLow]} />
+                <Text style={dc.probText}>{d.probability}</Text>
+                <Text style={dc.icd}>{d.icd10_code}</Text>
+              </View>
+              <Text style={dc.reasoning} numberOfLines={isExpanded ? undefined : 2}>{d.reasoning}</Text>
+              {!isExpanded && d.reasoning?.length > 80 && (
+                <Text style={dc.expandHint}>Tap to read more ›</Text>
+              )}
             </View>
-            <Text style={dc.reasoning} numberOfLines={2}>{d.reasoning}</Text>
-          </View>
-        </View>
-      ))}
+          </Pressable>
+        );
+      })}
     </View>
   );
 };
@@ -204,6 +214,7 @@ const dc = StyleSheet.create({
   probText: {fontSize: 11, color: '#64748B', marginRight: 8, textTransform: 'capitalize'},
   icd: {fontSize: 11, color: '#94A3B8', fontFamily: 'monospace'},
   reasoning: {fontSize: 12, color: '#64748B', marginTop: 4, lineHeight: 18},
+  expandHint: {fontSize: 11, color: '#7C3AED', marginTop: 2, fontWeight: '600'},
 });
 
 // ---------------------------------------------------------------------------

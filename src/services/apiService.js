@@ -214,6 +214,7 @@ const unwrapApiData = (result) => {
 };
 
 export const apiService = {
+  getBaseUrl: () => API_BASE_URL,
   getConsentStatus: async () => {
     const result = await apiCall('/auth/consent');
     if (result.success) {

@@ -66,14 +66,28 @@ router.get('/management-plans', requireAuth, async (req, res) => {
     const pool = getPool();
     const result = await pool.query(
       `SELECT
+         cq.session_id              AS id,
          cq.session_id,
          cq.risk_tier,
          cq.status,
          cq.created_at,
          s.data->>'patient_id'                          AS patient_id,
-         s.data->'demographics'->>'name'                AS patient_name,
+         COALESCE(
+           s.data->'demographics'->>'name',
+           s.data->'chief_complaint'->>'patient_name'
+         )                                              AS patient_name,
          s.data->>'nurse_id'                            AS nurse_id,
-         s.data->'triage_output'->'triage'->>'one_liner' AS one_liner
+         s.data->'chief_complaint'                      AS chief_complaint,
+         s.data->'questionnaire'                        AS questionnaire,
+         s.data->'extracted_concepts'                   AS extracted_concepts,
+         s.data->'differential_table'                   AS differential_table,
+         s.data->'clarifying_questions'                 AS clarifying_questions,
+         s.data->'clarifying_findings'                  AS clarifying_findings,
+         s.data->'problem_list'                         AS problem_list,
+         s.data->'triage_output'                        AS triage_output,
+         s.data->'risk_assessment'                      AS risk_assessment,
+         s.data->'transcript_segments'                  AS transcript_segments,
+         'live'                                         AS source
        FROM case_queue cq
        JOIN sessions s ON cq.session_id = s.session_id
        WHERE cq.status = 'active'
@@ -81,7 +95,38 @@ router.get('/management-plans', requireAuth, async (req, res) => {
          CASE cq.risk_tier WHEN 'HIGH' THEN 0 ELSE 1 END,
          cq.created_at DESC`
     );
-    res.json({ success: true, data: result.rows });
+
+    // Fetch audio URLs for all sessions
+    const sessionIds = result.rows.map(r => r.session_id);
+    let audioMap = {};
+    if (sessionIds.length > 0) {
+      const audioRes = await pool.query(
+        `SELECT id, session_id, iteration, label, duration_seconds, transcript
+         FROM session_audio
+         WHERE session_id = ANY($1)
+         ORDER BY session_id, iteration`,
+        [sessionIds]
+      );
+      for (const row of audioRes.rows) {
+        if (!audioMap[row.session_id]) audioMap[row.session_id] = [];
+        audioMap[row.session_id].push({
+          ...row,
+          file_path: `/api/session/audio/${row.id}`,
+        });
+      }
+    }
+
+    const data = result.rows.map(row => ({
+      ...row,
+      audio_files: audioMap[row.session_id] || [],
+      management_plan: JSON.stringify({
+        risk_tier: row.risk_tier,
+        problem_list: row.problem_list,
+        triage_output: row.triage_output,
+      }),
+    }));
+
+    res.json({ success: true, data });
   } catch (err) {
     console.error('[DASHBOARD] Management plans error:', err);
     res.status(500).json({ error: 'Failed to load management plans' });
@@ -109,21 +154,39 @@ router.get('/management-plans/history', requireAuth, async (req, res) => {
     const pool = getPool();
     const result = await pool.query(
       `SELECT
+         cq.session_id              AS id,
          cq.session_id,
          cq.risk_tier,
          cq.status,
          cq.created_at,
          cq.cleared_at,
          s.data->>'patient_id'                          AS patient_id,
-         s.data->'demographics'->>'name'                AS patient_name,
+         COALESCE(
+           s.data->'demographics'->>'name',
+           s.data->'chief_complaint'->>'patient_name'
+         )                                              AS patient_name,
          s.data->>'nurse_id'                            AS nurse_id,
-         s.data->'triage_output'->'triage'->>'one_liner' AS one_liner
+         s.data->'triage_output'->'triage'->>'one_liner' AS one_liner,
+         s.data->'triage_output'                        AS triage_output,
+         s.data->'problem_list'                         AS problem_list,
+         s.data->'clarifying_questions'                 AS clarifying_questions,
+         'live'                                         AS source
        FROM case_queue cq
        JOIN sessions s ON cq.session_id = s.session_id
        WHERE cq.status = 'cleared'
        ORDER BY cq.cleared_at DESC`
     );
-    res.json({ success: true, data: result.rows });
+
+    const data = result.rows.map(row => ({
+      ...row,
+      management_plan: JSON.stringify({
+        risk_tier: row.risk_tier,
+        problem_list: row.problem_list,
+        triage_output: row.triage_output,
+      }),
+    }));
+
+    res.json({ success: true, data });
   } catch (err) {
     console.error('[DASHBOARD] Management plan history error:', err);
     res.status(500).json({ error: 'Failed to load management plan history' });

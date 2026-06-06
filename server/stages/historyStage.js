@@ -10,7 +10,7 @@
  */
 
 import { vaultRead, vaultUpdate } from '../lib/db.js';
-import { generateWithCascade, parseJsonResponse, responseText, buildAudioContent } from '../lib/llmClient.js';
+import { generateWithCascade, parseJsonResponse, responseText, buildAudioContent, buildMultimodalContent } from '../lib/llmClient.js';
 import { MODEL_H1_CHIEF_COMPLAINT, MODEL_H2_QUESTIONNAIRE } from '../lib/modelConfig.js';
 import { stateFromDistrictCode } from '../lib/epiUtils.js';
 

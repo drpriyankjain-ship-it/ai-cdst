@@ -15,6 +15,7 @@ import {SafeAreaView} from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {Ionicons} from '@expo/vector-icons';
 import {Swipeable} from 'react-native-gesture-handler';
+
 import SummaryCard from '../components/dashboard/SummaryCard';
 import PatientTaskCard from '../components/dashboard/PatientTaskCard';
 import apiService from '../services/apiService';
@@ -517,11 +518,19 @@ const HomePage = ({navigation}) => {
             {managementPlans.map((plan) => {
               const isExpanded = expandedPlanId === plan.id;
               const mgmt = typeof plan.management_plan === 'string' ? JSON.parse(plan.management_plan) : (plan.management_plan || {});
-              const riskTier = mgmt.risk_tier || 'unknown';
-              const proforma = typeof plan.proforma === 'string' ? JSON.parse(plan.proforma) : (plan.proforma || null);
-              const clarifying = typeof plan.clarifying_questions === 'string' ? JSON.parse(plan.clarifying_questions) : (plan.clarifying_questions || null);
-              const problemList = mgmt.problem_list;
-              const triage = mgmt.triage_output;
+              const riskTier = plan.risk_tier || mgmt.risk_tier || 'unknown';
+              const triage = plan.triage_output || mgmt.triage_output;
+              const problemList = plan.problem_list || mgmt.problem_list;
+              const questionnaire = plan.questionnaire;
+              const clarifying = plan.clarifying_questions;
+              const differential = plan.differential_table;
+              const chiefComplaint = plan.chief_complaint;
+              const audioFiles = plan.audio_files || [];
+              const audio1 = audioFiles.find(a => a.iteration === 1);
+              const audio2 = audioFiles.find(a => a.iteration === 2);
+              const audio3 = audioFiles.find(a => a.iteration === 3);
+              const oneLiner = triage?.triage?.one_liner || triage?.one_liner || '';
+
               return (
                 <Swipeable
                   key={plan.id}
@@ -530,6 +539,7 @@ const HomePage = ({navigation}) => {
                   <Pressable
                     onPress={() => togglePlan(plan.id)}
                     style={styles.mgmtCard}>
+                    {/* Header */}
                     <View style={styles.mgmtCardHeader}>
                       <View style={{flex: 1}}>
                         <Text style={styles.mgmtPatientName}>
@@ -547,6 +557,8 @@ const HomePage = ({navigation}) => {
                         ]}>{riskTier}</Text>
                       </View>
                     </View>
+
+                    {/* Source + Date */}
                     <View style={styles.mgmtSourceRow}>
                       <Ionicons name={plan.source === 'live' ? 'pulse' : 'cloud-upload'} size={12} color="#64748B" />
                       <Text style={styles.mgmtSourceText}>
@@ -557,42 +569,171 @@ const HomePage = ({navigation}) => {
                       </Text>
                     </View>
 
-                    {/* Triage summary always visible */}
-                    {triage && (
+                    {/* One-liner always visible */}
+                    {oneLiner ? (
                       <Text style={styles.mgmtTriageLine} numberOfLines={isExpanded ? undefined : 2}>
-                        {triage.one_liner || triage.action || JSON.stringify(triage).slice(0, 120)}
+                        {oneLiner}
                       </Text>
-                    )}
+                    ) : null}
 
+                    {/* ========== EXPANDED TIMELINE ========== */}
                     {isExpanded && (
                       <View style={styles.mgmtExpandedContent}>
-                        {/* Proforma */}
-                        {proforma && (
-                          <View style={styles.mgmtSubSection}>
-                            <Text style={styles.mgmtSubTitle}>Proforma</Text>
-                            <Text style={styles.mgmtSubContent}>
-                              {typeof proforma === 'string' ? proforma : JSON.stringify(proforma, null, 2)}
-                            </Text>
+
+                        {/* ── PHASE 1: Audio 1 + Chief Complaint + Proforma ── */}
+                        <View style={styles.phaseBlock}>
+                          <View style={styles.phaseHeader}>
+                            <View style={[styles.phaseDot, {backgroundColor: '#3B82F6'}]} />
+                            <Text style={styles.phaseTitle}>Phase 1 — Initial Description</Text>
                           </View>
-                        )}
-                        {/* Clarifying Questions */}
-                        {clarifying && (
-                          <View style={styles.mgmtSubSection}>
-                            <Text style={styles.mgmtSubTitle}>Clarifying Questions</Text>
-                            <Text style={styles.mgmtSubContent}>
-                              {typeof clarifying === 'string' ? clarifying : JSON.stringify(clarifying, null, 2)}
+                          {audio1 && (
+                            <View style={styles.audioRow}>
+                              <Ionicons name="mic" size={14} color="#0D9488" />
+                              <Text style={styles.audioLabel}>{audio1.label || 'Audio Recording'}</Text>
+                              {audio1.duration_seconds && (
+                                <Text style={styles.audioDuration}>{Math.round(audio1.duration_seconds)}s</Text>
+                              )}
+                            </View>
+                          )}
+                          {audio1?.transcript && (
+                            <Text style={styles.transcriptSnippet} numberOfLines={3}>
+                              "{audio1.transcript.slice(0, 200)}{audio1.transcript.length > 200 ? '...' : ''}"
                             </Text>
+                          )}
+                          {chiefComplaint && (
+                            <View style={styles.mgmtSubSection}>
+                              <Text style={styles.mgmtSubTitle}>Chief Complaint</Text>
+                              <Text style={styles.mgmtSubValue}>{chiefComplaint.chief_complaint || 'N/A'}</Text>
+                              {chiefComplaint.duration && (
+                                <Text style={styles.mgmtSubDetail}>Duration: {chiefComplaint.duration}</Text>
+                              )}
+                            </View>
+                          )}
+                          {questionnaire && (
+                            <View style={styles.mgmtSubSection}>
+                              <Text style={styles.mgmtSubTitle}>Proforma / Questionnaire</Text>
+                              {questionnaire.sections ? questionnaire.sections.map((sec, si) => (
+                                <View key={si} style={styles.proformaSection}>
+                                  <Text style={styles.proformaSectionTitle}>{sec.section_name || sec.title || `Section ${si + 1}`}</Text>
+                                  {(sec.questions || []).map((q, qi) => (
+                                    <Text key={qi} style={styles.proformaQuestion}>• {typeof q === 'string' ? q : (q.question || q.text || JSON.stringify(q))}</Text>
+                                  ))}
+                                </View>
+                              )) : (
+                                <Text style={styles.mgmtSubContent}>{JSON.stringify(questionnaire, null, 2)}</Text>
+                              )}
+                            </View>
+                          )}
+                        </View>
+
+                        {/* ── PHASE 2: Audio 2 + Differential + Clarifying Qs ── */}
+                        <View style={styles.phaseBlock}>
+                          <View style={styles.phaseHeader}>
+                            <View style={[styles.phaseDot, {backgroundColor: '#F59E0B'}]} />
+                            <Text style={styles.phaseTitle}>Phase 2 — Clinical Interview</Text>
                           </View>
-                        )}
-                        {/* Problem List */}
-                        {problemList && (
-                          <View style={styles.mgmtSubSection}>
-                            <Text style={styles.mgmtSubTitle}>Problem List</Text>
-                            <Text style={styles.mgmtSubContent}>
-                              {typeof problemList === 'string' ? problemList : JSON.stringify(problemList, null, 2)}
+                          {audio2 && (
+                            <View style={styles.audioRow}>
+                              <Ionicons name="mic" size={14} color="#0D9488" />
+                              <Text style={styles.audioLabel}>{audio2.label || 'Audio Recording'}</Text>
+                              {audio2.duration_seconds && (
+                                <Text style={styles.audioDuration}>{Math.round(audio2.duration_seconds)}s</Text>
+                              )}
+                            </View>
+                          )}
+                          {audio2?.transcript && (
+                            <Text style={styles.transcriptSnippet} numberOfLines={3}>
+                              "{audio2.transcript.slice(0, 200)}{audio2.transcript.length > 200 ? '...' : ''}"
                             </Text>
+                          )}
+                          {differential && Array.isArray(differential) && differential.length > 0 && (
+                            <View style={styles.mgmtSubSection}>
+                              <Text style={styles.mgmtSubTitle}>Differential Diagnosis</Text>
+                              {differential.slice(0, 5).map((dx, i) => (
+                                <View key={i} style={styles.ddxRow}>
+                                  <Text style={styles.ddxRank}>#{dx.rank || i + 1}</Text>
+                                  <View style={{flex: 1}}>
+                                    <Text style={styles.ddxName}>{dx.disease}</Text>
+                                    <Text style={styles.ddxProb}>{dx.probability} · {dx.icd10_code}</Text>
+                                  </View>
+                                  {dx.must_not_miss && (
+                                    <View style={styles.mnmBadge}><Text style={styles.mnmText}>MNM</Text></View>
+                                  )}
+                                </View>
+                              ))}
+                            </View>
+                          )}
+                          {clarifying && (
+                            <View style={styles.mgmtSubSection}>
+                              <Text style={styles.mgmtSubTitle}>Clarifying Questions</Text>
+                              {(clarifying.clarifying_questions || []).map((q, i) => (
+                                <Text key={i} style={styles.proformaQuestion}>
+                                  {q.priority ? `[P${q.priority}] ` : ''}{q.question}
+                                </Text>
+                              ))}
+                            </View>
+                          )}
+                        </View>
+
+                        {/* ── PHASE 3: Audio 3 + Management Plan ── */}
+                        <View style={styles.phaseBlock}>
+                          <View style={styles.phaseHeader}>
+                            <View style={[styles.phaseDot, {backgroundColor: '#10B981'}]} />
+                            <Text style={styles.phaseTitle}>Phase 3 — Management</Text>
                           </View>
-                        )}
+                          {audio3 && (
+                            <View style={styles.audioRow}>
+                              <Ionicons name="mic" size={14} color="#0D9488" />
+                              <Text style={styles.audioLabel}>{audio3.label || 'Audio Recording'}</Text>
+                              {audio3.duration_seconds && (
+                                <Text style={styles.audioDuration}>{Math.round(audio3.duration_seconds)}s</Text>
+                              )}
+                            </View>
+                          )}
+                          {audio3?.transcript && (
+                            <Text style={styles.transcriptSnippet} numberOfLines={3}>
+                              "{audio3.transcript.slice(0, 200)}{audio3.transcript.length > 200 ? '...' : ''}"
+                            </Text>
+                          )}
+                          {problemList && (
+                            <View style={styles.mgmtSubSection}>
+                              <Text style={styles.mgmtSubTitle}>Problem List</Text>
+                              {(problemList.problem_list || []).map((p, i) => (
+                                <View key={i} style={styles.problemRow}>
+                                  <View style={styles.problemHeader}>
+                                    <Text style={styles.problemName}>
+                                      {p.assessment?.primary_diagnosis || p.problem || `Problem ${i + 1}`}
+                                    </Text>
+                                    <Text style={[styles.problemType, p.type === 'acute_new' && {color: '#DC2626'}]}>
+                                      {p.type || 'unknown'}
+                                    </Text>
+                                  </View>
+                                  {p.plan?.prescription?.length > 0 && (
+                                    <View style={styles.rxList}>
+                                      {p.plan.prescription.map((rx, ri) => (
+                                        <Text key={ri} style={styles.rxItem}>
+                                          💊 {rx.drug} {rx.dose} {rx.route} — {rx.duration}
+                                        </Text>
+                                      ))}
+                                    </View>
+                                  )}
+                                </View>
+                              ))}
+                            </View>
+                          )}
+                          {triage && (
+                            <View style={styles.mgmtSubSection}>
+                              <Text style={styles.mgmtSubTitle}>Triage & Instructions</Text>
+                              {triage.patient_instructions && (
+                                <Text style={styles.mgmtSubContent}>
+                                  {typeof triage.patient_instructions === 'string'
+                                    ? triage.patient_instructions
+                                    : (triage.patient_instructions.instructions_text || JSON.stringify(triage.patient_instructions, null, 2))}
+                                </Text>
+                              )}
+                            </View>
+                          )}
+                        </View>
                       </View>
                     )}
 
@@ -1092,6 +1233,170 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#475569',
     lineHeight: 19,
+  },
+  mgmtSubValue: {
+    fontSize: 14,
+    color: '#1E293B',
+    fontWeight: '600',
+    marginBottom: 2,
+  },
+  mgmtSubDetail: {
+    fontSize: 12,
+    color: '#64748B',
+  },
+
+  // Phase timeline
+  phaseBlock: {
+    marginBottom: 16,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  phaseHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  phaseDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginRight: 8,
+  },
+  phaseTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1E293B',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+
+  // Audio row
+  audioRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0FDFA',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#CCFBF1',
+  },
+  audioLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#0D9488',
+    marginLeft: 6,
+    flex: 1,
+  },
+  audioDuration: {
+    fontSize: 11,
+    color: '#64748B',
+    fontVariant: ['tabular-nums'],
+  },
+  transcriptSnippet: {
+    fontSize: 12,
+    color: '#64748B',
+    fontStyle: 'italic',
+    lineHeight: 17,
+    marginBottom: 8,
+    paddingHorizontal: 4,
+  },
+
+  // Proforma
+  proformaSection: {
+    marginBottom: 8,
+  },
+  proformaSectionTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#334155',
+    marginBottom: 4,
+  },
+  proformaQuestion: {
+    fontSize: 12,
+    color: '#475569',
+    lineHeight: 18,
+    paddingLeft: 4,
+    marginBottom: 2,
+  },
+
+  // Differential diagnosis
+  ddxRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  ddxRank: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#94A3B8',
+    width: 28,
+  },
+  ddxName: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1E293B',
+  },
+  ddxProb: {
+    fontSize: 11,
+    color: '#64748B',
+    marginTop: 1,
+  },
+  mnmBadge: {
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    marginLeft: 8,
+  },
+  mnmText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#DC2626',
+    letterSpacing: 0.5,
+  },
+
+  // Problem list
+  problemRow: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  problemHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  problemName: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1E293B',
+    flex: 1,
+  },
+  problemType: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#64748B',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  rxList: {
+    marginTop: 4,
+  },
+  rxItem: {
+    fontSize: 12,
+    color: '#475569',
+    lineHeight: 18,
   },
 });
 
