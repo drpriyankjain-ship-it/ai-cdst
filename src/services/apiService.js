@@ -411,6 +411,46 @@ export const apiService = {
     return result;
   },
 
+  // Upload a 12-second m4a segment to the server's in-memory session buffer.
+  // Used by the session-based WebSocket flow. Returns { ok, buffered_segments }.
+  uploadAudioSegment: async (sessionId, phase, segmentIndex, uri, photoUris = []) => {
+    try {
+      const token = await getAuthToken();
+      const url = `${API_BASE_URL.replace('/api', '')}/api/session/${sessionId}/audio-segment`;
+
+      const filename = uri.split('/').pop() || `seg${segmentIndex}.m4a`;
+      const normalizedUri = uri.startsWith('file://') || uri.startsWith('content://') ? uri : `file://${uri}`;
+
+      const formData = new FormData();
+      formData.append('audio', { uri: normalizedUri, name: filename, type: 'audio/mp4' });
+      formData.append('phase', String(phase));
+      formData.append('segment_index', String(segmentIndex));
+
+      for (const photoUri of photoUris) {
+        const photoName = photoUri.split('/').pop() || 'photo.jpg';
+        const ext = photoName.split('.').pop()?.toLowerCase() || 'jpg';
+        const mimeMap = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', heic: 'image/heic' };
+        formData.append('photos', { uri: photoUri, name: photoName, type: mimeMap[ext] || 'image/jpeg' });
+      }
+
+      const headers = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s per segment
+      const response = await fetch(url, { method: 'POST', headers, body: formData, signal: controller.signal });
+      clearTimeout(timeoutId);
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) return { success: false, error: data.error || `Segment upload failed: ${response.status}` };
+      return { success: true, data };
+    } catch (error) {
+      if (error.name === 'AbortError') return { success: false, error: 'Segment upload timed out' };
+      if (error.message?.includes('Network request failed')) return { success: false, error: 'No internet connection' };
+      return { success: false, error: error.message };
+    }
+  },
+
   // Upload audio recording (supports optional second audio segment)
   uploadAudio: async ({uri, photoUri, patientName, patientId, secondAudioUri}) => {
     try {

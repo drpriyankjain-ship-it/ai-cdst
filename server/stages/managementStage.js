@@ -5,7 +5,7 @@
  */
 
 import { vaultRead, vaultUpdate, insertLlmResult } from '../lib/db.js';
-import { generateWithCascade, parseJsonResponse, responseText } from '../lib/llmClient.js';
+import { generateWithCascade, parseJsonResponse, responseText, buildAudioContent } from '../lib/llmClient.js';
 import { MODEL_M1_FINDINGS, MODEL_M2_PRESCRIPTION, MODEL_M3_RISK, MODEL_M4_TRIAGE } from '../lib/modelConfig.js';
 import { stateFromDistrictCode } from '../lib/epiUtils.js';
 import {
@@ -125,21 +125,25 @@ export async function retrieveTreatmentProtocols(dbClient, diagnoses, topK = RAG
 // Call 1 — Extract clarifying findings
 // ---------------------------------------------------------------------------
 
-export async function extractClarifyingFindings(transcriptSegment, vaultContext) {
+export async function extractClarifyingFindings(audioBuffers, vaultContext) {
   const prompt = [
-    'Extract structured clinical findings from the phase 3 clarifying questions transcript.',
+    'Listen to this audio recording of the phase 3 clarifying questions exchange (~1-2 minutes). ' +
+    'Extract structured clinical findings from what is said.',
     `PHASE 2 EXTRACTED CONCEPTS:\n${JSON.stringify(vaultContext.extracted_concepts || {}, null, 2)}`,
     `CLARIFYING QUESTIONS THAT WERE ASKED:\n${JSON.stringify(vaultContext.clarifying_questions || {}, null, 2)}`,
-    `PHASE 3 TRANSCRIPT:\n${transcriptSegment}`,
-    'INSTRUCTIONS:\n- Match answers to the specific clarifying questions where possible\n' +
-    '- Record all bedside examination findings\n- Only extract what is explicitly in the transcript\n' +
+    'INSTRUCTIONS:\n' +
+    '- transcript: verbatim transcription of everything spoken in the audio\n' +
+    '- Match answers to the specific clarifying questions where possible\n' +
+    '- Record all bedside examination findings\n' +
+    '- Only extract what is explicitly stated in the audio\n' +
     '- vitals_found: return NUMERIC JSON numbers only. Null for any vital not measured.',
   ].join('\n\n');
 
-  const { response, meta } = await generateWithCascade(MODEL_M1_FINDINGS, prompt, {
+  const contents = buildAudioContent(prompt, audioBuffers, 'audio/mp4');
+  const { response, meta } = await generateWithCascade(MODEL_M1_FINDINGS, contents, {
     thinkingConfig: { thinkingBudget: 0 },
     systemInstruction: 'You are a clinical data extraction tool. Extract only what is explicitly stated.',
-    responseMimeType: 'application/json', responseSchema: SCHEMA_CLARIFYING_FINDINGS, maxOutputTokens: 2000,
+    responseMimeType: 'application/json', responseSchema: SCHEMA_CLARIFYING_FINDINGS, maxOutputTokens: 2500,
   });
   return { result: parseJsonResponse(responseText(response)), meta };
 }
@@ -279,7 +283,7 @@ export async function generateTriageAndHandoff(problemListOutput, vaultContext) 
 // Main pipeline
 // ---------------------------------------------------------------------------
 
-export async function runManagementStage(sessionId, transcriptSegment, dbClient) {
+export async function runManagementStage(sessionId, audioBuffers, dbClient) {
   const vaultContext = await vaultRead(dbClient, sessionId);
   const demographics = vaultContext.demographics || {};
   const ddx = vaultContext.differential_table || [];
@@ -295,7 +299,7 @@ export async function runManagementStage(sessionId, transcriptSegment, dbClient)
     console.log(`[${sessionId}] Call 1: extracting clarifying findings + RAG retrieval`);
     let t0 = Date.now();
     const [m1Result, stgRetrieval] = await Promise.all([
-      extractClarifyingFindings(transcriptSegment, vaultContext),
+      extractClarifyingFindings(audioBuffers, vaultContext),
       retrieveTreatmentProtocols(dbClient, ragDiagnoses),
     ]);
     const clarifyingFindings = m1Result.result;

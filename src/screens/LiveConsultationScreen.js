@@ -14,7 +14,10 @@ import {Ionicons} from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {Audio} from 'expo-av';
 import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
+import * as Location from 'expo-location';
 import wsService from '../services/wsService';
+import { resolveWBDistrict } from '../utils/districtLookup';
 import {
   PhaseIndicator, StreamingText, QuestionnaireCard,
   DifferentialCard, ClarifyingCard, PrescriptionCard, TriageCard,
@@ -281,6 +284,27 @@ const LiveConsultationScreen = ({navigation}) => {
   // Session lifecycle
   // ---------------------------------------------------------------------------
 
+  // Returns { lat, lng, district, district_code } or {} if permission denied / unavailable.
+  // Never throws — GPS failure must not block the nurse.
+  const fetchGpsLocation = async () => {
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        console.warn('[LiveConsultation] Location permission denied — proceeding without GPS');
+        return {};
+      }
+      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      const { latitude: lat, longitude: lng } = pos.coords;
+      const [geocoded] = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
+      const district = resolveWBDistrict(geocoded);
+      console.log(`[LiveConsultation] GPS: ${lat.toFixed(4)}, ${lng.toFixed(4)} → ${district?.district_code ?? 'unresolved'}`);
+      return { lat, lng, ...(district ?? {}) };
+    } catch (err) {
+      console.warn('[LiveConsultation] GPS fetch failed:', err.message);
+      return {};
+    }
+  };
+
   const handleStartSession = useCallback(async () => {
     if (!patientName.trim() || !patientId.trim()) {
       Alert.alert('Required', 'Enter Patient Name and ID');
@@ -291,6 +315,9 @@ const LiveConsultationScreen = ({navigation}) => {
     try {
       const token = await AsyncStorage.getItem(AUTH_TOKEN_KEY);
       if (!token) { Alert.alert('Auth Error', 'Please log in again.'); setSessionState('idle'); return; }
+
+      const [gps] = await Promise.all([fetchGpsLocation()]);
+      const local_month = new Date().getMonth() + 1;
 
       wsService.setServerUrl(API_BASE);
       wsService.connect(token);
@@ -307,7 +334,7 @@ const LiveConsultationScreen = ({navigation}) => {
       // Small delay to ensure WS handler is fully attached on server side
       await new Promise(r => setTimeout(r, 300));
       console.log('[LiveConsultation] WS connected, sending init...');
-      const sent = wsService.initSession(patientId.trim(), patientName.trim());
+      const sent = wsService.initSession(patientId.trim(), patientName.trim(), gps, local_month);
       console.log('[LiveConsultation] initSession sent:', sent);
     } catch (err) {
       console.error('Session start error:', err);
@@ -328,53 +355,41 @@ const LiveConsultationScreen = ({navigation}) => {
     // Stop current recording
     const audioUri = await stopRecording();
 
-    // Upload audio file to server for transcription
+    // Upload audio segment + compressed photos to server buffer
     if (audioUri && sessionId) {
       try {
         const token = await AsyncStorage.getItem(AUTH_TOKEN_KEY);
         const formData = new FormData();
-        formData.append('audio', {
-          uri: audioUri,
-          name: `phase_${currentPhase}.m4a`,
-          type: 'audio/mp4',
-        });
+        formData.append('audio', { uri: audioUri, name: `phase_${currentPhase}.m4a`, type: 'audio/mp4' });
         formData.append('phase', String(currentPhase));
+        formData.append('segment_index', '0');
 
-        // Append photos
-        photos.forEach((photo, idx) => {
-          formData.append('photos', {
-            uri: photo.uri,
-            name: `photo_${idx}.jpg`,
-            type: 'image/jpeg',
-          });
-        });
+        // Compress photos before upload: resize to max 1280px on longest side, JPEG quality 0.75
+        for (let idx = 0; idx < photos.length; idx++) {
+          const photo = photos[idx];
+          const longestSide = Math.max(photo.width || 0, photo.height || 0);
+          let uri = photo.uri;
+          if (longestSide > 1280) {
+            const scale = 1280 / longestSide;
+            const compressed = await ImageManipulator.manipulateAsync(
+              photo.uri,
+              [{ resize: { width: Math.round((photo.width || 1280) * scale) } }],
+              { compress: 0.75, format: ImageManipulator.SaveFormat.JPEG }
+            );
+            uri = compressed.uri;
+          }
+          formData.append('photos', { uri, name: `photo_${idx}.jpg`, type: 'image/jpeg' });
+        }
 
         console.log(`[LiveConsultation] Uploading phase ${currentPhase} audio + ${photos.length} photo(s)...`);
-        setStreamingLabel('Transcribing audio...');
-
         const uploadResponse = await fetch(
-          `${API_BASE}/api/session/${sessionId}/upload-audio`,
-          {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${token}` },
-            body: formData,
-          }
+          `${API_BASE}/api/session/${sessionId}/audio-segment`,
+          { method: 'POST', headers: { 'Authorization': `Bearer ${token}` }, body: formData }
         );
-
         const uploadResult = await uploadResponse.json();
-        if (uploadResult.success) {
-          console.log(`[LiveConsultation] Transcript received: "${(uploadResult.transcript || '').slice(0, 80)}..."`);
-          setLiveTranscript(prev => prev + `\n[Phase ${currentPhase}]: ${uploadResult.transcript || '(no speech detected)'}\n`);
-          // Send transcription timing to server for latency breakdown
-          if (uploadResult.transcription_ms) {
-            wsService.sendTranscriptionTiming(uploadResult.transcription_ms);
-            console.log(`[LiveConsultation] Transcription took ${uploadResult.transcription_ms}ms`);
-          }
-        } else {
-          console.warn('[LiveConsultation] Upload failed:', uploadResult.error);
-        }
+        if (!uploadResult.ok) console.warn('[LiveConsultation] Segment upload failed:', uploadResult.error);
       } catch (err) {
-        console.error('[LiveConsultation] Audio upload error:', err);
+        console.error('[LiveConsultation] Audio segment upload error:', err);
       }
     }
 

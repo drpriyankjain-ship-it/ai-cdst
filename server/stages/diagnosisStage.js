@@ -15,7 +15,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 import { vaultRead, vaultUpdate, vaultSetNested } from '../lib/db.js';
-import { generateWithCascade, parseJsonResponse, responseText, buildMultimodalContent } from '../lib/llmClient.js';
+import { generateWithCascade, parseJsonResponse, responseText, buildMultimodalContent, buildAudioContent } from '../lib/llmClient.js';
 import { MODEL_D1_CONCEPTS, MODEL_D2_DIFFERENTIAL, MODEL_D3_CLARIFYING } from '../lib/modelConfig.js';
 import { stateFromDistrictCode, loadBaselineDiseases, loadEpiPrior } from '../lib/epiUtils.js';
 
@@ -88,6 +88,7 @@ export function validateDifferential(ddx) {
 const SCHEMA_MEDICAL_CONCEPTS = {
   type: 'object',
   properties: {
+    transcript: { type: 'string' },
     chief_complaint: { type: 'string' },
     symptoms: {
       type: 'array', items: {
@@ -122,7 +123,7 @@ const SCHEMA_MEDICAL_CONCEPTS = {
     allergies_reported: { type: 'array', items: { type: 'string' } },
   },
   required: [
-    'chief_complaint', 'symptoms', 'negatives', 'relevant_history',
+    'transcript', 'chief_complaint', 'symptoms', 'negatives', 'relevant_history',
     'risk_factors', 'vitals_reported', 'red_flags', 'pregnancy_status',
     'lmp', 'uncertain_findings', 'past_medical_history',
     'current_medications', 'allergies_reported',
@@ -185,7 +186,7 @@ const SCHEMA_CLARIFYING_QS = {
 // Call 1 — Concept extraction
 // ---------------------------------------------------------------------------
 
-export async function extractMedicalConcepts(transcriptSegment, vaultContext, photos = []) {
+export async function extractMedicalConcepts(audioBuffers, vaultContext, photos = []) {
   const demographics = vaultContext.demographics || {};
   const priorEncounters = (vaultContext.patient_record || {}).encounters || [];
   const priorText = priorEncounters.length
@@ -193,15 +194,16 @@ export async function extractMedicalConcepts(transcriptSegment, vaultContext, ph
     : 'No prior encounters recorded.';
 
   const prompt = [
-    'Extract structured medical concepts from this nurse-patient interview transcript.',
+    'Listen to this audio recording of a nurse-patient structured interview (phase 2, ~3-4 minutes). ' +
+    'Extract structured medical concepts from what is said.',
     `PATIENT DEMOGRAPHICS:\n${JSON.stringify(demographics, null, 2)}`,
     `PRIOR ENCOUNTER SUMMARY (last 3 visits):\n${priorText}`,
-    `TRANSCRIPT (phase 2 interview):\n${transcriptSegment}`,
     photos.length > 0 ? 'CLINICAL PHOTOS: The nurse has attached clinical photos. Extract any visible clinical findings (skin lesions, swelling, wounds, deformities, etc.) into the symptoms and red_flags arrays as appropriate.' : '',
     'INSTRUCTIONS:\n' +
-    '- Extract only what is explicitly stated or clearly implied\n' +
+    '- transcript: verbatim transcription of everything spoken in the audio\n' +
+    '- Extract only what is explicitly stated or clearly implied in the audio\n' +
     '- Negatives are as important as positives — list all denied symptoms\n' +
-    '- Do not infer or assume anything not present in the transcript\n' +
+    '- Do not infer or assume anything not present in the audio\n' +
     '- vitals_reported: return NUMERIC JSON numbers only.\n' +
     '  temperature_c: convert to °C before returning. If >50 assume °F and convert: (F−32)×5/9.\n' +
     '  All other vitals: strip units as-is.\n' +
@@ -222,10 +224,10 @@ export async function extractMedicalConcepts(transcriptSegment, vaultContext, ph
     '- Do NOT fabricate symptoms or findings. Only extract what is genuinely present in the transcript.',
   ].filter(Boolean).join('\n\n');
 
-  const contents = buildMultimodalContent(prompt, photos);
+  const contents = buildAudioContent(prompt, audioBuffers, 'audio/mp4', photos);
   const { response, meta } = await generateWithCascade(
     MODEL_D1_CONCEPTS, contents,
-    { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json', responseSchema: SCHEMA_MEDICAL_CONCEPTS, maxOutputTokens: 4000 },
+    { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json', responseSchema: SCHEMA_MEDICAL_CONCEPTS, maxOutputTokens: 4500 },
   );
   return { result: parseJsonResponse(responseText(response)), meta };
 }
@@ -386,7 +388,7 @@ export async function generateClarifyingQuestions(ddx, concepts, vaultContext) {
 // Main pipeline
 // ---------------------------------------------------------------------------
 
-export async function runDiagnosisStage(sessionId, transcriptSegment, dbClient) {
+export async function runDiagnosisStage(sessionId, audioBuffers, dbClient) {
   const vaultContext = await vaultRead(dbClient, sessionId);
   const gps = vaultContext.gps || {};
   const districtCode = gps.district_code || 'WB_UNKNOWN';
@@ -396,7 +398,7 @@ export async function runDiagnosisStage(sessionId, transcriptSegment, dbClient) 
 
   // Call 1
   console.log(`[${sessionId}] Call 1: extracting medical concepts`);
-  const concepts = await extractMedicalConcepts(transcriptSegment, vaultContext);
+  const concepts = await extractMedicalConcepts(audioBuffers, vaultContext);
   await vaultUpdate(dbClient, sessionId, { extracted_concepts: concepts });
 
   // Backfill pregnancy_status into demographics

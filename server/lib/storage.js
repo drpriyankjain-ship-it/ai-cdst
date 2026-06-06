@@ -64,6 +64,36 @@ export async function uploadAudioToStorage(localFilePath, sessionId, iteration, 
 }
 
 /**
+ * Upload a photo buffer to Supabase Storage.
+ * @param {Buffer} buffer - Raw image bytes
+ * @param {string} sessionId
+ * @param {number} phase - 1, 2, or 3
+ * @param {number} photoIndex - 0-based index within the phase
+ * @param {string} mimeType - e.g. 'image/jpeg'
+ * @returns {{ storagePath: string, publicUrl: string }}
+ */
+export async function uploadPhotoToStorage(buffer, sessionId, phase, photoIndex, mimeType) {
+  const sb = getSupabase();
+  const extMap = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/heic': '.heic', 'image/heif': '.heic' };
+  const ext = extMap[mimeType] || '.jpg';
+  const storagePath = `${sessionId}/photos/phase${phase}_${photoIndex}${ext}`;
+
+  const { error } = await sb.storage
+    .from(BUCKET)
+    .upload(storagePath, buffer, { contentType: mimeType || 'image/jpeg', upsert: true });
+
+  if (error) {
+    console.error(`[STORAGE] Photo upload failed for ${storagePath}:`, error.message);
+    throw new Error(`Photo upload failed: ${error.message}`);
+  }
+
+  const { data: urlData } = sb.storage.from(BUCKET).getPublicUrl(storagePath);
+  const publicUrl = urlData?.publicUrl || '';
+  console.log(`[STORAGE] Photo uploaded ${storagePath} (${buffer.length} bytes) → ${publicUrl}`);
+  return { storagePath, publicUrl };
+}
+
+/**
  * Get a signed URL for a stored audio file (if bucket is private).
  * @param {string} storagePath - e.g. "sess_abc123/iteration_1.m4a"
  * @param {number} expiresIn - seconds until expiry (default 1 hour)

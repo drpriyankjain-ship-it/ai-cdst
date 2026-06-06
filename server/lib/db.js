@@ -55,7 +55,6 @@ export async function vaultInit(client, sessionId, patientId, nurseId, gps, pati
     gps,
     patient_record: patientRecord,
     session_started_at: new Date().toISOString(),
-    transcript_full: '',
     transcript_segments: { phase_1: '', phase_2: '', phase_3: '' },
     audio: { upload_status: 'pending', retain_until: null },
     risk_tier: null,
@@ -91,16 +90,6 @@ export async function vaultSetNested(client, sessionId, path, value) {
   );
 }
 
-export async function vaultAppendTranscript(client, sessionId, text) {
-  await client.query(
-    `UPDATE sessions SET data = jsonb_set(
-       data, '{transcript_full}',
-       to_jsonb(coalesce(data->>'transcript_full', '') || $2),
-       true
-     ), updated_at = now() WHERE session_id = $1`,
-    [sessionId, text + ' ']
-  );
-}
 
 export async function loadPatientRecord(client, patientId) {
   const res = await client.query(
@@ -110,80 +99,6 @@ export async function loadPatientRecord(client, patientId) {
   if (res.rows.length === 0) return {};
   const summary = res.rows[0].summary;
   return typeof summary === 'string' ? JSON.parse(summary) : summary;
-}
-
-// ---------------------------------------------------------------------------
-// Session Audio helpers — per-iteration audio CRUD
-// ---------------------------------------------------------------------------
-
-const ITERATION_LABELS = {
-  1: 'Initial Description',
-  2: 'Proforma Answers',
-  3: 'Clarifying Answers',
-};
-
-/**
- * Upsert a session audio record (insert or update on conflict).
- * @param {object} client - pg pool/client
- * @param {string} sessionId
- * @param {number} iteration - 1, 2, or 3
- * @param {object} data - { file_path, file_size_bytes, mime_type, duration_seconds, transcript, transcript_engine, upload_status }
- */
-export async function upsertSessionAudio(client, sessionId, iteration, data) {
-  if (![1, 2, 3].includes(iteration)) throw new Error(`Invalid iteration: ${iteration}`);
-  const label = ITERATION_LABELS[iteration];
-
-  const res = await client.query(
-    `INSERT INTO session_audio
-       (session_id, iteration, label, file_path, file_size_bytes, mime_type, duration_seconds, transcript, transcript_engine, upload_status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-     ON CONFLICT (session_id, iteration)
-     DO UPDATE SET
-       file_path        = COALESCE(EXCLUDED.file_path,        session_audio.file_path),
-       file_size_bytes  = COALESCE(EXCLUDED.file_size_bytes,  session_audio.file_size_bytes),
-       mime_type        = COALESCE(EXCLUDED.mime_type,         session_audio.mime_type),
-       duration_seconds = COALESCE(EXCLUDED.duration_seconds,  session_audio.duration_seconds),
-       transcript       = COALESCE(EXCLUDED.transcript,        session_audio.transcript),
-       transcript_engine= COALESCE(EXCLUDED.transcript_engine, session_audio.transcript_engine),
-       upload_status    = COALESCE(EXCLUDED.upload_status,     session_audio.upload_status),
-       updated_at       = NOW()
-     RETURNING *`,
-    [
-      sessionId,
-      iteration,
-      label,
-      data.file_path || null,
-      data.file_size_bytes || null,
-      data.mime_type || null,
-      data.duration_seconds || null,
-      data.transcript || null,
-      data.transcript_engine || 'gemini',
-      data.upload_status || 'pending',
-    ]
-  );
-  return res.rows[0];
-}
-
-/**
- * Get all audio iterations for a session (ordered by iteration).
- */
-export async function getSessionAudio(client, sessionId) {
-  const res = await client.query(
-    'SELECT * FROM session_audio WHERE session_id = $1 ORDER BY iteration',
-    [sessionId]
-  );
-  return res.rows;
-}
-
-/**
- * Get a single iteration's audio record.
- */
-export async function getSessionAudioIteration(client, sessionId, iteration) {
-  const res = await client.query(
-    'SELECT * FROM session_audio WHERE session_id = $1 AND iteration = $2',
-    [sessionId, iteration]
-  );
-  return res.rows[0] || null;
 }
 
 // ---------------------------------------------------------------------------

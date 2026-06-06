@@ -114,6 +114,34 @@ export function buildMultimodalContent(prompt, photos) {
 }
 
 /**
+ * Build content array with inline audio segments for Gemini.
+ * Passes each 12-second m4a segment as a separate inlineData part — Gemini processes
+ * them as a continuous recording. Falls back to buildMultimodalContent if no audio.
+ * @param {string} prompt - The text prompt
+ * @param {Buffer[]} audioBuffers - Array of m4a Buffer objects (one per segment)
+ * @param {string} mimeType - Audio MIME type, default 'audio/mp4'
+ * @param {Array} photos - Array of { mimeType, data } base64 photo objects (optional)
+ * @returns {string|Array} - Plain string or Gemini Content array
+ */
+export function buildAudioContent(prompt, audioBuffers, mimeType = 'audio/mp4', photos = []) {
+  if (!audioBuffers || audioBuffers.length === 0) {
+    return buildMultimodalContent(prompt, photos);
+  }
+  const parts = [];
+  for (const buf of audioBuffers) {
+    parts.push({ inlineData: { mimeType, data: buf.toString('base64') } });
+  }
+  for (const photo of (photos || [])) {
+    parts.push({ inlineData: { mimeType: photo.mimeType, data: photo.data } });
+  }
+  const photoNote = photos && photos.length > 0
+    ? `The nurse has also attached ${photos.length} clinical photo(s). Incorporate visual findings from these images into your analysis.\n\n`
+    : '';
+  parts.push({ text: `${photoNote}${prompt}` });
+  return [{ role: 'user', parts }];
+}
+
+/**
  * Try each model in order; cascade to the next on 503/404/429.
  * Returns { response, meta } where meta = { model_used, input_tokens, output_tokens, cost_usd }.
  */

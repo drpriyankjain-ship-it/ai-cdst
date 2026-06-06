@@ -55,25 +55,31 @@ router.post('/patient-tasks/:id/complete', requireAuth, async (req, res) => {
 });
 
 // ============================================================
-// Management Plans — patient_log endpoints
+// Case Queue — nurse dashboard workflow state
+// Clinical data (problem list, triage, etc.) is read from
+// the vault (sessions.data) via JOIN — not duplicated here.
 // ============================================================
 
-// GET /api/dashboard/management-plans — active plans for dashboard
+// GET /api/dashboard/management-plans — active cases for nurse dashboard
 router.get('/management-plans', requireAuth, async (req, res) => {
   try {
     const pool = getPool();
-    // Get active patient_log entries, join with audio_records for patient name (upload flow)
     const result = await pool.query(
       `SELECT
-         pl.id, pl.patient_id, pl.session_id, pl.audio_record_id, pl.source,
-         pl.proforma, pl.clarifying_questions, pl.management_plan,
-         pl.status, pl.created_at, pl.updated_at,
-         COALESCE(ar.patient_name, s.data->>'patient_id') AS patient_name
-       FROM patient_log pl
-       LEFT JOIN audio_records ar ON pl.audio_record_id = ar.id
-       LEFT JOIN sessions s ON pl.session_id = s.session_id
-       WHERE pl.status = 'active'
-       ORDER BY pl.created_at DESC`
+         cq.session_id,
+         cq.risk_tier,
+         cq.status,
+         cq.created_at,
+         s.data->>'patient_id'                          AS patient_id,
+         s.data->'demographics'->>'name'                AS patient_name,
+         s.data->>'nurse_id'                            AS nurse_id,
+         s.data->'triage_output'->'triage'->>'one_liner' AS one_liner
+       FROM case_queue cq
+       JOIN sessions s ON cq.session_id = s.session_id
+       WHERE cq.status = 'active'
+       ORDER BY
+         CASE cq.risk_tier WHEN 'HIGH' THEN 0 ELSE 1 END,
+         cq.created_at DESC`
     );
     res.json({ success: true, data: result.rows });
   } catch (err) {
@@ -82,13 +88,13 @@ router.get('/management-plans', requireAuth, async (req, res) => {
   }
 });
 
-// POST /api/dashboard/management-plans/:id/clear — move plan from dashboard to history
-router.post('/management-plans/:id/clear', requireAuth, async (req, res) => {
+// POST /api/dashboard/management-plans/:sessionId/clear — move case to history
+router.post('/management-plans/:sessionId/clear', requireAuth, async (req, res) => {
   try {
     const pool = getPool();
     await pool.query(
-      "UPDATE patient_log SET status = 'cleared', updated_at = NOW() WHERE id = $1",
-      [req.params.id]
+      `UPDATE case_queue SET status = 'cleared', cleared_at = NOW() WHERE session_id = $1`,
+      [req.params.sessionId]
     );
     res.json({ success: true });
   } catch (err) {
@@ -97,75 +103,30 @@ router.post('/management-plans/:id/clear', requireAuth, async (req, res) => {
   }
 });
 
-// GET /api/dashboard/management-plans/history — cleared plans for history page
+// GET /api/dashboard/management-plans/history — cleared cases
 router.get('/management-plans/history', requireAuth, async (req, res) => {
   try {
     const pool = getPool();
     const result = await pool.query(
       `SELECT
-         pl.id, pl.patient_id, pl.session_id, pl.audio_record_id, pl.source,
-         pl.proforma, pl.clarifying_questions, pl.management_plan,
-         pl.status, pl.created_at, pl.updated_at,
-         COALESCE(ar.patient_name, s.data->>'patient_id') AS patient_name
-       FROM patient_log pl
-       LEFT JOIN audio_records ar ON pl.audio_record_id = ar.id
-       LEFT JOIN sessions s ON pl.session_id = s.session_id
-       WHERE pl.status = 'cleared'
-       ORDER BY pl.updated_at DESC`
+         cq.session_id,
+         cq.risk_tier,
+         cq.status,
+         cq.created_at,
+         cq.cleared_at,
+         s.data->>'patient_id'                          AS patient_id,
+         s.data->'demographics'->>'name'                AS patient_name,
+         s.data->>'nurse_id'                            AS nurse_id,
+         s.data->'triage_output'->'triage'->>'one_liner' AS one_liner
+       FROM case_queue cq
+       JOIN sessions s ON cq.session_id = s.session_id
+       WHERE cq.status = 'cleared'
+       ORDER BY cq.cleared_at DESC`
     );
     res.json({ success: true, data: result.rows });
   } catch (err) {
     console.error('[DASHBOARD] Management plan history error:', err);
     res.status(500).json({ error: 'Failed to load management plan history' });
-  }
-});
-
-// ============================================================
-// Session Audio — per-iteration audio retrieval
-// ============================================================
-
-// GET /api/dashboard/session-audio/:sessionId — all iterations for a session
-router.get('/session-audio/:sessionId', requireAuth, async (req, res) => {
-  try {
-    const pool = getPool();
-    const result = await pool.query(
-      'SELECT * FROM session_audio WHERE session_id = $1 ORDER BY iteration',
-      [req.params.sessionId]
-    );
-    const isComplete = result.rows.length === 3 &&
-      result.rows.every(r => r.upload_status === 'transcribed');
-    res.json({
-      success: true,
-      session_id: req.params.sessionId,
-      iterations: result.rows,
-      is_complete: isComplete,
-      total_duration: result.rows.reduce((sum, r) => sum + (parseFloat(r.duration_seconds) || 0), 0),
-    });
-  } catch (err) {
-    console.error('[DASHBOARD] Session audio error:', err);
-    res.status(500).json({ error: 'Failed to load session audio' });
-  }
-});
-
-// GET /api/dashboard/session-audio/:sessionId/:iteration — single iteration
-router.get('/session-audio/:sessionId/:iteration', requireAuth, async (req, res) => {
-  try {
-    const pool = getPool();
-    const iteration = parseInt(req.params.iteration, 10);
-    if (![1, 2, 3].includes(iteration)) {
-      return res.status(400).json({ error: 'Iteration must be 1, 2, or 3' });
-    }
-    const result = await pool.query(
-      'SELECT * FROM session_audio WHERE session_id = $1 AND iteration = $2',
-      [req.params.sessionId, iteration]
-    );
-    if (!result.rows.length) {
-      return res.status(404).json({ error: `No audio found for iteration ${iteration}` });
-    }
-    res.json({ success: true, audio: result.rows[0] });
-  } catch (err) {
-    console.error('[DASHBOARD] Session audio iteration error:', err);
-    res.status(500).json({ error: 'Failed to load session audio iteration' });
   }
 });
 

@@ -10,11 +10,14 @@ CREATE TABLE sessions (
 
 -- Example session document structure (data column):
 -- {
+--   "patient_id": "P-00123",
+--   "nurse_id": "N-001",
 --   "demographics": {
 --     "patient_id": "P-00123",
 --     "age": 34,
 --     "sex": "F",
---     "pregnancy_status": "not pregnant",
+--     "pregnancy_status": "not pregnant",   -- written by D1 if detected
+--     "lmp": "2024-06-01",                  -- written by D1 if detected
 --     "known_conditions": ["iron deficiency anaemia"],
 --     "known_allergies": ["penicillin"]
 --   },
@@ -22,63 +25,86 @@ CREATE TABLE sessions (
 --     "district": "Murshidabad",
 --     "district_code": "WB_MSD",
 --     "lat": 24.18,
---     "lng": 88.27,
---     "timestamp": "2024-09-14T10:23:00Z"
+--     "lng": 88.27
 --   },
---   "prior_encounters": [
---     {
---       "date": "2024-03-02",
---       "provisional_diagnosis": "Plasmodium vivax malaria",
---       "confirmed": true,
---       "confirmation_method": ["RDT positive", "treatment response"],
---       "treatment": "Chloroquine + Primaquine",
---       "outcome": "resolved"
---     }
---   ],
+--   "patient_record": { ... },              -- full patient_records summary at session start
 --
---   -- TRANSCRIPT (written continuously during session by STT service)
---   "transcript_full": "Nurse: Good morning. Can you tell me what brings you in today? Patient: I have had fever for five days...",
+--   -- TRANSCRIPTS (written by Gemini H1/D1/M1 — one field per phase)
 --   "transcript_segments": {
---     "phase_1": "transcript text from session start to marker A",
---     "phase_2": "transcript text from marker A to marker B",
---     "phase_3": "transcript text from marker B to marker C"
+--     "phase_1": "verbatim transcript of phase 1 audio, returned by H1",
+--     "phase_2": "verbatim transcript of phase 2 audio, returned by D1",
+--     "phase_3": "verbatim transcript of phase 3 audio, returned by M1"
 --   },
 --
---   -- SESSION TIMELINE (session-relative timestamps in seconds)
+--   -- SESSION TIMELINE
 --   "session_started_at": "2024-09-14T10:23:00Z",
---   "marker_a_at": 94.3,     -- nurse pressed button after initial complaint
---   "marker_b_at": 312.7,    -- nurse pressed button after structured interview
---   "marker_c_at": 498.1,    -- nurse pressed button after clarifying questions
+--   "marker_a_at": 94.3,                   -- session-relative seconds
+--   "marker_b_at": 312.7,
+--   "marker_c_at": 498.1,
 --   "session_ended_at": "2024-09-14T10:35:22Z",
 --   "session_duration_seconds": 742,
 --
---   -- AUDIO (written asynchronously after session close — does not block nurse UX)
+--   -- AUDIO (written async after session close — does not block nurse UX)
+--   -- App records 12s m4a segments; server buffers them and ffmpeg-concatenates
+--   -- per phase before uploading to object storage.
 --   "audio": {
---     "url": "s3://cdst-media/sessions/sess_abc123/audio.opus",
---     "codec": "opus",
---     "sample_rate_hz": 16000,
---     "channels": 1,
---     "duration_seconds": 742,
---     "size_bytes": 1893422,
+--     "phase_1_url": "s3://cdst-media/sessions/sess_abc123/phase1.m4a",
+--     "phase_2_url": "s3://cdst-media/sessions/sess_abc123/phase2.m4a",
+--     "phase_3_url": "s3://cdst-media/sessions/sess_abc123/phase3.m4a",
 --     "upload_status": "complete|pending|failed",
---     "uploaded_at": "2024-09-14T10:36:05Z",
---     "retain_until": "2025-01-14",
+--     "archived_at": "2024-09-14T10:36:05Z",
+--     "retain_until": "2034-09-14",
 --     "retention_days": 3650
 --   },
 --
---   -- AGENT OUTPUTS
---   "extracted_concepts": { ... },          -- written by diagnosis agent step 1
---   "differential_table": [ ... ],          -- written by diagnosis agent step 3
---   "clarifying_questions": { ... },        -- written by diagnosis agent step 4
---   "diagnosis_agent_status": "complete",
---   "management_output": { ... },           -- written by management agent
+--   -- HISTORY STAGE OUTPUTS (written at Marker A)
+--   "chief_complaint": { ... },             -- H1
+--   "questionnaire": { ... },               -- H2
+--   "patient_record_stub": { ... },         -- H2 — structured update for patient_records
+--   "history_stage_status": "complete|generic_fallback",
+--   "history_stage_completed_at": "2024-09-14T10:25:10Z",
+--
+--   -- DIAGNOSIS STAGE OUTPUTS (written at Marker B)
+--   "extracted_concepts": { ... },          -- D1
+--   "differential_table": [ ... ],          -- D2
+--   "clarifying_questions": { ... },        -- D3
+--   "diagnosis_stage_status": "complete",
+--   "diagnosis_stage_completed_at": "2024-09-14T10:30:45Z",
+--
+--   -- MANAGEMENT STAGE OUTPUTS (written at Marker C)
+--   "clarifying_findings": { ... },         -- M1: answers to clarifying questions + bedside exam findings + vitals
+--   "problem_list": { ... },                -- M2: all clinical problems with assessment and plan per problem.
+--                                           --     prescription is nested here: problem_list[N].plan.prescription[]
+--                                           --     each prescription item carries drug/dose/route/frequency/duration/stg_source/for_problem
+--   "risk_assessment": { ... },             -- M3: rich 5-dimension clinical narrative (diagnostic uncertainty,
+--                                           --     iatrogenic risk, delay risk, complication watch, mitigation plan).
+--                                           --     this is the reasoning document — it goes to the doctor review queue.
+--                                           --     it also contains the LLM's own overall_risk_tier proposal (LOW|HIGH).
+--   "triage_output": { ... },              -- M4 + rule engine. contains three sub-documents:
+--                                           --   triage: referral assessment + tier/action/rationale (tier injected by rule engine)
+--                                           --   patient_instructions: plain-language diagnosis, treatment summary, do/don't lists
+--                                           --   doctor_handoff: one_liner, clinical_summary, key_risks, questions,
+--                                           --                   prescription_issued (deterministic text built from problem_list, not LLM-generated)
 --
 --   -- RISK AND AUTHORIZATION
---   "risk_tier": "low|high",               -- written by rule engine
---   "risk_flags": ["drug: injectable artesunate", "patient: infant under 2 months"],
+--   -- risk_tier is the final binary verdict (LOW|HIGH). it starts from risk_assessment.mitigation_plan.overall_risk_tier
+--   -- (LLM proposal) and is passed through the deterministic rule engine which checks vital derangements, red flag
+--   -- symptoms, diagnosis hard stops, injectable drugs, patient age, pregnancy + sensitive dx/drug, allergy conflicts,
+--   -- and low diagnostic confidence. the rule engine can only escalate LOW→HIGH, never downgrade. this is the field
+--   -- the nurse acts on — it determines whether she proceeds with treatment or calls the doctor immediately.
+--   "risk_tier": "LOW|HIGH",               -- written by rule engine after M3+M4 complete
 --   "doctor_auth_status": "pending|approved|modified|rejected",
 --   "doctor_auth_at": "2024-09-14T14:10:00Z",
 --   "doctor_notes": "Approved. Confirm weight-based dosing.",
+--
+--   -- PHOTOS (written async at session end alongside audio — same pattern)
+--   -- During the session, photos are buffered in server RAM (phasePhotoBuffers in SessionState).
+--   -- At session end, each photo is uploaded to Supabase Storage and its URL recorded here.
+--   -- Photos are compressed + resized to max 1280px on the mobile before upload.
+--   "session_photos": {
+--     "phase_1": [ { "mimeType": "image/jpeg", "url": "https://.../phase1_0.jpg" } ],
+--     "phase_2": [ ... ]
+--   },
 --
 --   -- CONFIRMATION GATES (for Layer 3 epidemiological data eligibility)
 --   "confirmation": {
@@ -297,3 +323,104 @@ CREATE TABLE doctor_clinic_assignments (
     clinic_id       TEXT NOT NULL REFERENCES clinics(clinic_id),
     PRIMARY KEY (doctor_id, clinic_id)
 );
+
+
+-- ============================================================
+-- LLM Results — per-call output and operational metadata
+-- One row per LLM call. 9 rows per completed session (H1-H2,
+-- D1-D3, M1-M4). Source of truth for cost and latency tracking.
+-- session_metrics aggregates from this table.
+-- ============================================================
+CREATE TABLE llm_results (
+    id            SERIAL PRIMARY KEY,
+    session_id    TEXT NOT NULL REFERENCES sessions(session_id),
+    call_name     TEXT NOT NULL,        -- e.g. 'H1_chief_complaint', 'D2_differential'
+    stage         TEXT NOT NULL,        -- 'history' | 'diagnosis' | 'management'
+    call_order    INT NOT NULL,         -- 1-9, global order across all stages
+    model_used    TEXT,
+    input_tokens  INT,
+    output_tokens INT,
+    latency_ms    INT,
+    cost_usd      NUMERIC(10,6),
+    result        JSONB NOT NULL DEFAULT '{}',
+    error         TEXT,
+    created_at    TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX ON llm_results (session_id);
+CREATE INDEX ON llm_results (call_name);
+CREATE INDEX ON llm_results (model_used);
+
+
+-- ============================================================
+-- Pipeline Failures — durable error log
+-- Written on any stage exception. Console logs are ephemeral;
+-- this table survives server restarts and enables failure rate
+-- monitoring by stage, call, and error type.
+-- ============================================================
+CREATE TABLE pipeline_failures (
+    id          SERIAL PRIMARY KEY,
+    session_id  TEXT REFERENCES sessions(session_id),
+    user_id     TEXT,
+    stage       TEXT,                   -- 'history' | 'diagnosis' | 'management'
+    call_name   TEXT,
+    error_code  TEXT,                   -- 'LLM_503' | 'LLM_429' | 'PARSE_ERROR' | 'ENOENT' | 'UNKNOWN'
+    error_msg   TEXT,
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX ON pipeline_failures (session_id);
+CREATE INDEX ON pipeline_failures (created_at);
+CREATE INDEX ON pipeline_failures (user_id);
+
+
+-- ============================================================
+-- Session Metrics — per-session aggregate
+-- Written once after Marker C. Denormalized from llm_results
+-- for fast analytics dashboard queries. ON CONFLICT upsert
+-- allows the orchestrator to rewrite it if Marker C retries.
+-- ============================================================
+CREATE TABLE session_metrics (
+    session_id               TEXT PRIMARY KEY REFERENCES sessions(session_id),
+    user_id                  TEXT,
+    patient_id               TEXT,
+    total_llm_calls          INT,
+    total_input_tokens       INT,
+    total_output_tokens      INT,
+    total_cost_usd           NUMERIC(10,6),
+    total_latency_ms         INT,
+    e2e_duration_ms          INT,
+    gps_lat                  NUMERIC(9,6),
+    gps_lon                  NUMERIC(9,6),
+    district_code            TEXT,
+    risk_tier                TEXT,
+    pipeline_status          TEXT,      -- 'complete' | 'partial' | 'failed'
+    network_rtt_ms           INT,
+    total_transcription_ms   INT,
+    total_server_overhead_ms INT,
+    phase_timings            JSONB,
+    created_at               TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX ON session_metrics (user_id);
+CREATE INDEX ON session_metrics (created_at);
+CREATE INDEX ON session_metrics (risk_tier);
+
+
+-- ============================================================
+-- Case Queue — nurse dashboard workflow state
+-- One row per completed session (written at Marker C).
+-- Tracks only dashboard status; all clinical data is in the
+-- vault (sessions.data). Dashboard joins with sessions to read
+-- patient ID, triage output, etc.
+-- ============================================================
+CREATE TABLE case_queue (
+    session_id  TEXT PRIMARY KEY REFERENCES sessions(session_id),
+    risk_tier   TEXT NOT NULL,                   -- 'LOW' | 'HIGH'
+    status      TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'cleared'
+    cleared_at  TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX ON case_queue (status, created_at);
+CREATE INDEX ON case_queue (risk_tier);
