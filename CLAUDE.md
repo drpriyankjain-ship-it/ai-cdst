@@ -134,8 +134,10 @@ The nurse presses three buttons:
 
 **Marker A** — ~30 seconds in. Patient has stated name, age, village, chief
 complaint, duration. Nothing else is known. History Stage fires.
-Target: questionnaire on screen within 1.5s.
-Actual measured: H1 ~0.9s + H2 ~1.3s = full questionnaire in ~2.2s. No streaming.
+Target: questionnaire on screen within 7s (revised Jun 2026 — original 1.5s assumed English-only,
+no audio on H1; Hindi + audio makes that unrealistic).
+Actual measured (Jun 2026, Hindi + audio): H1 ~2.5s + H2 ~10s = phase total ~17s. H2 still above
+target; main levers are output token reduction (discriminates removed) and prompt tightening.
 
 **Marker B** — after 3-4 minute structured interview. Diagnosis Stage fires.
 Target: differential within 1.5s. Actual: D1 ~4.9s + D2 ~3.2s + D3 ~1.4s = ~9.5s total.

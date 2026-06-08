@@ -47,6 +47,7 @@ const LiveConsultationScreen = ({navigation}) => {
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const recordingRef = useRef(null);
   const recordingIntervalRef = useRef(null);
+  const recordingStartingRef = useRef(false); // mutex — prevents concurrent createAsync calls
   const sessionStartRef = useRef(null);
   const processingTimeoutRef = useRef(null);
   const lastMarkerPhaseRef = useRef(null);
@@ -182,8 +183,17 @@ const LiveConsultationScreen = ({navigation}) => {
 
     return () => {
       unsubs.forEach(fn => fn());
-      // Disconnect WS when screen unmounts to prevent background reconnect loops
       wsService.disconnect();
+      // Release native audio session on unmount — prevents "one recording at a time" on next session
+      if (recordingRef.current) {
+        recordingRef.current.stopAndUnloadAsync().catch(() => {});
+        recordingRef.current = null;
+      }
+      if (recordingIntervalRef.current) {
+        clearInterval(recordingIntervalRef.current);
+        recordingIntervalRef.current = null;
+      }
+      Audio.setAudioModeAsync({ allowsRecordingIOS: false }).catch(() => {});
     };
   }, []);
 
@@ -192,6 +202,8 @@ const LiveConsultationScreen = ({navigation}) => {
   // ---------------------------------------------------------------------------
 
   const startRecording = useCallback(async () => {
+    if (recordingStartingRef.current) return;
+    recordingStartingRef.current = true;
     try {
       const permission = await Audio.requestPermissionsAsync();
       if (!permission.granted) {
@@ -256,6 +268,8 @@ const LiveConsultationScreen = ({navigation}) => {
     } catch (err) {
       console.error('Recording error:', err);
       Alert.alert('Recording Error', `Failed to start recording: ${err.message}\n\nPlease check that microphone permission is enabled in your phone Settings.`);
+    } finally {
+      recordingStartingRef.current = false;
     }
   }, []);
 

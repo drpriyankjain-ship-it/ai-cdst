@@ -3,16 +3,13 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Default to local backend in dev; allow override via EXPO_PUBLIC_API_URL.
-const DEV_API_URL =
-  process.env.EXPO_PUBLIC_API_URL ||
-  'http://172.20.10.2:3000/api';
-
-const PROD_API_URL =
-  process.env.EXPO_PUBLIC_API_URL ||
-  'https://v2.nurseai.in/api';
+// EXPO_PUBLIC_API_URL should be the base URL without /api (e.g. http://192.168.86.50:3000)
+const _baseUrl = process.env.EXPO_PUBLIC_API_URL;
+const DEV_API_URL = _baseUrl ? `${_baseUrl}/api` : 'http://192.168.86.50:3000/api';
+const PROD_API_URL = _baseUrl ? `${_baseUrl}/api` : 'https://v2.nurseai.in/api';
 const API_BASE_URL = __DEV__
   ? DEV_API_URL
-  : PROD_API_URL; // Production URL
+  : PROD_API_URL;
 
 const AUTH_TOKEN_KEY = '@nurseai_auth_token';
 

@@ -22,4 +22,4 @@ export const MODEL_D3_CLARIFYING      = TIER_STANDARD;            // generate_cl
 export const MODEL_M1_FINDINGS        = TIER_FAST;                // extract_clarifying_findings
 export const MODEL_M2_PRESCRIPTION    = TIER_STANDARD_CRITICAL;   // generate_provisional_diagnosis_and_rx
 export const MODEL_M3_RISK            = TIER_STANDARD;            // generate_risk_assessment
-export const MODEL_M4_TRIAGE          = TIER_FAST;                // generate_triage_and_handoff
+export const MODEL_M4_TRIAGE          = TIER_STANDARD;            // generate_triage_and_handoff

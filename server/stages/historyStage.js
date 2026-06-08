@@ -161,11 +161,10 @@ const SCHEMA_QUESTIONNAIRE = {
             items: {
               type: 'object',
               properties: {
-                question:      { type: 'string' },
-                follow_up:     { type: 'string' },
-                discriminates: { type: 'string' },
+                question:  { type: 'string' },
+                follow_up: { type: 'string' },
               },
-              required: ['question', 'follow_up', 'discriminates'],
+              required: ['question', 'follow_up'],
             },
           },
         },
@@ -219,13 +218,13 @@ const FIRST_VISIT_HISTORY_QUESTIONS = {
   section_title: 'Background History',
   rationale: 'Standard first-visit intake — collected once per patient, seeds the permanent record. Fixed question set for consistent coverage.',
   questions: [
-    { question: 'Do you have any long-term illness — like diabetes, high blood pressure, TB, asthma, epilepsy, or heart disease?', follow_up: 'How long have you had it? Are you on treatment for it?', discriminates: 'Past medical history — chronic conditions' },
-    { question: 'Have you ever been admitted to hospital or had an operation?', follow_up: 'When was this, and what was it for?', discriminates: 'Past medical history — hospitalisations and surgery' },
-    { question: 'Do any illnesses run in your family — your parents or brothers and sisters — like diabetes, TB, high blood pressure, or cancer?', follow_up: 'Which family member, and which illness?', discriminates: 'Family history' },
-    { question: 'What work do you do?', follow_up: 'Any exposure to chemicals, dust, pesticides, or heavy lifting at work?', discriminates: 'Social history — occupation and occupational exposures' },
-    { question: 'Do you use tobacco in any form — smoking, chewing, or gutka? Do you drink alcohol?', follow_up: 'How much, and for how long?', discriminates: 'Social history — tobacco and alcohol use' },
-    { question: 'Are you taking any medicines at the moment — tablets, injections, syrups, or any traditional or herbal remedies?', follow_up: 'What is the name? What dose? How long have you been taking it?', discriminates: 'Current medications — including OTC and traditional' },
-    { question: 'Have you ever had a bad reaction or allergy to any medicine or food?', follow_up: 'What happened — rash, swelling, breathing difficulty?', discriminates: 'Allergies and adverse drug reactions' },
+    { question: 'Do you have any long-term illness — like diabetes, high blood pressure, TB, asthma, epilepsy, or heart disease?', follow_up: 'How long have you had it? Are you on treatment for it?' },
+    { question: 'Have you ever been admitted to hospital or had an operation?', follow_up: 'When was this, and what was it for?' },
+    { question: 'Do any illnesses run in your family — your parents or brothers and sisters — like diabetes, TB, high blood pressure, or cancer?', follow_up: 'Which family member, and which illness?' },
+    { question: 'What work do you do?', follow_up: 'Any exposure to chemicals, dust, pesticides, or heavy lifting at work?' },
+    { question: 'Do you use tobacco in any form — smoking, chewing, or gutka? Do you drink alcohol?', follow_up: 'How much, and for how long?' },
+    { question: 'Are you taking any medicines at the moment — tablets, injections, syrups, or any traditional or herbal remedies?', follow_up: 'What is the name? What dose? How long have you been taking it?' },
+    { question: 'Have you ever had a bad reaction or allergy to any medicine or food?', follow_up: 'What happened — rash, swelling, breathing difficulty?' },
   ],
 };
 
@@ -278,9 +277,10 @@ export async function generateQuestionnaire(chiefComplaint, vaultContext, patien
   const stateName = stateFromDistrictCode(districtCode);
   const lang = chiefComplaint.language_of_consultation || 'English';
   const languageInstruction = lang === 'English' ? '' :
-    `LANGUAGE: The consultation is in ${lang}. After each question, add a romanised ${lang} translation in brackets — ` +
-    `for example: 'Do you have fever? (jwor hochhe?)' for Bengali, 'Do you have fever? (bukhaar hai?)' for Hindi. ` +
-    `Use plain everyday words in the translation — not medical terminology.`;
+    `LANGUAGE: The consultation is in ${lang}. Write questions in English only. ` +
+    `After each key clinical term or symptom word, add the romanised ${lang} word in brackets — ` +
+    `for example: 'Do you have fever (bukhaar)?' or 'Any swelling (sujan) in your legs?' ` +
+    `Only romanize the specific symptom/body-part words, not the entire question.`;
 
   const { knownContext, missingFields } = buildPatientRecordContext(patientRecord);
   const spontaneous = chiefComplaint.spontaneous_history || [];
@@ -335,7 +335,8 @@ export async function generateQuestionnaire(chiefComplaint, vaultContext, patien
     '- Plain language — questions are read directly to the patient\n' +
     '- follow_up: what to ask if the answer is yes or abnormal\n' +
     '- Do not generate questions about medications, allergies, PMH, or family/social history — covered separately\n' +
-    '- Maximum 25 questions across all LLM-generated sections — only ask what is clinically relevant\n\n' +
+    '- Maximum 25 questions across all LLM-generated sections — only ask what is clinically relevant\n' +
+    '- Do not include any explanation or rationale per question — question and follow_up only\n\n' +
     historyInstruction + '\n\n' +
     'MANDATORY SAFETY QUESTIONS (always include):\n' +
     '- Female patients aged 12–50: current pregnancy status and LMP\n' +

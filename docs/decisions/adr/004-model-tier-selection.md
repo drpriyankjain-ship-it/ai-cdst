@@ -18,7 +18,8 @@ should models be selected as the Gemini family evolves?
 The pipeline makes 9 LLM calls across three stages. Each call has different
 reasoning demands and latency constraints:
 
-- History Stage fires at Marker A — first token must reach the nurse within ~1.5s.
+- History Stage fires at Marker A — questionnaire must reach the nurse within ~7s
+  (revised Jun 2026; original 1.5s target assumed English-only with no audio on H1).
 - Diagnosis Stage fires at Marker B — streaming differential starts within 1.5s;
   structured JSON (needed for D3) must complete within ~8s.
 - Management Stage fires at Marker C — full pipeline target is ~15s end-to-end.
@@ -50,6 +51,37 @@ The `response_schema` parameter (structured JSON output) is required by all 9
 pipeline calls. The Gemini 3.x series is only available on API v1, which does
 not support `response_schema`. Tested directly — all return 404 on v1beta.
 They are therefore unusable in the current pipeline without a structural change.
+
+---
+
+## Update — 2026-06-08
+
+The Gemini 3.x models are now accessible via the API key. Confirmed available:
+
+| Model | Pricing (per 1M tokens) | Notes |
+|---|---|---|
+| gemini-3.5-flash | $0.15 in / $0.60 out | Latest Flash — cheaper than 2.5-flash |
+| gemini-3.1-flash-lite | $0.10 in / $0.40 out | Comparable to 2.5-flash-lite |
+| gemini-3.1-pro-preview | — | Preview only |
+| gemini-3-flash-preview | — | Preview only |
+
+**`gemini-3.5-flash` is confirmed working with `response_schema`.** It is cheaper
+than `gemini-2.5-flash` ($0.60/1M output vs $2.50/1M) and is the newest Flash model.
+The ADR 004 exclusion of 3.x models is now obsolete — it was written when these
+models returned 404 on v1beta. That is no longer the case.
+
+**Current model config (updated Jun 2026):**
+```
+TIER_FAST              = ['gemini-2.5-flash-lite', 'gemini-2.5-flash']
+TIER_STANDARD          = ['gemini-3.5-flash', 'gemini-2.5-flash']
+TIER_STANDARD_CRITICAL = ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.5-pro']
+```
+
+M4 promoted from TIER_FAST to TIER_STANDARD (triage + handoff output warrants flash,
+not flash-lite). The high H2 latency (10–28s) observed in earlier runs was caused by
+the `discriminates` field in the questionnaire JSON schema (bloating output tokens),
+not by the model. Removing `discriminates` and tightening Hindi bilingual output to
+key-terms-only are the correct fixes.
 
 ---
 

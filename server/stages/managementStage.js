@@ -303,7 +303,8 @@ export async function runManagementStage(sessionId, audioBuffers, dbClient) {
       retrieveTreatmentProtocols(dbClient, ragDiagnoses),
     ]);
     const clarifyingFindings = m1Result.result;
-    await insertLlmResult(dbClient, sessionId, 'M1_clarifying_findings', 'management', 6, clarifyingFindings, { ...m1Result.meta, latency_ms: Date.now() - t0 });
+    const m1Latency = Date.now() - t0;
+    await insertLlmResult(dbClient, sessionId, 'M1_clarifying_findings', 'management', 6, clarifyingFindings, { ...m1Result.meta, latency_ms: m1Latency });
     await vaultUpdate(dbClient, sessionId, {
       clarifying_findings: clarifyingFindings,
       stg_retrieval: stgRetrieval,
@@ -314,7 +315,8 @@ export async function runManagementStage(sessionId, audioBuffers, dbClient) {
     const t1 = Date.now();
     const m2Result = await generateProvisionalDiagnosisAndRx(clarifyingFindings, vaultContext, stgRetrieval.context, formulary);
     const problemListOutput = m2Result.result;
-    await insertLlmResult(dbClient, sessionId, 'M2_problem_list', 'management', 7, problemListOutput, { ...m2Result.meta, latency_ms: Date.now() - t1 });
+    const m2Latency = Date.now() - t1;
+    await insertLlmResult(dbClient, sessionId, 'M2_problem_list', 'management', 7, problemListOutput, { ...m2Result.meta, latency_ms: m2Latency });
     await vaultUpdate(dbClient, sessionId, { problem_list: problemListOutput });
 
     const firstAcute = (problemListOutput.problem_list || []).find(p => p.type === 'acute_new');
@@ -329,8 +331,9 @@ export async function runManagementStage(sessionId, audioBuffers, dbClient) {
     ]);
     const riskAssessment = m3Result.result;
     const triageOutput = m4Result.result;
-    await insertLlmResult(dbClient, sessionId, 'M3_risk_assessment', 'management', 8, riskAssessment, { ...m3Result.meta, latency_ms: Date.now() - t2 });
-    await insertLlmResult(dbClient, sessionId, 'M4_triage_handoff', 'management', 9, triageOutput, { ...m4Result.meta, latency_ms: Date.now() - t2 });
+    const m34Latency = Date.now() - t2;
+    await insertLlmResult(dbClient, sessionId, 'M3_risk_assessment', 'management', 8, riskAssessment, { ...m3Result.meta, latency_ms: m34Latency });
+    await insertLlmResult(dbClient, sessionId, 'M4_triage_handoff', 'management', 9, triageOutput, { ...m4Result.meta, latency_ms: m34Latency });
     await vaultUpdate(dbClient, sessionId, { risk_assessment: riskAssessment });
 
     // Rule engine gate
@@ -366,7 +369,13 @@ export async function runManagementStage(sessionId, audioBuffers, dbClient) {
     });
 
     console.log(`[${sessionId}] Management stage complete. Risk tier: ${ruleResult.final_risk_tier}`);
-    return { session_id: sessionId, clarifying_findings: clarifyingFindings, problem_list: problemListOutput, risk_assessment: riskAssessment, triage: triageOutput, rule_engine: ruleResult };
+    const callMetas = [
+      { ...m1Result.meta, latency_ms: m1Latency },
+      { ...m2Result.meta, latency_ms: m2Latency },
+      { ...m3Result.meta, latency_ms: m34Latency },
+      { ...m4Result.meta, latency_ms: m34Latency },
+    ];
+    return { session_id: sessionId, clarifying_findings: clarifyingFindings, problem_list: problemListOutput, risk_assessment: riskAssessment, triage: triageOutput, rule_engine: ruleResult, callMetas };
   } catch (e) {
     console.error(`[${sessionId}] Management stage failed: ${e.message}`);
     try { await vaultUpdate(dbClient, sessionId, { management_stage_status: 'failed', management_stage_error: e.message, management_stage_failed_at: new Date().toISOString() }); } catch {}

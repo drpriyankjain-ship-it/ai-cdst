@@ -449,7 +449,7 @@ async function handleMarkerC(ws, state, t) {
       wsSend(ws, {
         type: 'stage_complete', stage: 'management',
         data: { triage_output: triage, risk_tier: riskTier, problem_list: result.problem_list || {}, risk_assessment: result.risk_assessment || {} },
-        timing: buildPhaseTiming(state, [], 'management'),
+        timing: buildPhaseTiming(state, result.callMetas || [], 'management'),
       });
 
       if (riskTier === 'HIGH') notifyDoctor(sessionId, triage);
@@ -574,7 +574,11 @@ export function mountWebSocket(app) {
               wsSend(ws, { type: 'error', code: 'SESSION_NOT_FOUND', message: `Session ${sid} not found` });
               return;
             }
-            state = await SessionState.fromVault(sid, pool);
+            state = new SessionState(sid, pool);
+            state.currentPhase = vault.management_stage_completed_at ? 3
+              : vault.diagnosis_stage_completed_at ? 3
+              : vault.history_stage_completed_at ? 2
+              : 1;
             state.nurseId = claims.nurse_id || claims.user_id;
             state.userId = claims.user_id;
             _active.set(sid, state);

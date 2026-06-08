@@ -167,6 +167,88 @@ it is the best candidate in the system for agentic patterns.
 
 ## Future build (no current blocker)
 
+### H2 bilingual output — English only with Hindi romanized key terms only
+
+Hindi consultations generate ~56% more output tokens than English (avg 2,593 vs 1,664
+tokens), adding ~4.7 seconds to every H2 call and costing ~4× more per token on
+`gemini-2.5-flash` ($2.50/1M output vs $0.60/1M on the old model).
+
+**Decision (Jun 2026):** Generate questions in English only. Romanize only key
+clinical terms and symptom phrases in Hindi — not the full question. Example:
+`"Do you have fever? (bukhaar)"` instead of `"Do you have fever? (kya aapko bukhaar
+hai?)"`. This preserves the nurse's ability to relay unfamiliar terms while
+eliminating the sentence-level duplication that drives token count.
+
+**Implementation:** Change the language instruction in `generateQuestionnaire()`
+in `server/stages/historyStage.js` — the `languageInstruction` string (~line 280).
+Replace the full-sentence romanization instruction with a key-terms-only instruction.
+
+**Expected savings:** ~500–600 tokens per Hindi H2 call, ~3–4 seconds latency
+reduction, bringing Hindi H2 closer to English levels.
+
+---
+
+
+
+### Analytics layer — session_diagnoses table and session_facts materialized view
+
+For epidemiological queries across thousands of sessions (e.g. "how many patients
+from Murshidabad had dengue as a differential diagnosis this monsoon season"), the
+JSONB vault cannot be efficiently queried at scale — especially for array fields
+like `differential_table` and `problem_list`.
+
+**Proposed approach:**
+
+**1. `session_diagnoses` table** — one row per diagnosis per session, written at
+Marker C completion alongside `session_metrics`:
+
+```sql
+CREATE TABLE session_diagnoses (
+  session_id     text,
+  rank           int,
+  disease        text,
+  icd10_code     text,
+  probability    text,
+  must_not_miss  boolean,
+  district_code  text,
+  session_date   date
+);
+```
+
+Enables queries like:
+```sql
+SELECT district_code, COUNT(DISTINCT session_id)
+FROM session_diagnoses
+WHERE disease ILIKE '%dengue%'
+GROUP BY district_code;
+```
+
+**2. `session_facts` materialized view** — flattens scalar vault fields for
+general analytics without ETL code:
+
+```sql
+CREATE MATERIALIZED VIEW session_facts AS
+SELECT
+  session_id,
+  data->>'risk_tier'                         AS risk_tier,
+  data->'gps'->>'district_code'              AS district_code,
+  (data->>'session_started_at')::timestamptz AS session_date,
+  data->'demographics'->>'patient_id'        AS patient_id,
+  data->>'doctor_auth_status'                AS auth_status
+FROM sessions
+WHERE data ? 'management_stage_completed_at';
+```
+
+Refresh nightly or post-session. Covers risk tier trends, case volume by district,
+auth status distribution.
+
+**Not blocking MVP.** The vault JSONB is sufficient for current scale. Build before
+crossing ~1,000 sessions or before any epidemiological reporting is needed.
+
+---
+
+
+
 ### Site Administrator Onboarding Portal
 
 A lightweight web interface for the Medical Officer to review and formally approve
