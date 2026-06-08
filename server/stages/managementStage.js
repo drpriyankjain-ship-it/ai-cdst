@@ -252,7 +252,7 @@ export async function generateTriageAndHandoff(problemListOutput, vaultContext) 
   const prescriptionIssued = buildPrescriptionIssued(allDrugs);
   const lang = (vaultContext.chief_complaint || {}).language_of_consultation || 'English';
   const langInst = lang === 'English' ? '' :
-    `LANGUAGE: patient_instructions must include romanised ${lang} translations in brackets.`;
+    `LANGUAGE: Write patient_instructions entirely in ${lang} (romanised script). Do not write English and ${lang} side by side — choose ${lang} only for patient-facing text.`;
 
   const prompt = [
     'Generate the triage referral assessment, patient instructions, and doctor handoff package.',
@@ -260,18 +260,23 @@ export async function generateTriageAndHandoff(problemListOutput, vaultContext) 
     `PROBLEM LIST:\n${JSON.stringify(problemListOutput, null, 2)}`,
     `ALL PRESCRIBED DRUGS:\n${JSON.stringify(allDrugs, null, 2)}`,
     `PRESCRIPTION RECORD:\n${prescriptionIssued}`,
-    `FULL DIFFERENTIAL:\n${JSON.stringify(ddx.slice(0, 3), null, 2)}`,
+    `FULL DIFFERENTIAL (context only — do not reproduce this table in output):\n${JSON.stringify(ddx.slice(0, 3), null, 2)}`,
     langInst,
     'INSTRUCTIONS:\n' +
-    'TRIAGE REFERRAL: assess if patient needs referral to higher facility.\n' +
-    'PATIENT INSTRUCTIONS: plain language, include every drug with dose.\n' +
-    'DOCTOR HANDOFF: one_liner, clinical_summary, key_risks, questions — English only.',
+    'TRIAGE REFERRAL: assess if patient needs referral to a higher facility.\n\n' +
+    'PATIENT INSTRUCTIONS: plain language, include every drug with dose and duration. ' +
+    'do_list and dont_list items must be specific to this patient — no generic health advice.\n\n' +
+    'DOCTOR HANDOFF — English only, no duplication across fields:\n' +
+    '- one_liner: one sentence, chief complaint + key finding + working diagnosis\n' +
+    '- clinical_summary: 3 sentences max — presentation, key examination/investigation findings, working plan. Do not repeat the one_liner.\n' +
+    '- key_risks_flagged: max 4 items — only risks not already obvious from the clinical_summary\n' +
+    '- questions_for_doctor: max 4 targeted clinical questions the doctor must answer to progress the case. Do not ask questions already answered by the problem list.',
   ].filter(Boolean).join('\n\n');
 
   const { response, meta } = await generateWithCascade(MODEL_M4_TRIAGE, prompt, {
     thinkingConfig: { thinkingBudget: 0 },
     systemInstruction: 'You are a clinical decision support system generating triage decisions. Never downgrade a risk tier.',
-    responseMimeType: 'application/json', responseSchema: SCHEMA_TRIAGE_HANDOFF, maxOutputTokens: 3000,
+    responseMimeType: 'application/json', responseSchema: SCHEMA_TRIAGE_HANDOFF, maxOutputTokens: 2000,
   });
   const result = parseJsonResponse(responseText(response));
   if (!result.doctor_handoff) result.doctor_handoff = {};

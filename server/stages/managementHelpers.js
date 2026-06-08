@@ -172,9 +172,9 @@ export const SCHEMA_TRIAGE_HANDOFF = {
     doctor_handoff: {
       type: 'object', properties: {
         one_liner: { type: 'string' }, clinical_summary: { type: 'string' },
-        differential_table: { type: 'string' }, key_risks_flagged: { type: 'array', items: { type: 'string' } },
+        key_risks_flagged: { type: 'array', items: { type: 'string' } },
         questions_for_doctor: { type: 'array', items: { type: 'string' } },
-      }, required: ['one_liner', 'clinical_summary', 'differential_table', 'key_risks_flagged', 'questions_for_doctor'],
+      }, required: ['one_liner', 'clinical_summary', 'key_risks_flagged', 'questions_for_doctor'],
     },
   },
   required: ['triage', 'patient_instructions', 'doctor_handoff'],

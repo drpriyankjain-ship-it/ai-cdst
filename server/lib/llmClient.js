@@ -171,6 +171,16 @@ export async function generateWithCascade(models, contents, config = {}) {
         contents,
         config: modelConfig,
       });
+
+      // Check finishReason — cascade on anything other than STOP
+      const finishReason = response.candidates?.[0]?.finishReason;
+      if (finishReason && finishReason !== 'STOP') {
+        const err = new Error(`Gemini finishReason=${finishReason} on ${model} — response incomplete`);
+        console.warn(`[LLM] ${err.message}`);
+        lastErr = err;
+        continue;
+      }
+
       const u = response.usageMetadata;
       const inputTokens = u?.promptTokenCount || 0;
       const outputTokens = u?.candidatesTokenCount || 0;

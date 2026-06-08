@@ -155,28 +155,19 @@ const SCHEMA_QUESTIONNAIRE = {
         type: 'object',
         properties: {
           section_title: { type: 'string' },
-          rationale:     { type: 'string' },
           questions: {
             type: 'array',
             items: {
               type: 'object',
               properties: {
                 question:  { type: 'string' },
-                follow_up: { type: 'string' },
+                follow_up: { type: 'string', nullable: true },
               },
-              required: ['question', 'follow_up'],
+              required: ['question'],
             },
           },
         },
-        required: ['section_title', 'rationale', 'questions'],
-      },
-    },
-    mandatory_safety_questions: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: { question: { type: 'string' }, reason: { type: 'string' } },
-        required: ['question', 'reason'],
+        required: ['section_title', 'questions'],
       },
     },
     prior_encounter_flags: { type: 'array', items: { type: 'string' } },
@@ -206,7 +197,7 @@ const SCHEMA_QUESTIONNAIRE = {
   },
   required: [
     'opening_context', 'known_and_verified', 'sections',
-    'mandatory_safety_questions', 'prior_encounter_flags', 'patient_record_fields',
+    'prior_encounter_flags', 'patient_record_fields',
   ],
 };
 
@@ -216,7 +207,6 @@ const SCHEMA_QUESTIONNAIRE = {
 
 const FIRST_VISIT_HISTORY_QUESTIONS = {
   section_title: 'Background History',
-  rationale: 'Standard first-visit intake — collected once per patient, seeds the permanent record. Fixed question set for consistent coverage.',
   questions: [
     { question: 'Do you have any long-term illness — like diabetes, high blood pressure, TB, asthma, epilepsy, or heart disease?', follow_up: 'How long have you had it? Are you on treatment for it?' },
     { question: 'Have you ever been admitted to hospital or had an operation?', follow_up: 'When was this, and what was it for?' },
@@ -333,14 +323,12 @@ export async function generateQuestionnaire(chiefComplaint, vaultContext, patien
     '  Relevant systems review — urinary symptoms for fever, neuro for headache, etc.\n' +
     '  Obstetric/menstrual history — if gynaecological causes are in the differential.\n\n' +
     '- Plain language — questions are read directly to the patient\n' +
-    '- follow_up: what to ask if the answer is yes or abnormal\n' +
+    '- follow_up: only include when there is a meaningful conditional question (e.g. "if yes, how long?"). Omit for questions where any answer is self-explanatory or no follow-up adds clinical value.\n' +
     '- Do not generate questions about medications, allergies, PMH, or family/social history — covered separately\n' +
+    '- Maximum 5 LLM-generated sections total\n' +
     '- Maximum 25 questions across all LLM-generated sections — only ask what is clinically relevant\n' +
     '- Do not include any explanation or rationale per question — question and follow_up only\n\n' +
-    historyInstruction + '\n\n' +
-    'MANDATORY SAFETY QUESTIONS (always include):\n' +
-    '- Female patients aged 12–50: current pregnancy status and LMP\n' +
-    '- All patients: confirm current medications and allergies',
+    historyInstruction,
   ].filter(Boolean).join('\n\n');
 
   const contents = buildMultimodalContent(prompt, photos);
@@ -378,7 +366,6 @@ export function validateQuestionnaire(q) {
     visit_type: 'first_visit',
     opening_context: 'Conduct the structured interview below.',
     sections: [],
-    mandatory_safety_questions: [],
     patient_record_fields: {
       past_medical_history: [], family_history: [], social_history: {},
       current_medications: [], allergies: [], immunisation_flags: [],
@@ -396,10 +383,8 @@ export function validateQuestionnaire(q) {
     const s = q.sections[i];
     if (!s.section_title) s.section_title = `Section ${i + 1}`;
     if (!s.questions) s.questions = [];
-    if (!s.rationale) s.rationale = '';
     for (const qn of s.questions) {
       if (!qn.question) qn.question = '[Question text missing]';
-      if (!qn.follow_up) qn.follow_up = '';
     }
   }
 
