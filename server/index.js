@@ -31,15 +31,20 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Serve web app static files (check both local dev and EB paths)
+// Serve web app static files if they exist
 import fs from 'fs';
 const webDir = fs.existsSync(path.join(__dirname, 'web'))
   ? path.join(__dirname, 'web')
   : path.join(__dirname, '..', 'web');
-app.use(express.static(webDir));
+const hasWebApp = fs.existsSync(path.join(webDir, 'index.html'));
+if (hasWebApp) app.use(express.static(webDir));
 
-// Health check
+// Health check (also serves as root for ELB)
 app.get('/health', (req, res) => {
+  res.json({ status: 'ok', service: 'cdst-server', timestamp: new Date().toISOString() });
+});
+app.get('/', (req, res) => {
+  if (hasWebApp) return res.sendFile(path.join(webDir, 'index.html'));
   res.json({ status: 'ok', service: 'cdst-server', timestamp: new Date().toISOString() });
 });
 
@@ -53,11 +58,13 @@ app.use('/api/session', sessionRoutes);
 // WebSocket
 mountWebSocket(app);
 
-// SPA catch-all — serve index.html for non-API routes
-app.get('*', (req, res, next) => {
-  if (req.path.startsWith('/api') || req.path.startsWith('/session') || req.path.startsWith('/health')) return next();
-  res.sendFile(path.join(webDir, 'index.html'));
-});
+// SPA catch-all — serve index.html for non-API routes (only if web app exists)
+if (hasWebApp) {
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/session') || req.path.startsWith('/health')) return next();
+    res.sendFile(path.join(webDir, 'index.html'));
+  });
+}
 
 // Start
 const PORT = process.env.PORT || 3000;
