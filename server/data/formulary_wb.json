@@ -1,0 +1,566 @@
+{
+  "_comment": "Essential medicines available at a Sub Health Centre upgraded to Health and Wellness Centre (SHC-HWC) in rural West Bengal. Source: Ayushman Bharat Operational Guidelines for Health and Wellness Centers (MoHFW, GOI) — Annexure 1 (drugs dispensable by MLHP/nurse at SHC-HWC) and Annexure 2 (drugs indentable from PHC referral centre for chronic disease continuation). Teratogenic and injectable drugs are flagged — the Management Agent must check these against patient pregnancy status and clinical setting. This file is injected directly into Management Agent Call 2 prompts. Do not ingest into the vector store.",
+  "facility_type": "SHC-HWC",
+  "dispensing_authority": "MLHP (Mid-Level Health Provider) / MPW (Multi-Purpose Worker)",
+  "drugs": [
+    {
+      "name": "Paracetamol",
+      "category": "Analgesic / Antipyretic",
+      "forms": ["Tablet 500 mg", "Tablet 650 mg", "Oral liquid (all licensed strengths)"],
+      "source": "Annexure 1",
+      "notes": "First-line antipyretic and analgesic"
+    },
+    {
+      "name": "Diclofenac",
+      "category": "NSAID",
+      "forms": ["Tablet 50 mg", "Injection 25 mg/ml"],
+      "injectable": true,
+      "source": "Annexure 1",
+      "notes": "Avoid in pregnancy, renal impairment, peptic ulcer"
+    },
+    {
+      "name": "Ibuprofen",
+      "category": "NSAID",
+      "forms": ["Tablet 200 mg", "Tablet 400 mg", "Oral liquid 100 mg/5 ml"],
+      "source": "Annexure 1",
+      "notes": "Avoid in pregnancy (esp. third trimester), renal impairment"
+    },
+    {
+      "name": "Mefenamic acid",
+      "category": "NSAID",
+      "forms": ["Capsule 250 mg", "Capsule 500 mg"],
+      "source": "Annexure 1",
+      "notes": "Use short-term only; avoid in renal impairment"
+    },
+    {
+      "name": "Acetylsalicylic acid (Aspirin)",
+      "category": "Analgesic / Antiplatelet",
+      "forms": ["Tablet 300–500 mg", "Effervescent/Dispersible/Enteric-coated Tablet 300–500 mg"],
+      "source": "Annexure 1",
+      "notes": "Avoid in children under 16 (Reye's syndrome), pregnancy, peptic ulcer"
+    },
+    {
+      "name": "Cetirizine",
+      "category": "Antihistamine",
+      "forms": ["Tablet 10 mg"],
+      "source": "Annexure 1"
+    },
+    {
+      "name": "Chlorpheniramine",
+      "category": "Antihistamine",
+      "forms": ["Tablet 4 mg", "Oral liquid 2 mg/5 ml"],
+      "source": "Annexure 1"
+    },
+    {
+      "name": "Albendazole",
+      "category": "Anthelmintic",
+      "forms": ["Tablet 400 mg"],
+      "source": "Annexure 1",
+      "notes": "Avoid in first trimester of pregnancy"
+    },
+    {
+      "name": "Diethylcarbamazine (DEC)",
+      "category": "Antifilarial",
+      "forms": ["Tablet 50 mg", "Tablet 100 mg"],
+      "source": "Annexure 1",
+      "notes": "Used in lymphatic filariasis; avoid in pregnancy"
+    },
+    {
+      "name": "Ciprofloxacin",
+      "category": "Antibacterial (Fluoroquinolone)",
+      "forms": ["Tablet 250 mg", "Tablet 500 mg", "Eye/ear drops 0.3%", "Eye ointment 0.3%"],
+      "source": "Annexure 1",
+      "notes": "Avoid in pregnancy and children under 18 (cartilage risk). Oral forms for enteric/UTI. Topical for eye/ear infections"
+    },
+    {
+      "name": "Amoxicillin",
+      "category": "Antibacterial (Penicillin)",
+      "forms": ["Capsule 250 mg", "Capsule 500 mg", "Oral liquid 250 mg/5 ml"],
+      "source": "Annexure 1",
+      "notes": "Safe in pregnancy. First-line for ARI, otitis media, UTI in pregnancy"
+    },
+    {
+      "name": "Metronidazole",
+      "category": "Antibacterial / Antiprotozoal",
+      "forms": ["Tablet 200 mg", "Tablet 400 mg"],
+      "source": "Annexure 1",
+      "notes": "Avoid in first trimester. Use with caution in pregnancy (second/third trimester only if essential)"
+    },
+    {
+      "name": "Gentamicin",
+      "category": "Antibacterial (Aminoglycoside)",
+      "forms": ["Injection 10 mg/ml", "Injection 40 mg/ml"],
+      "injectable": true,
+      "source": "Annexure 1",
+      "notes": "Teratogenic — avoid in pregnancy. Nephrotoxic and ototoxic. Reserve for serious infections only"
+    },
+    {
+      "name": "Fluconazole",
+      "category": "Antifungal",
+      "forms": ["Tablet 100 mg"],
+      "source": "Annexure 1",
+      "notes": "Avoid in pregnancy (teratogenic at high doses)"
+    },
+    {
+      "name": "Clotrimazole",
+      "category": "Antifungal (topical)",
+      "forms": ["Cream 1%", "Ear drops 1%"],
+      "source": "Annexure 1",
+      "notes": "Topical only at this facility level"
+    },
+    {
+      "name": "Chloroquine",
+      "category": "Antimalarial",
+      "forms": ["Tablet 150 mg"],
+      "source": "Annexure 1",
+      "notes": "For P. vivax. Use with Primaquine (check G6PD). Safe in pregnancy for P. vivax treatment"
+    },
+    {
+      "name": "Primaquine",
+      "category": "Antimalarial (radical cure)",
+      "forms": ["Tablet 2.5 mg", "Tablet 7.5 mg", "Tablet 15 mg"],
+      "teratogenic": true,
+      "source": "Annexure 1",
+      "notes": "CONTRAINDICATED in pregnancy and G6PD deficiency. Radical cure for P. vivax and P. falciparum gametocyte clearance. Always check G6PD status before prescribing"
+    },
+    {
+      "name": "Artesunate + Sulphadoxine-Pyrimethamine (AS+SP combi-pack)",
+      "category": "Antimalarial (ACT)",
+      "forms": [
+        "AS 25 mg + SP 250/12.5 mg (weight band: 5–<10 kg)",
+        "AS 50 mg + SP 500/25 mg (weight band: 10–<17 kg)",
+        "AS 100 mg + SP 750/37.5 mg (weight band: 17–<25 kg)",
+        "AS 150 mg + SP 500/25 mg x2 (weight band: 25–<36 kg)",
+        "AS 200 mg + SP 750/37.5 mg x2 (weight band: ≥36 kg)"
+      ],
+      "injectable": false,
+      "teratogenic": true,
+      "source": "Annexure 1",
+      "notes": "For P. falciparum (uncomplicated). CONTRAINDICATED in first trimester. Use with caution in second/third trimester — refer to MO. Artesunate injection is NOT available at SHC-HWC level — severe/complicated malaria must be referred"
+    },
+    {
+      "name": "Ferrous salts",
+      "category": "Iron supplement",
+      "forms": ["Tablet (60 mg elemental iron)", "Oral liquid (25 mg elemental iron/ml)"],
+      "source": "Annexure 1",
+      "notes": "Safe in pregnancy. Standard treatment for iron deficiency anaemia"
+    },
+    {
+      "name": "Ferrous salt + Folic acid (IFA)",
+      "category": "Iron-Folic Acid supplement",
+      "forms": [
+        "Tablet 45 mg iron + 400 mcg folic acid (small IFA)",
+        "Tablet 100 mg iron + 500 mcg folic acid (large IFA)",
+        "Oral liquid 20 mg iron + 100 mcg folic acid/ml"
+      ],
+      "source": "Annexure 1",
+      "notes": "Recommended in pregnancy and adolescent girls. Large IFA for pregnant women"
+    },
+    {
+      "name": "Folic acid",
+      "category": "Vitamin / Haematinic",
+      "forms": ["Tablet 5 mg"],
+      "source": "Annexure 1",
+      "notes": "Periconceptional and pregnancy use"
+    },
+    {
+      "name": "Oral Rehydration Salts (ORS)",
+      "category": "Rehydration",
+      "forms": ["Sachet (as licensed)"],
+      "source": "Annexure 1",
+      "notes": "First-line for diarrhoea and dehydration across all age groups including infants"
+    },
+    {
+      "name": "Zinc sulphate",
+      "category": "Micronutrient / Antidiarrhoeal adjunct",
+      "forms": ["Dispersible Tablet 20 mg"],
+      "source": "Annexure 1",
+      "notes": "Adjunct to ORS for diarrhoea in children under 5. 10 mg/day for infants <6 months, 20 mg/day for children ≥6 months. 14-day course"
+    },
+    {
+      "name": "Ranitidine",
+      "category": "H2 Blocker / GI",
+      "forms": ["Tablet 150 mg"],
+      "source": "Annexure 1"
+    },
+    {
+      "name": "Domperidone",
+      "category": "Antiemetic / Prokinetic",
+      "forms": ["Tablet 10 mg"],
+      "source": "Annexure 1"
+    },
+    {
+      "name": "Dicyclomine",
+      "category": "Antispasmodic",
+      "forms": ["Tablet 10 mg"],
+      "source": "Annexure 1"
+    },
+    {
+      "name": "Povidone iodine",
+      "category": "Antiseptic / Dermatological",
+      "forms": ["Solution 4–10%"],
+      "source": "Annexure 1",
+      "notes": "Wound cleaning and antisepsis"
+    },
+    {
+      "name": "Silver sulphadiazine",
+      "category": "Topical antibacterial",
+      "forms": ["Cream 1%"],
+      "source": "Annexure 1",
+      "notes": "Burns and wound infections"
+    },
+    {
+      "name": "Framycetin",
+      "category": "Topical antibacterial",
+      "forms": ["Cream 0.5%"],
+      "source": "Annexure 1"
+    },
+    {
+      "name": "Methylrosanilinium chloride (Gentian Violet)",
+      "category": "Topical antiseptic / Antifungal",
+      "forms": ["Topical preparation 0.25–2%"],
+      "source": "Annexure 1"
+    },
+    {
+      "name": "Ascorbic acid (Vitamin C)",
+      "category": "Vitamin",
+      "forms": ["Tablet 100 mg"],
+      "source": "Annexure 1"
+    },
+    {
+      "name": "Cholecalciferol (Vitamin D3)",
+      "category": "Vitamin",
+      "forms": ["Tablet 1000 IU", "Tablet 60000 IU", "Oral liquid 400 IU/ml"],
+      "source": "Annexure 1"
+    },
+    {
+      "name": "Vitamin A",
+      "category": "Vitamin",
+      "forms": ["Capsule 5000 IU", "Capsule 50000 IU", "Capsule 100000 IU", "Oral liquid 100000 IU/ml"],
+      "source": "Annexure 1",
+      "notes": "High-dose supplementation for children as per NHM protocol. Avoid high-dose in pregnancy (teratogenic)"
+    },
+    {
+      "name": "Phytomenadione (Vitamin K1)",
+      "category": "Vitamin / Haemostatic",
+      "forms": ["Injection 10 mg/ml"],
+      "injectable": true,
+      "source": "Annexure 1",
+      "notes": "Neonatal prophylaxis (IM at birth). Also for Vitamin K deficiency bleeding"
+    },
+    {
+      "name": "Misoprostol",
+      "category": "Oxytocic / Uterotonic",
+      "forms": ["Tablet 100 mcg"],
+      "teratogenic": true,
+      "source": "Annexure 1",
+      "notes": "Prevention of postpartum haemorrhage (600 mcg oral at delivery). CONTRAINDICATED in pregnancy for non-obstetric use. Requires MO oversight for obstetric use"
+    },
+    {
+      "name": "Methylergometrine",
+      "category": "Oxytocic / Uterotonic",
+      "forms": ["Tablet 0.125 mg"],
+      "teratogenic": true,
+      "source": "Annexure 1",
+      "notes": "Management of postpartum haemorrhage. CONTRAINDICATED in pregnancy (before delivery). Requires MO oversight"
+    },
+    {
+      "name": "Ethinylestradiol + Norethisterone (OCP)",
+      "category": "Contraceptive (oral)",
+      "forms": ["Tablet 0.035 mg + 1 mg"],
+      "source": "Annexure 1",
+      "notes": "Combined oral contraceptive pill. Contraindicated in pregnancy, active hepatic disease, thromboembolic disorders"
+    },
+    {
+      "name": "Levonorgestrel",
+      "category": "Contraceptive (emergency)",
+      "forms": ["Tablet 0.75 mg"],
+      "source": "Annexure 1",
+      "notes": "Emergency contraception — within 72 hours of unprotected intercourse"
+    },
+    {
+      "name": "Ethinylestradiol (low dose)",
+      "category": "Contraceptive (progestogen-only support)",
+      "forms": ["Tablet 0.01 mg", "Tablet 0.05 mg"],
+      "source": "Annexure 1"
+    },
+    {
+      "name": "Condom (male)",
+      "category": "Contraceptive (barrier)",
+      "forms": ["As per Drugs and Cosmetics Rules 1945 Schedule R standards"],
+      "source": "Annexure 1"
+    },
+    {
+      "name": "Copper IUD",
+      "category": "Contraceptive (intrauterine)",
+      "forms": ["As licensed"],
+      "source": "Annexure 1",
+      "notes": "Requires trained MLHP for insertion; available at SHC-HWC level"
+    },
+    {
+      "name": "Levonorgestrel IUD (hormonal)",
+      "category": "Contraceptive (intrauterine)",
+      "forms": ["52 mg Levonorgestrel IUD"],
+      "source": "Annexure 1",
+      "notes": "Insertion requires trained provider"
+    },
+    {
+      "name": "Lignocaine",
+      "category": "Local anaesthetic",
+      "forms": ["Topical forms 2–5%"],
+      "source": "Annexure 1",
+      "notes": "Topical use only at SHC-HWC level (e.g. wound care, minor procedures)"
+    },
+    {
+      "name": "Water for Injection",
+      "category": "Diluent",
+      "forms": ["Injection"],
+      "injectable": true,
+      "source": "Annexure 1"
+    },
+    {
+      "name": "Activated charcoal",
+      "category": "Antidote / Poisoning",
+      "forms": ["Powder (as licensed)"],
+      "source": "Annexure 1",
+      "notes": "Acute poisoning — administer within 1 hour of ingestion if patient is conscious"
+    },
+    {
+      "name": "Atropine",
+      "category": "Antidote / Emergency",
+      "forms": ["Injection 1 mg/ml"],
+      "injectable": true,
+      "source": "Annexure 1",
+      "notes": "Organophosphate poisoning; bradycardia. Emergency use only"
+    },
+    {
+      "name": "Pralidoxime chloride (2-PAM)",
+      "category": "Antidote",
+      "forms": ["Injection 25 mg/ml"],
+      "injectable": true,
+      "source": "Annexure 1",
+      "notes": "Organophosphate poisoning — use with Atropine. Emergency use only"
+    },
+    {
+      "name": "Snake venom antiserum (polyvalent)",
+      "category": "Antivenom",
+      "forms": ["Injection (liquid)", "Powder for Injection (lyophilized)"],
+      "injectable": true,
+      "source": "Annexure 1",
+      "notes": "Snakebite with systemic envenomation. Administer under MO supervision if possible; nurse may initiate in life-threatening envenomation. Refer after stabilisation"
+    },
+    {
+      "name": "Adrenaline (Epinephrine)",
+      "category": "Emergency / Anaphylaxis",
+      "forms": ["Injection 1 mg/ml (1:1000)"],
+      "injectable": true,
+      "source": "Annexure 1 (Emergency Kit)",
+      "notes": "Anaphylaxis — IM injection (thigh) 0.01 mg/kg. Emergency use only"
+    },
+    {
+      "name": "Hydrocortisone",
+      "category": "Emergency / Corticosteroid",
+      "forms": ["Injection"],
+      "injectable": true,
+      "source": "Annexure 1 (Emergency Kit)",
+      "notes": "Anaphylaxis, adrenal crisis. Emergency use only"
+    },
+    {
+      "name": "Dexamethasone",
+      "category": "Emergency / Corticosteroid",
+      "forms": ["Injection"],
+      "injectable": true,
+      "source": "Annexure 1 (Emergency Kit)",
+      "notes": "Severe allergic reactions, cerebral oedema, croup. Emergency use only"
+    },
+    {
+      "name": "Glyceryl trinitrate (GTN)",
+      "category": "Emergency / Nitrate",
+      "forms": ["Sublingual tablet 0.5 mg"],
+      "source": "Annexure 1 (Emergency Kit)",
+      "notes": "Acute angina. Sublingual only. Contraindicated with PDE5 inhibitors"
+    },
+    {
+      "name": "Xylometazoline nasal drops",
+      "category": "Nasal decongestant",
+      "forms": ["Paediatric drops 0.05%", "Adult drops 0.1%"],
+      "source": "Annexure 1"
+    },
+    {
+      "name": "Normal saline nasal drops",
+      "category": "Nasal saline",
+      "forms": ["Drops 0.5% w/v"],
+      "source": "Annexure 1"
+    },
+    {
+      "name": "Oxygen (medicinal gas)",
+      "category": "Emergency / Respiratory",
+      "forms": ["Inhalation via cylinder and mask"],
+      "source": "Annexure 1",
+      "notes": "Emergency respiratory support. Oxygen cylinder with trolley available at SHC-HWC"
+    },
+    {
+      "name": "Amlodipine",
+      "category": "Antihypertensive (CCB)",
+      "forms": ["Tablet 2.5 mg", "Tablet 5 mg", "Tablet 10 mg"],
+      "source": "Annexure 2 (indent from PHC)",
+      "notes": "Continuation of established hypertension treatment. Initiation requires MO. Use with caution in pregnancy — refer"
+    },
+    {
+      "name": "Atenolol",
+      "category": "Antihypertensive (Beta-blocker)",
+      "forms": ["Tablet 50 mg", "Tablet 100 mg"],
+      "source": "Annexure 2 (indent from PHC)",
+      "notes": "Continuation only. Avoid abrupt withdrawal"
+    },
+    {
+      "name": "Enalapril",
+      "category": "Antihypertensive (ACE inhibitor)",
+      "forms": ["Tablet 2.5 mg", "Tablet 5 mg"],
+      "teratogenic": true,
+      "source": "Annexure 2 (indent from PHC)",
+      "notes": "CONTRAINDICATED in pregnancy. Continuation only"
+    },
+    {
+      "name": "Propranolol",
+      "category": "Antihypertensive / Beta-blocker",
+      "forms": ["Tablet 10 mg", "Tablet 40 mg", "Tablet 80 mg"],
+      "source": "Annexure 2 (indent from PHC)",
+      "notes": "Continuation only. Avoid in asthma/COPD"
+    },
+    {
+      "name": "Isosorbide dinitrate",
+      "category": "Cardiovascular / Nitrate",
+      "forms": ["Tablet 5 mg", "Tablet 10 mg"],
+      "source": "Annexure 2 (indent from PHC)",
+      "notes": "Continuation for angina. Initiation requires MO"
+    },
+    {
+      "name": "Clopidogrel",
+      "category": "Antiplatelet",
+      "forms": ["Tablet 75 mg"],
+      "source": "Annexure 2 (indent from PHC)",
+      "notes": "Continuation for post-MI/stroke patients. Initiation requires MO"
+    },
+    {
+      "name": "Furosemide",
+      "category": "Diuretic (Loop)",
+      "forms": ["Tablet 40 mg", "Oral liquid 10 mg/ml"],
+      "source": "Annexure 2 (indent from PHC)",
+      "notes": "Continuation for heart failure / oedema. Monitor electrolytes. Avoid in dehydration"
+    },
+    {
+      "name": "Hydrochlorothiazide",
+      "category": "Diuretic (Thiazide)",
+      "forms": ["Tablet 25 mg"],
+      "source": "Annexure 2 (indent from PHC)",
+      "notes": "Continuation for hypertension. Avoid in pregnancy"
+    },
+    {
+      "name": "Spironolactone",
+      "category": "Diuretic (Potassium-sparing)",
+      "forms": ["Tablet 25 mg", "Tablet 50 mg"],
+      "source": "Annexure 2 (indent from PHC)",
+      "notes": "Continuation only. Avoid in pregnancy and hyperkalemia"
+    },
+    {
+      "name": "Metformin",
+      "category": "Antidiabetic (Biguanide)",
+      "forms": ["Tablet 500 mg", "Tablet 750 mg", "Tablet 1000 mg"],
+      "source": "Annexure 2 (indent from PHC)",
+      "notes": "Continuation for type 2 diabetes. Avoid in renal impairment, dehydration, contrast procedures"
+    },
+    {
+      "name": "Glimepiride",
+      "category": "Antidiabetic (Sulphonylurea)",
+      "forms": ["Tablet 1 mg", "Tablet 2 mg"],
+      "source": "Annexure 2 (indent from PHC)",
+      "notes": "Continuation for type 2 diabetes. Risk of hypoglycaemia — counsel patient. Avoid in pregnancy"
+    },
+    {
+      "name": "Insulin (Soluble, short-acting)",
+      "category": "Antidiabetic (Insulin)",
+      "forms": ["Injection 40 IU/ml"],
+      "injectable": true,
+      "source": "Annexure 2 (indent from PHC)",
+      "notes": "Continuation for established insulin-dependent diabetes. Initiation and dose adjustment requires MO. Safe in pregnancy (preferred antidiabetic in pregnancy)"
+    },
+    {
+      "name": "Insulin (Intermediate-acting NPH)",
+      "category": "Antidiabetic (Insulin)",
+      "forms": ["Injection 40 IU/ml"],
+      "injectable": true,
+      "source": "Annexure 2 (indent from PHC)",
+      "notes": "Continuation only. MO to initiate and titrate"
+    },
+    {
+      "name": "Insulin (Premix 30:70)",
+      "category": "Antidiabetic (Insulin)",
+      "forms": ["Injection 40 IU/ml (Regular:NPH 30:70)"],
+      "injectable": true,
+      "source": "Annexure 2 (indent from PHC)",
+      "notes": "Continuation only. MO to initiate and titrate"
+    },
+    {
+      "name": "Carbamazepine",
+      "category": "Anticonvulsant / Antiepileptic",
+      "forms": ["Tablet 100 mg"],
+      "teratogenic": true,
+      "source": "Annexure 2 (indent from PHC)",
+      "notes": "Continuation for epilepsy. TERATOGENIC — counsel women of childbearing age. Do not stop abruptly. Initiation requires MO"
+    },
+    {
+      "name": "Diazepam",
+      "category": "Anticonvulsant / Anxiolytic",
+      "forms": ["Oral liquid 2 mg/5 ml"],
+      "source": "Annexure 2 (indent from PHC)",
+      "notes": "Continuation for epilepsy or anxiety. Avoid in pregnancy (first trimester; neonatal withdrawal). Oral form only at SHC-HWC"
+    },
+    {
+      "name": "Phenobarbitone",
+      "category": "Anticonvulsant / Antiepileptic",
+      "forms": ["Tablet 30 mg", "Tablet 60 mg", "Oral liquid 20 mg/5 ml"],
+      "teratogenic": true,
+      "source": "Annexure 2 (indent from PHC)",
+      "notes": "Continuation for epilepsy. TERATOGENIC. Do not stop abruptly. Initiation requires MO"
+    },
+    {
+      "name": "Phenytoin",
+      "category": "Anticonvulsant / Antiepileptic",
+      "forms": ["Tablet 50 mg", "Tablet 100 mg", "Tablet 300 mg", "ER Tablet 300 mg", "Injection 25 mg/ml", "Injection 50 mg/ml"],
+      "injectable": true,
+      "teratogenic": true,
+      "source": "Annexure 2 (indent from PHC)",
+      "notes": "TERATOGENIC. Injection for emergency seizure management only. Oral continuation requires MO oversight. Narrow therapeutic index — do not switch formulations"
+    },
+    {
+      "name": "Sodium valproate",
+      "category": "Anticonvulsant / Antiepileptic",
+      "forms": ["Tablet 200 mg", "Tablet 500 mg"],
+      "teratogenic": true,
+      "source": "Annexure 2 (indent from PHC)",
+      "notes": "HIGHLY TERATOGENIC — major neural tube defects and neurodevelopmental harm. Avoid in all women of childbearing age unless no alternative. Requires specialist oversight. Initiation never at SHC-HWC level"
+    },
+    {
+      "name": "Salbutamol",
+      "category": "Bronchodilator (SABA)",
+      "forms": ["Tablet 2 mg", "Tablet 4 mg", "Oral liquid 2 mg/5 ml", "Inhalation MDI/DPI 100 mcg/dose", "Respirator solution for nebulizer 5 mg/ml"],
+      "source": "Annexure 2 (indent from PHC)",
+      "notes": "First-line reliever for asthma and COPD. Inhaled preferred. Nebulizer solution for acute exacerbations. Safe in pregnancy for asthma"
+    }
+  ],
+  "not_available_at_shc_hwc": [
+    "Artesunate injection (severe/complicated malaria — refer immediately)",
+    "Oxytocin injection (postpartum haemorrhage — refer; Misoprostol/Methylergometrine oral available)",
+    "Magnesium sulphate injection (eclampsia — refer immediately; loading dose only if referral delayed and MO authorised)",
+    "Benzathine penicillin injection (rheumatic fever prophylaxis — PHC level)",
+    "Ampicillin injection",
+    "Gentamicin injection for neonatal sepsis protocol (refer neonate)",
+    "Morphine / opioid analgesics",
+    "Thrombolytics",
+    "Antituberculosis drugs (DOTS programme — PHC level, not dispensed at SHC-HWC independently)",
+    "Antiretroviral drugs (ART centre)",
+    "Insulin pen devices / cartridges",
+    "IV fluids (Normal saline, Ringer's lactate, Dextrose) — refer or stabilise with oral ORS"
+  ]
+}

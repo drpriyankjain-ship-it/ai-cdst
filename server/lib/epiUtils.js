@@ -78,7 +78,17 @@ export function loadBaselineDiseases() {
 // ---------------------------------------------------------------------------
 
 export function loadEpiPrior(districtCode, month) {
-  const prior = JSON.parse(readFileSync(EPI_PRIOR_PATH, 'utf-8'));
+  if (!existsSync(EPI_PRIOR_PATH)) {
+    console.log(`[EPI PRIOR WARNING] ${EPI_PRIOR_PATH} not found. Layer 2 modifier absent.`);
+    return '';
+  }
+  let prior;
+  try {
+    prior = JSON.parse(readFileSync(EPI_PRIOR_PATH, 'utf-8'));
+  } catch (e) {
+    console.log(`[EPI PRIOR WARNING] Failed to parse epi_prior_wb.json: ${e.message}`);
+    return '';
+  }
   const season = MONTH_TO_SEASON[month] || 'monsoon';
   const districtData = (prior.districts || {})[districtCode];
 

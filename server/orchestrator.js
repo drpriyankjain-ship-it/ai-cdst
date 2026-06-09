@@ -574,7 +574,7 @@ export function mountWebSocket(app) {
               wsSend(ws, { type: 'error', code: 'SESSION_NOT_FOUND', message: `Session ${sid} not found` });
               return;
             }
-            state = await SessionState.fromVault(sid, pool);
+            state = new SessionState(sid, pool);
             state.nurseId = claims.nurse_id || claims.user_id;
             state.userId = claims.user_id;
             _active.set(sid, state);

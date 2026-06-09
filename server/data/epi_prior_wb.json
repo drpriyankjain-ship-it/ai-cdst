@@ -1,0 +1,709 @@
+{
+  "_metadata": {
+    "version": "1.0.0",
+    "state": "West Bengal, India",
+    "districts": 23,
+    "last_updated": "2024-01",
+    "update_frequency": "annual",
+    "sources": [
+      "IDSP weekly outbreak reports (idsp.mohfw.gov.in)",
+      "NVBDCP / NCVBDC district malaria and kala-azar data",
+      "ICMR-NICED surveillance — dengue GIS study West Bengal 2015-2019 (PMC11050753)",
+      "PMC8204839 — outbreak-prone diseases northern WB districts 2018-2020",
+      "PMC7842458 — dengue dynamics Gangetic West Bengal 2010-2019",
+      "PMC5618840 — scrub typhus southern WB districts",
+      "Scientific Reports 2022 — malaria Purulia district 2016-2020",
+      "IJFMR 2025 — kala-azar control West Bengal",
+      "Frontiers 2024 — scrub typhus India seasonal patterns"
+    ],
+    "weight_scale": "0.0-1.0 relative weight within district/season. NOT absolute incidence. Weights reflect relative elevation of endemic disease risk above baseline — they modify but do not replace the Layer 1 common disease baseline.",
+    "seasons": {
+      "winter":       "December, January, February — cool and dry",
+      "pre_monsoon":  "March, April, May — hot and dry, increasing humidity",
+      "monsoon":      "June, July, August, September — heavy rainfall, peak vector activity",
+      "post_monsoon": "October, November — receding rainfall, peak dengue/scrub typhus"
+    },
+    "month_to_season": {
+      "1": "winter", "2": "winter", "3": "pre_monsoon", "4": "pre_monsoon",
+      "5": "pre_monsoon", "6": "monsoon", "7": "monsoon", "8": "monsoon",
+      "9": "monsoon", "10": "post_monsoon", "11": "post_monsoon", "12": "winter"
+    },
+    "geographic_zones": {
+      "north_bengal_hills":   ["WB_DJL", "WB_KLP"],
+      "north_bengal_dooars":  ["WB_ALP", "WB_JPG", "WB_CCB"],
+      "north_bengal_plains":  ["WB_UDN", "WB_DDN", "WB_MLD"],
+      "gangetic_central":     ["WB_MSD", "WB_NDA", "WB_BRB", "WB_PBD", "WB_WBD"],
+      "gangetic_south":       ["WB_HGL", "WB_HWR", "WB_KOL", "WB_N24", "WB_S24"],
+      "medinipur_sundarbans": ["WB_WMD", "WB_EMD", "WB_JGM"],
+      "western_plateau":      ["WB_BKR", "WB_PRL"]
+    },
+    "fallback_behaviour": "If district code not found return empty list — do NOT silently omit. Log a warning so the data gap is flagged for future update."
+  },
+
+  "districts": {
+
+    "WB_DJL": {
+      "name": "Darjeeling",
+      "zone": "north_bengal_hills",
+      "notes": "Primary scrub typhus hotspot in WB — first state case 2004 Kurseong. Dengue endemic since Siliguri 2005. Malaria low. JE declining post-vaccination.",
+      "seasons": {
+        "winter":       [
+          {"disease": "Scrub typhus",           "weight": 0.40},
+          {"disease": "Acute RTI / pneumonia",   "weight": 0.65},
+          {"disease": "Typhoid fever",           "weight": 0.30}
+        ],
+        "pre_monsoon":  [
+          {"disease": "Scrub typhus",           "weight": 0.55},
+          {"disease": "Dengue fever",           "weight": 0.35},
+          {"disease": "Typhoid fever",          "weight": 0.40}
+        ],
+        "monsoon":      [
+          {"disease": "Scrub typhus",                    "weight": 0.85, "note": "Peak chigger activity; mimics dengue and malaria"},
+          {"disease": "Dengue fever",                    "weight": 0.65},
+          {"disease": "Leptospirosis",                   "weight": 0.45, "note": "Flooding increases exposure"},
+          {"disease": "Japanese encephalitis",           "weight": 0.35, "note": "Declining post-vaccination"},
+          {"disease": "Acute diarrhoeal disease",        "weight": 0.55}
+        ],
+        "post_monsoon": [
+          {"disease": "Scrub typhus",           "weight": 0.80},
+          {"disease": "Dengue fever",           "weight": 0.75},
+          {"disease": "Japanese encephalitis",  "weight": 0.30},
+          {"disease": "Leptospirosis",          "weight": 0.35}
+        ]
+      }
+    },
+
+    "WB_KLP": {
+      "name": "Kalimpong",
+      "zone": "north_bengal_hills",
+      "notes": "Formed 2017 from Darjeeling. Similar hill ecology. Near Bhutan and Sikkim.",
+      "seasons": {
+        "winter":       [
+          {"disease": "Acute RTI / pneumonia",  "weight": 0.65},
+          {"disease": "Scrub typhus",           "weight": 0.35}
+        ],
+        "pre_monsoon":  [
+          {"disease": "Scrub typhus",   "weight": 0.50},
+          {"disease": "Typhoid fever",  "weight": 0.35}
+        ],
+        "monsoon":      [
+          {"disease": "Scrub typhus",            "weight": 0.80},
+          {"disease": "Dengue fever",            "weight": 0.50},
+          {"disease": "Leptospirosis",           "weight": 0.40},
+          {"disease": "Acute diarrhoeal disease","weight": 0.50}
+        ],
+        "post_monsoon": [
+          {"disease": "Scrub typhus",   "weight": 0.75},
+          {"disease": "Dengue fever",   "weight": 0.60}
+        ]
+      }
+    },
+
+    "WB_ALP": {
+      "name": "Alipurduar",
+      "zone": "north_bengal_dooars",
+      "notes": "Dense Dooars forest, tea gardens. P. falciparum malaria with drug-resistant cases. JE endemic. Near Bhutan.",
+      "seasons": {
+        "winter":       [
+          {"disease": "Plasmodium vivax malaria",   "weight": 0.45},
+          {"disease": "Acute RTI / pneumonia",      "weight": 0.55},
+          {"disease": "Typhoid fever",              "weight": 0.35}
+        ],
+        "pre_monsoon":  [
+          {"disease": "Plasmodium falciparum malaria", "weight": 0.55},
+          {"disease": "Plasmodium vivax malaria",      "weight": 0.50},
+          {"disease": "Typhoid fever",                 "weight": 0.40}
+        ],
+        "monsoon":      [
+          {"disease": "Plasmodium falciparum malaria", "weight": 0.90, "note": "Drug-resistant Pf — high priority"},
+          {"disease": "Plasmodium vivax malaria",      "weight": 0.75},
+          {"disease": "Japanese encephalitis",         "weight": 0.55, "note": "Outbreaks 2011 and 2014"},
+          {"disease": "Scrub typhus",                  "weight": 0.50},
+          {"disease": "Acute diarrhoeal disease",      "weight": 0.60},
+          {"disease": "Leptospirosis",                 "weight": 0.35}
+        ],
+        "post_monsoon": [
+          {"disease": "Plasmodium falciparum malaria", "weight": 0.70},
+          {"disease": "Dengue fever",                  "weight": 0.55},
+          {"disease": "Scrub typhus",                  "weight": 0.55},
+          {"disease": "Japanese encephalitis",         "weight": 0.40}
+        ]
+      }
+    },
+
+    "WB_JPG": {
+      "name": "Jalpaiguri",
+      "zone": "north_bengal_dooars",
+      "notes": "Dooars. P. falciparum malaria with drug resistance. JE outbreaks 2011 and 2014. Tea garden worker population at high risk.",
+      "seasons": {
+        "winter":       [
+          {"disease": "Plasmodium vivax malaria",   "weight": 0.45},
+          {"disease": "Acute RTI / pneumonia",      "weight": 0.55}
+        ],
+        "pre_monsoon":  [
+          {"disease": "Plasmodium falciparum malaria", "weight": 0.55},
+          {"disease": "Plasmodium vivax malaria",      "weight": 0.50}
+        ],
+        "monsoon":      [
+          {"disease": "Plasmodium falciparum malaria", "weight": 0.88, "note": "Drug-resistant cases documented"},
+          {"disease": "Plasmodium vivax malaria",      "weight": 0.72},
+          {"disease": "Japanese encephalitis",         "weight": 0.55},
+          {"disease": "Scrub typhus",                  "weight": 0.45},
+          {"disease": "Acute diarrhoeal disease",      "weight": 0.60},
+          {"disease": "Dengue fever",                  "weight": 0.40}
+        ],
+        "post_monsoon": [
+          {"disease": "Plasmodium falciparum malaria", "weight": 0.65},
+          {"disease": "Dengue fever",                  "weight": 0.60, "note": "DENV-3 dominant North Bengal 2019"},
+          {"disease": "Scrub typhus",                  "weight": 0.50},
+          {"disease": "Japanese encephalitis",         "weight": 0.35}
+        ]
+      }
+    },
+
+    "WB_CCB": {
+      "name": "Cooch Behar",
+      "zone": "north_bengal_dooars",
+      "notes": "Borders Bangladesh and Assam. JE endemic. Malaria present. Flood-prone.",
+      "seasons": {
+        "winter":       [
+          {"disease": "Acute RTI / pneumonia", "weight": 0.55},
+          {"disease": "Typhoid fever",         "weight": 0.35}
+        ],
+        "pre_monsoon":  [
+          {"disease": "Plasmodium vivax malaria", "weight": 0.45},
+          {"disease": "Typhoid fever",            "weight": 0.40}
+        ],
+        "monsoon":      [
+          {"disease": "Plasmodium falciparum malaria",  "weight": 0.65},
+          {"disease": "Plasmodium vivax malaria",       "weight": 0.60},
+          {"disease": "Japanese encephalitis",          "weight": 0.50},
+          {"disease": "Acute diarrhoeal disease",       "weight": 0.65},
+          {"disease": "Scrub typhus",                   "weight": 0.35}
+        ],
+        "post_monsoon": [
+          {"disease": "Dengue fever",                   "weight": 0.65, "note": "DENV-3 dominant North Bengal"},
+          {"disease": "Plasmodium vivax malaria",       "weight": 0.45},
+          {"disease": "Japanese encephalitis",          "weight": 0.35}
+        ]
+      }
+    },
+
+    "WB_UDN": {
+      "name": "Uttar Dinajpur",
+      "zone": "north_bengal_plains",
+      "notes": "Kala-azar endemic (one of 11 WB kala-azar districts). Borders Bangladesh. Malaria and dengue present.",
+      "seasons": {
+        "winter":       [
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.65},
+          {"disease": "Acute RTI / pneumonia",              "weight": 0.55},
+          {"disease": "Typhoid fever",                      "weight": 0.40}
+        ],
+        "pre_monsoon":  [
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.70},
+          {"disease": "Plasmodium vivax malaria",           "weight": 0.45},
+          {"disease": "Typhoid fever",                      "weight": 0.45}
+        ],
+        "monsoon":      [
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.72},
+          {"disease": "Plasmodium falciparum malaria",      "weight": 0.60},
+          {"disease": "Acute diarrhoeal disease / cholera", "weight": 0.65},
+          {"disease": "Dengue fever",                       "weight": 0.45},
+          {"disease": "Typhoid fever",                      "weight": 0.50}
+        ],
+        "post_monsoon": [
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.70},
+          {"disease": "Dengue fever",                       "weight": 0.60},
+          {"disease": "Plasmodium vivax malaria",           "weight": 0.40}
+        ]
+      }
+    },
+
+    "WB_DDN": {
+      "name": "Dakshin Dinajpur",
+      "zone": "north_bengal_plains",
+      "notes": "Kala-azar endemic. Borders Bangladesh. Similar profile to Uttar Dinajpur.",
+      "seasons": {
+        "winter":       [
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.65},
+          {"disease": "Acute RTI / pneumonia",              "weight": 0.55},
+          {"disease": "Typhoid fever",                      "weight": 0.38}
+        ],
+        "pre_monsoon":  [
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.68},
+          {"disease": "Typhoid fever",                      "weight": 0.42}
+        ],
+        "monsoon":      [
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.72},
+          {"disease": "Plasmodium falciparum malaria",      "weight": 0.55},
+          {"disease": "Acute diarrhoeal disease / cholera", "weight": 0.62},
+          {"disease": "Dengue fever",                       "weight": 0.42},
+          {"disease": "Typhoid fever",                      "weight": 0.48}
+        ],
+        "post_monsoon": [
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.70},
+          {"disease": "Dengue fever",                       "weight": 0.58}
+        ]
+      }
+    },
+
+    "WB_MLD": {
+      "name": "Malda",
+      "zone": "north_bengal_plains",
+      "notes": "Kala-azar endemic — asymptomatic VL study conducted here. Borders Bangladesh. Malaria and dengue present. Flood-prone Ganges belt.",
+      "seasons": {
+        "winter":       [
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.68},
+          {"disease": "Acute RTI / pneumonia",              "weight": 0.55},
+          {"disease": "Typhoid fever",                      "weight": 0.40}
+        ],
+        "pre_monsoon":  [
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.72},
+          {"disease": "Plasmodium vivax malaria",           "weight": 0.45},
+          {"disease": "Typhoid fever",                      "weight": 0.45}
+        ],
+        "monsoon":      [
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.75},
+          {"disease": "Plasmodium falciparum malaria",      "weight": 0.65},
+          {"disease": "Acute diarrhoeal disease / cholera", "weight": 0.68},
+          {"disease": "Typhoid fever",                      "weight": 0.52},
+          {"disease": "Dengue fever",                       "weight": 0.45}
+        ],
+        "post_monsoon": [
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.72},
+          {"disease": "Dengue fever",                       "weight": 0.62},
+          {"disease": "Plasmodium vivax malaria",           "weight": 0.42}
+        ]
+      }
+    },
+
+    "WB_MSD": {
+      "name": "Murshidabad",
+      "zone": "gangetic_central",
+      "notes": "Kala-azar endemic. Only Gangetic district with statistically significant rising dengue trend per IDSP 2010-2019. Borders Bangladesh. High malaria burden.",
+      "seasons": {
+        "winter":       [
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.65},
+          {"disease": "Acute RTI / pneumonia",              "weight": 0.55},
+          {"disease": "Typhoid fever",                      "weight": 0.40}
+        ],
+        "pre_monsoon":  [
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.70},
+          {"disease": "Plasmodium falciparum malaria",      "weight": 0.50},
+          {"disease": "Typhoid fever",                      "weight": 0.45}
+        ],
+        "monsoon":      [
+          {"disease": "Plasmodium falciparum malaria",      "weight": 0.82},
+          {"disease": "Plasmodium vivax malaria",           "weight": 0.75},
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.70},
+          {"disease": "Acute diarrhoeal disease / cholera", "weight": 0.68},
+          {"disease": "Dengue fever",                       "weight": 0.55},
+          {"disease": "Typhoid fever",                      "weight": 0.55}
+        ],
+        "post_monsoon": [
+          {"disease": "Dengue fever",                       "weight": 0.82, "note": "Statistically significant rising trend"},
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.68},
+          {"disease": "Plasmodium vivax malaria",           "weight": 0.45}
+        ]
+      }
+    },
+
+    "WB_NDA": {
+      "name": "Nadia",
+      "zone": "gangetic_central",
+      "notes": "Kala-azar endemic. Dengue active — highest outbreak count in Gangetic WB (IDSP 2010-2019). Scrub typhus now documented. Borders Bangladesh. Nipah 2007 (historical).",
+      "seasons": {
+        "winter":       [
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.60},
+          {"disease": "Acute RTI / pneumonia",              "weight": 0.55},
+          {"disease": "Typhoid fever",                      "weight": 0.40}
+        ],
+        "pre_monsoon":  [
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.65},
+          {"disease": "Typhoid fever",                      "weight": 0.45},
+          {"disease": "Dengue fever",                       "weight": 0.35}
+        ],
+        "monsoon":      [
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.68},
+          {"disease": "Dengue fever",                       "weight": 0.70},
+          {"disease": "Acute diarrhoeal disease / cholera", "weight": 0.62},
+          {"disease": "Typhoid fever",                      "weight": 0.55},
+          {"disease": "Plasmodium vivax malaria",           "weight": 0.40}
+        ],
+        "post_monsoon": [
+          {"disease": "Dengue fever",                       "weight": 0.75},
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.65},
+          {"disease": "Scrub typhus",                       "weight": 0.35, "note": "Now documented in southern WB"}
+        ]
+      }
+    },
+
+    "WB_BRB": {
+      "name": "Birbhum",
+      "zone": "gangetic_central",
+      "notes": "Dengue active. Borders Jharkhand tribal belt. Malaria present. Lower kala-azar.",
+      "seasons": {
+        "winter":       [
+          {"disease": "Acute RTI / pneumonia", "weight": 0.55},
+          {"disease": "Typhoid fever",         "weight": 0.38}
+        ],
+        "pre_monsoon":  [
+          {"disease": "Plasmodium vivax malaria", "weight": 0.42},
+          {"disease": "Typhoid fever",            "weight": 0.42}
+        ],
+        "monsoon":      [
+          {"disease": "Dengue fever",                       "weight": 0.65},
+          {"disease": "Plasmodium falciparum malaria",      "weight": 0.55},
+          {"disease": "Acute diarrhoeal disease / cholera", "weight": 0.60},
+          {"disease": "Typhoid fever",                      "weight": 0.50},
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.40}
+        ],
+        "post_monsoon": [
+          {"disease": "Dengue fever",   "weight": 0.72},
+          {"disease": "Scrub typhus",   "weight": 0.40}
+        ]
+      }
+    },
+
+    "WB_PBD": {
+      "name": "Purba Bardhaman",
+      "zone": "gangetic_central",
+      "notes": "Formerly eastern Burdwan. Dengue active. Agricultural rice-growing district. JE adjacent (Bankura).",
+      "seasons": {
+        "winter":       [
+          {"disease": "Acute RTI / pneumonia", "weight": 0.55},
+          {"disease": "Typhoid fever",         "weight": 0.38}
+        ],
+        "pre_monsoon":  [
+          {"disease": "Typhoid fever",            "weight": 0.42},
+          {"disease": "Plasmodium vivax malaria", "weight": 0.38}
+        ],
+        "monsoon":      [
+          {"disease": "Dengue fever",                       "weight": 0.65},
+          {"disease": "Acute diarrhoeal disease / cholera", "weight": 0.62},
+          {"disease": "Plasmodium vivax malaria",           "weight": 0.50},
+          {"disease": "Typhoid fever",                      "weight": 0.50}
+        ],
+        "post_monsoon": [
+          {"disease": "Dengue fever",   "weight": 0.70},
+          {"disease": "Scrub typhus",   "weight": 0.35}
+        ]
+      }
+    },
+
+    "WB_WBD": {
+      "name": "Paschim Bardhaman",
+      "zone": "gangetic_central",
+      "notes": "Industrial (Durgapur, Asansol). Dengue active. Borders Jharkhand.",
+      "seasons": {
+        "winter":       [
+          {"disease": "Acute RTI / pneumonia", "weight": 0.55},
+          {"disease": "Typhoid fever",         "weight": 0.35}
+        ],
+        "pre_monsoon":  [
+          {"disease": "Typhoid fever",            "weight": 0.40},
+          {"disease": "Plasmodium vivax malaria", "weight": 0.35}
+        ],
+        "monsoon":      [
+          {"disease": "Dengue fever",                "weight": 0.65},
+          {"disease": "Acute diarrhoeal disease",    "weight": 0.58},
+          {"disease": "Plasmodium vivax malaria",    "weight": 0.48},
+          {"disease": "Typhoid fever",               "weight": 0.48}
+        ],
+        "post_monsoon": [
+          {"disease": "Dengue fever",   "weight": 0.68},
+          {"disease": "Scrub typhus",   "weight": 0.32}
+        ]
+      }
+    },
+
+    "WB_HGL": {
+      "name": "Hooghly",
+      "zone": "gangetic_south",
+      "notes": "Top 5 WB district by dengue NS1 cases. Kolkata suburban. Industrial corridor.",
+      "seasons": {
+        "winter":       [
+          {"disease": "Acute RTI / pneumonia", "weight": 0.55},
+          {"disease": "Typhoid fever",         "weight": 0.38}
+        ],
+        "pre_monsoon":  [
+          {"disease": "Typhoid fever",  "weight": 0.40},
+          {"disease": "Dengue fever",   "weight": 0.38}
+        ],
+        "monsoon":      [
+          {"disease": "Dengue fever",                "weight": 0.78},
+          {"disease": "Acute diarrhoeal disease",    "weight": 0.60},
+          {"disease": "Typhoid fever",               "weight": 0.50},
+          {"disease": "Plasmodium vivax malaria",    "weight": 0.35}
+        ],
+        "post_monsoon": [
+          {"disease": "Dengue fever",   "weight": 0.82, "note": "Top 5 WB district by dengue cases"},
+          {"disease": "Scrub typhus",   "weight": 0.35}
+        ]
+      }
+    },
+
+    "WB_HWR": {
+      "name": "Howrah",
+      "zone": "gangetic_south",
+      "notes": "Kolkata twin city. Top 5 WB district by dengue NS1 cases. Dense urban and peri-urban.",
+      "seasons": {
+        "winter":       [
+          {"disease": "Acute RTI / pneumonia", "weight": 0.55},
+          {"disease": "Typhoid fever",         "weight": 0.38}
+        ],
+        "pre_monsoon":  [
+          {"disease": "Typhoid fever",  "weight": 0.42},
+          {"disease": "Dengue fever",   "weight": 0.40}
+        ],
+        "monsoon":      [
+          {"disease": "Dengue fever",             "weight": 0.80},
+          {"disease": "Acute diarrhoeal disease", "weight": 0.60},
+          {"disease": "Typhoid fever",            "weight": 0.50}
+        ],
+        "post_monsoon": [
+          {"disease": "Dengue fever",   "weight": 0.85, "note": "Top 5 WB district by dengue cases"},
+          {"disease": "Scrub typhus",   "weight": 0.30}
+        ]
+      }
+    },
+
+    "WB_KOL": {
+      "name": "Kolkata",
+      "zone": "gangetic_south",
+      "notes": "Dengue hyperendemic — consistently highest case burden in WB, GIS hotspot all years 2015-2019, all 4 serotypes co-circulating. Urban — no malaria or kala-azar. Scrub typhus documented in city.",
+      "seasons": {
+        "winter":       [
+          {"disease": "Acute RTI / pneumonia",  "weight": 0.55},
+          {"disease": "Typhoid fever",          "weight": 0.40},
+          {"disease": "Scrub typhus",           "weight": 0.25, "note": "Cases documented in urban Kolkata"}
+        ],
+        "pre_monsoon":  [
+          {"disease": "Dengue fever",   "weight": 0.55},
+          {"disease": "Typhoid fever",  "weight": 0.45},
+          {"disease": "Chikungunya",    "weight": 0.35}
+        ],
+        "monsoon":      [
+          {"disease": "Dengue fever",                    "weight": 0.92, "note": "Highest dengue burden in WB — all 4 serotypes"},
+          {"disease": "Acute diarrhoeal disease / cholera", "weight": 0.65},
+          {"disease": "Typhoid fever",                   "weight": 0.55},
+          {"disease": "Chikungunya",                     "weight": 0.40},
+          {"disease": "Leptospirosis",                   "weight": 0.35}
+        ],
+        "post_monsoon": [
+          {"disease": "Dengue fever",   "weight": 0.90, "note": "Hyperendemic — peak post-monsoon"},
+          {"disease": "Chikungunya",    "weight": 0.35},
+          {"disease": "Scrub typhus",   "weight": 0.30}
+        ]
+      }
+    },
+
+    "WB_N24": {
+      "name": "North 24 Parganas",
+      "zone": "gangetic_south",
+      "notes": "Highest dengue case volume Gangetic WB — 9,291 cases 2010-2019 per IDSP. Borders Bangladesh. Kala-azar reported. Dense peri-urban population.",
+      "seasons": {
+        "winter":       [
+          {"disease": "Acute RTI / pneumonia",              "weight": 0.55},
+          {"disease": "Typhoid fever",                      "weight": 0.42},
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.35}
+        ],
+        "pre_monsoon":  [
+          {"disease": "Dengue fever",                       "weight": 0.50},
+          {"disease": "Typhoid fever",                      "weight": 0.45},
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.38}
+        ],
+        "monsoon":      [
+          {"disease": "Dengue fever",                       "weight": 0.88, "note": "Highest case volume Gangetic WB"},
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.40},
+          {"disease": "Acute diarrhoeal disease / cholera", "weight": 0.65},
+          {"disease": "Typhoid fever",                      "weight": 0.55},
+          {"disease": "Plasmodium vivax malaria",           "weight": 0.35}
+        ],
+        "post_monsoon": [
+          {"disease": "Dengue fever",                       "weight": 0.90},
+          {"disease": "Scrub typhus",                       "weight": 0.35},
+          {"disease": "Kala-azar (visceral leishmaniasis)", "weight": 0.38}
+        ]
+      }
+    },
+
+    "WB_S24": {
+      "name": "South 24 Parganas",
+      "zone": "medinipur_sundarbans",
+      "notes": "Sundarbans — tidal mangrove. Scrub typhus documented 2013-2015. Dengue high. Leptospirosis from flooding. Snake envenomation significant. Malaria in forest blocks.",
+      "seasons": {
+        "winter":       [
+          {"disease": "Acute RTI / pneumonia", "weight": 0.55},
+          {"disease": "Typhoid fever",         "weight": 0.40},
+          {"disease": "Scrub typhus",          "weight": 0.30}
+        ],
+        "pre_monsoon":  [
+          {"disease": "Dengue fever",             "weight": 0.48},
+          {"disease": "Typhoid fever",            "weight": 0.45},
+          {"disease": "Plasmodium vivax malaria", "weight": 0.38}
+        ],
+        "monsoon":      [
+          {"disease": "Dengue fever",                       "weight": 0.82},
+          {"disease": "Leptospirosis",                      "weight": 0.60, "note": "Sundarbans flooding — high leptospirosis risk"},
+          {"disease": "Plasmodium falciparum malaria",      "weight": 0.55},
+          {"disease": "Acute diarrhoeal disease / cholera", "weight": 0.65},
+          {"disease": "Typhoid fever",                      "weight": 0.52},
+          {"disease": "Scrub typhus",                       "weight": 0.45}
+        ],
+        "post_monsoon": [
+          {"disease": "Dengue fever",   "weight": 0.85},
+          {"disease": "Scrub typhus",   "weight": 0.55, "note": "Well-documented in South 24 Parganas"},
+          {"disease": "Leptospirosis",  "weight": 0.45}
+        ]
+      }
+    },
+
+    "WB_WMD": {
+      "name": "Paschim Medinipur",
+      "zone": "medinipur_sundarbans",
+      "notes": "Borders Jharkhand and Odisha. Tribal population. Significant malaria. Dengue active. JE adjacent. Fluorosis in some blocks.",
+      "seasons": {
+        "winter":       [
+          {"disease": "Acute RTI / pneumonia",    "weight": 0.55},
+          {"disease": "Typhoid fever",            "weight": 0.38}
+        ],
+        "pre_monsoon":  [
+          {"disease": "Plasmodium vivax malaria", "weight": 0.48},
+          {"disease": "Typhoid fever",            "weight": 0.42}
+        ],
+        "monsoon":      [
+          {"disease": "Plasmodium falciparum malaria", "weight": 0.72},
+          {"disease": "Plasmodium vivax malaria",      "weight": 0.65},
+          {"disease": "Dengue fever",                  "weight": 0.65},
+          {"disease": "Acute diarrhoeal disease",      "weight": 0.60},
+          {"disease": "Typhoid fever",                 "weight": 0.50},
+          {"disease": "Japanese encephalitis",         "weight": 0.35}
+        ],
+        "post_monsoon": [
+          {"disease": "Dengue fever",             "weight": 0.72},
+          {"disease": "Scrub typhus",             "weight": 0.40},
+          {"disease": "Plasmodium vivax malaria", "weight": 0.45}
+        ]
+      }
+    },
+
+    "WB_EMD": {
+      "name": "Purba Medinipur",
+      "zone": "medinipur_sundarbans",
+      "notes": "Coastal Bay of Bengal. Cyclone-prone — flooding drives cholera and leptospirosis. Dengue active. Sea-fishing community.",
+      "seasons": {
+        "winter":       [
+          {"disease": "Acute RTI / pneumonia", "weight": 0.55},
+          {"disease": "Typhoid fever",         "weight": 0.38}
+        ],
+        "pre_monsoon":  [
+          {"disease": "Dengue fever",   "weight": 0.42},
+          {"disease": "Typhoid fever",  "weight": 0.42}
+        ],
+        "monsoon":      [
+          {"disease": "Dengue fever",                       "weight": 0.72},
+          {"disease": "Acute diarrhoeal disease / cholera", "weight": 0.70, "note": "Coastal Vibrio risk; cyclone flooding"},
+          {"disease": "Leptospirosis",                      "weight": 0.55},
+          {"disease": "Typhoid fever",                      "weight": 0.52},
+          {"disease": "Plasmodium vivax malaria",           "weight": 0.38}
+        ],
+        "post_monsoon": [
+          {"disease": "Dengue fever",   "weight": 0.75},
+          {"disease": "Leptospirosis",  "weight": 0.45},
+          {"disease": "Scrub typhus",   "weight": 0.32}
+        ]
+      }
+    },
+
+    "WB_JGM": {
+      "name": "Jhargram",
+      "zone": "western_plateau",
+      "notes": "Formed 2017 from Paschim Medinipur. Dense Sal forest. Santhali tribal population. High malaria burden — tribal forest belt. Scrub typhus in forested areas. No dengue outbreaks per IDSP 2010-2019.",
+      "seasons": {
+        "winter":       [
+          {"disease": "Plasmodium vivax malaria",  "weight": 0.42},
+          {"disease": "Acute RTI / pneumonia",     "weight": 0.55},
+          {"disease": "Typhoid fever",             "weight": 0.35}
+        ],
+        "pre_monsoon":  [
+          {"disease": "Plasmodium falciparum malaria", "weight": 0.55},
+          {"disease": "Plasmodium vivax malaria",      "weight": 0.52},
+          {"disease": "Typhoid fever",                 "weight": 0.38}
+        ],
+        "monsoon":      [
+          {"disease": "Plasmodium falciparum malaria", "weight": 0.85, "note": "Tribal forest belt — high Pf burden"},
+          {"disease": "Plasmodium vivax malaria",      "weight": 0.72},
+          {"disease": "Scrub typhus",                  "weight": 0.55, "note": "Forest scrub habitat"},
+          {"disease": "Acute diarrhoeal disease",      "weight": 0.58},
+          {"disease": "Typhoid fever",                 "weight": 0.48}
+        ],
+        "post_monsoon": [
+          {"disease": "Scrub typhus",                  "weight": 0.65},
+          {"disease": "Plasmodium falciparum malaria", "weight": 0.60},
+          {"disease": "Plasmodium vivax malaria",      "weight": 0.52}
+        ]
+      }
+    },
+
+    "WB_BKR": {
+      "name": "Bankura",
+      "zone": "western_plateau",
+      "notes": "Borders Jharkhand. JE outbreaks documented specifically in Bankura. Tribal belt with significant malaria. Dengue active. Plateau-forest fringe — scrub typhus.",
+      "seasons": {
+        "winter":       [
+          {"disease": "Acute RTI / pneumonia",    "weight": 0.55},
+          {"disease": "Typhoid fever",            "weight": 0.38}
+        ],
+        "pre_monsoon":  [
+          {"disease": "Plasmodium vivax malaria", "weight": 0.48},
+          {"disease": "Typhoid fever",            "weight": 0.40}
+        ],
+        "monsoon":      [
+          {"disease": "Plasmodium falciparum malaria", "weight": 0.75},
+          {"disease": "Plasmodium vivax malaria",      "weight": 0.65},
+          {"disease": "Japanese encephalitis",         "weight": 0.45, "note": "JE outbreaks documented in Bankura"},
+          {"disease": "Dengue fever",                  "weight": 0.60},
+          {"disease": "Scrub typhus",                  "weight": 0.45},
+          {"disease": "Acute diarrhoeal disease",      "weight": 0.58}
+        ],
+        "post_monsoon": [
+          {"disease": "Dengue fever",             "weight": 0.68},
+          {"disease": "Scrub typhus",             "weight": 0.55},
+          {"disease": "Plasmodium vivax malaria", "weight": 0.45}
+        ]
+      }
+    },
+
+    "WB_PRL": {
+      "name": "Purulia",
+      "zone": "western_plateau",
+      "notes": "Highest malaria burden district in WB — 6 Category 3 (high-risk) blocks in 2016. Predominantly tribal (48% cases in Scheduled Tribes). Borders Jharkhand. Dengue present. No kala-azar.",
+      "seasons": {
+        "winter":       [
+          {"disease": "Plasmodium vivax malaria",  "weight": 0.48},
+          {"disease": "Acute RTI / pneumonia",     "weight": 0.55},
+          {"disease": "Typhoid fever",             "weight": 0.35}
+        ],
+        "pre_monsoon":  [
+          {"disease": "Plasmodium falciparum malaria", "weight": 0.65},
+          {"disease": "Plasmodium vivax malaria",      "weight": 0.60},
+          {"disease": "Typhoid fever",                 "weight": 0.38}
+        ],
+        "monsoon":      [
+          {"disease": "Plasmodium falciparum malaria", "weight": 0.92, "note": "Highest malaria burden district in WB"},
+          {"disease": "Plasmodium vivax malaria",      "weight": 0.80},
+          {"disease": "Scrub typhus",                  "weight": 0.50, "note": "Plateau scrub habitat"},
+          {"disease": "Acute diarrhoeal disease",      "weight": 0.58},
+          {"disease": "Typhoid fever",                 "weight": 0.48}
+        ],
+        "post_monsoon": [
+          {"disease": "Plasmodium falciparum malaria", "weight": 0.72},
+          {"disease": "Scrub typhus",                  "weight": 0.60},
+          {"disease": "Dengue fever",                  "weight": 0.42}
+        ]
+      }
+    }
+
+  }
+}
