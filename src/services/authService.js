@@ -88,11 +88,15 @@ export const authService = {
         }
       }
       
-      // apiCall wraps the backend response, so token is at result.data.data.token
-      if (result.success && result.data && result.data.data && result.data.data.token) {
+      // apiCall wraps the backend response as { success, data: <backend_response> }
+      // Backend returns { success: true, token: '...' }
+      // So token is at result.data.token OR result.data.data.token (if double-wrapped)
+      const token = result.data?.data?.token || result.data?.token;
+      const user = result.data?.data?.user || result.data?.user || { email };
+      if (result.success && token) {
         // Store auth token
-        await AsyncStorage.setItem(AUTH_TOKEN_KEY, result.data.data.token);
-        await AsyncStorage.setItem(USER_DATA_KEY, JSON.stringify(result.data.data.user));
+        await AsyncStorage.setItem(AUTH_TOKEN_KEY, token);
+        await AsyncStorage.setItem(USER_DATA_KEY, JSON.stringify(user));
         console.log('✅ OTP verified, token stored successfully');
       } else {
         console.log('⚠️ OTP verification response structure:', JSON.stringify(result, null, 2));

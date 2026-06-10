@@ -126,6 +126,7 @@ async function run() {
       cost_usd      NUMERIC(10,6),
       result        JSONB NOT NULL DEFAULT '{}',
       error         TEXT,
+      reasoning     TEXT,
       created_at    TIMESTAMPTZ DEFAULT now()
     );
   `);

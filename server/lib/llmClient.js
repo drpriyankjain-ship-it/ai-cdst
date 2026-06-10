@@ -49,17 +49,33 @@ export function popUsageLog() {
 }
 
 /**
- * Extract full text from a Gemini response, concatenating all parts.
+ * Extract full text from a Gemini response, concatenating all non-thinking parts.
  */
 export function responseText(response) {
   try {
     const parts = response.candidates[0].content.parts;
     return parts
-      .filter(p => p.text)
+      .filter(p => p.text && !p.thought)
       .map(p => p.text)
       .join('');
   } catch {
     return response.text || '';
+  }
+}
+
+/**
+ * Extract thinking/reasoning text from a Gemini response.
+ * Thinking parts have { thought: true } set.
+ */
+export function responseThinking(response) {
+  try {
+    const parts = response.candidates[0].content.parts;
+    return parts
+      .filter(p => p.thought && p.text)
+      .map(p => p.text)
+      .join('\n');
+  } catch {
+    return '';
   }
 }
 
@@ -173,10 +189,14 @@ export async function generateWithCascade(models, contents, config = {}) {
       const u = response.usageMetadata;
       const inputTokens = u?.promptTokenCount || 0;
       const outputTokens = u?.candidatesTokenCount || 0;
+      const thinkingTokens = u?.thoughtsTokenCount || 0;
+      const reasoning = responseThinking(response);
       const meta = {
         model_used: model,
         input_tokens: inputTokens,
         output_tokens: outputTokens,
+        thinking_tokens: thinkingTokens,
+        reasoning: reasoning || null,
         cost_usd: calculateCost(model, inputTokens, outputTokens),
       };
 

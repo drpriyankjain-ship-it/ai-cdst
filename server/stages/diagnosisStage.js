@@ -227,7 +227,7 @@ export async function extractMedicalConcepts(audioBuffers, vaultContext, photos 
   const contents = buildAudioContent(prompt, audioBuffers, 'audio/mp4', photos);
   const { response, meta } = await generateWithCascade(
     MODEL_D1_CONCEPTS, contents,
-    { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json', responseSchema: SCHEMA_MEDICAL_CONCEPTS, maxOutputTokens: 4500 },
+    { thinkingConfig: { thinkingBudget: 1024 }, responseMimeType: 'application/json', responseSchema: SCHEMA_MEDICAL_CONCEPTS, maxOutputTokens: 4500 },
   );
   return { result: parseJsonResponse(responseText(response)), meta };
 }
@@ -274,7 +274,7 @@ export async function generateDifferential(concepts, vaultContext, baselineLayer
   const contents = buildMultimodalContent(prompt, photos);
   const { response, meta } = await generateWithCascade(
     MODEL_D2_DIFFERENTIAL, contents,
-    { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json', responseSchema: SCHEMA_DIFFERENTIAL, maxOutputTokens: 8000 },
+    { thinkingConfig: { thinkingBudget: 1024 }, responseMimeType: 'application/json', responseSchema: SCHEMA_DIFFERENTIAL, maxOutputTokens: 8000 },
   );
   return { result: validateDifferential(parseJsonResponse(responseText(response)).differential), meta };
 }
@@ -351,7 +351,7 @@ export async function generateClarifyingQuestions(ddx, concepts, vaultContext) {
 
   const { response, meta } = await generateWithCascade(
     MODEL_D3_CLARIFYING, prompt,
-    { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json', responseSchema: SCHEMA_CLARIFYING_QS, maxOutputTokens: 4000 },
+    { thinkingConfig: { thinkingBudget: 1024 }, responseMimeType: 'application/json', responseSchema: SCHEMA_CLARIFYING_QS, maxOutputTokens: 4000 },
   );
 
   const result = parseJsonResponse(responseText(response));

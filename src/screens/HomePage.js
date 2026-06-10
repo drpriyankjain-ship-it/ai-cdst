@@ -616,11 +616,11 @@ const HomePage = ({navigation}) => {
                                 <View key={si} style={styles.proformaSection}>
                                   <Text style={styles.proformaSectionTitle}>{sec.section_name || sec.title || `Section ${si + 1}`}</Text>
                                   {(sec.questions || []).map((q, qi) => (
-                                    <Text key={qi} style={styles.proformaQuestion}>• {typeof q === 'string' ? q : (q.question || q.text || JSON.stringify(q))}</Text>
+                                    <Text key={qi} style={styles.proformaQuestion}>• {typeof q === 'string' ? q : (q.question || q.text || q.label || '')}</Text>
                                   ))}
                                 </View>
                               )) : (
-                                <Text style={styles.mgmtSubContent}>{JSON.stringify(questionnaire, null, 2)}</Text>
+                                <Text style={styles.mgmtSubContent}>Questionnaire data available</Text>
                               )}
                             </View>
                           )}
@@ -724,13 +724,28 @@ const HomePage = ({navigation}) => {
                           {triage && (
                             <View style={styles.mgmtSubSection}>
                               <Text style={styles.mgmtSubTitle}>Triage & Instructions</Text>
-                              {triage.patient_instructions && (
-                                <Text style={styles.mgmtSubContent}>
-                                  {typeof triage.patient_instructions === 'string'
-                                    ? triage.patient_instructions
-                                    : (triage.patient_instructions.instructions_text || JSON.stringify(triage.patient_instructions, null, 2))}
-                                </Text>
-                              )}
+                              {(() => {
+                                const instr = triage?.triage?.patient_instructions || triage?.patient_instructions;
+                                if (!instr) return <Text style={styles.mgmtSubContent}>{triage?.triage?.one_liner || triage?.one_liner || ''}</Text>;
+                                if (typeof instr === 'string') return <Text style={styles.mgmtSubContent}>{instr}</Text>;
+                                if (instr.instructions_text) return <Text style={styles.mgmtSubContent}>{instr.instructions_text}</Text>;
+                                const doList = instr.do_list || instr.do || [];
+                                const dontList = instr.dont_list || instr.dont || [];
+                                const returnCriteria = instr.return_criteria || instr.return_if || [];
+                                return (
+                                  <View>
+                                    {doList.map((item, i) => (
+                                      <Text key={`do-${i}`} style={{fontSize: 13, color: '#059669'}}>✓ {item}</Text>
+                                    ))}
+                                    {dontList.map((item, i) => (
+                                      <Text key={`dont-${i}`} style={{fontSize: 13, color: '#DC2626'}}>✗ {item}</Text>
+                                    ))}
+                                    {returnCriteria.length > 0 && returnCriteria.map((item, i) => (
+                                      <Text key={`ret-${i}`} style={{fontSize: 13, color: '#92400E'}}>⚠ {item}</Text>
+                                    ))}
+                                  </View>
+                                );
+                              })()}
                             </View>
                           )}
                         </View>

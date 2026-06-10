@@ -16,7 +16,7 @@ const router = Router();
 // POST /api/auth/register
 router.post('/register', async (req, res) => {
   try {
-    const { name, email, password, phone, role } = req.body;
+    const { name, email, password, phone, phoneNumber, role } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
     const pool = getPool();
@@ -28,7 +28,7 @@ router.post('/register', async (req, res) => {
     const result = await pool.query(
       `INSERT INTO users (name, email, password_hash, phone, role, otp_code, otp_expires_at, verified)
        VALUES ($1, $2, $3, $4, $5, $6, NOW() + INTERVAL '10 minutes', false) RETURNING id`,
-      [name, email.toLowerCase(), hash, phone, role || 'nurse', otp]
+      [name, email.toLowerCase(), hash, phone || phoneNumber, role || 'nurse', otp]
     );
     sendOtp(email, otp, 'register').catch(() => {});
     res.status(201).json({ success: true, userId: result.rows[0].id, message: 'OTP sent to your email/phone' });
@@ -53,7 +53,7 @@ router.post('/verify-otp', async (req, res) => {
     if (new Date(user.otp_expires_at) < new Date()) return res.status(400).json({ error: 'OTP expired' });
 
     await pool.query('UPDATE users SET verified = true, otp_code = NULL WHERE id = $1', [user.id]);
-    const token = signJwt({ user_id: user.id, email: email.toLowerCase(), role: 'nurse' });
+    const token = signJwt({ user_id: user.id, email: email.toLowerCase(), role: 'nurse', nurse_id: `N-${user.id}` });
     res.json({ success: true, token });
   } catch (err) {
     console.error('[AUTH] OTP verify error:', err);

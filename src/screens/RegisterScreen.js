@@ -19,6 +19,7 @@ import useKeyboardCentering from '../hooks/useKeyboardCentering';
 
 const RegisterScreen = ({navigation}) => {
   const [formData, setFormData] = useState({
+    name: '',
     email: '',
     phoneNumber: '',
     password: '',
@@ -49,7 +50,12 @@ const RegisterScreen = ({navigation}) => {
   }, []);
 
   const validateForm = useCallback(() => {
-    const {email, phoneNumber, password, confirmPassword} = formData;
+    const {name, email, phoneNumber, password, confirmPassword} = formData;
+
+    if (!name.trim()) {
+      Alert.alert('Error', 'Please enter your name');
+      return false;
+    }
 
     if (!email.trim()) {
       Alert.alert('Error', 'Please enter your email');
@@ -95,6 +101,7 @@ const RegisterScreen = ({navigation}) => {
     setLoading(true);
     try {
       const result = await authService.register({
+        name: formData.name.trim(),
         email: formData.email.trim(),
         phoneNumber: formData.phoneNumber.trim(),
         password: formData.password,
@@ -136,6 +143,19 @@ const RegisterScreen = ({navigation}) => {
 
             {/* Registration Form */}
             <View style={styles.form}>
+              <View style={styles.inputContainer}>
+                <Ionicons name="person-outline" size={20} color="#999999" style={styles.inputIcon} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Full Name"
+                  placeholderTextColor="#999999"
+                  value={formData.name}
+                  onChangeText={(value) => updateField('name', value)}
+                  onFocus={handleFocus}
+                  autoCapitalize="words"
+                />
+              </View>
+
               <View style={styles.inputContainer}>
                 <Ionicons name="mail-outline" size={20} color="#999999" style={styles.inputIcon} />
                 <TextInput

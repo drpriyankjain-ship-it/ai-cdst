@@ -64,6 +64,7 @@ router.post('/patient-tasks/:id/complete', requireAuth, async (req, res) => {
 router.get('/management-plans', requireAuth, async (req, res) => {
   try {
     const pool = getPool();
+    const userId = req.user.user_id;
     const result = await pool.query(
       `SELECT
          cq.session_id              AS id,
@@ -91,9 +92,11 @@ router.get('/management-plans', requireAuth, async (req, res) => {
        FROM case_queue cq
        JOIN sessions s ON cq.session_id = s.session_id
        WHERE cq.status = 'active'
+         AND (s.data->>'nurse_id' = $1 OR s.data->>'nurse_id' = $2)
        ORDER BY
          CASE cq.risk_tier WHEN 'HIGH' THEN 0 ELSE 1 END,
-         cq.created_at DESC`
+         cq.created_at DESC`,
+      [String(userId), `N-${userId}`]
     );
 
     // Fetch audio URLs for all sessions
@@ -138,8 +141,13 @@ router.post('/management-plans/:sessionId/clear', requireAuth, async (req, res) 
   try {
     const pool = getPool();
     await pool.query(
-      `UPDATE case_queue SET status = 'cleared', cleared_at = NOW() WHERE session_id = $1`,
-      [req.params.sessionId]
+      `UPDATE case_queue SET status = 'cleared', cleared_at = NOW()
+       WHERE session_id = $1
+         AND session_id IN (
+           SELECT session_id FROM sessions
+           WHERE data->>'nurse_id' = $2 OR data->>'nurse_id' = $3
+         )`,
+      [req.params.sessionId, String(req.user.user_id), `N-${req.user.user_id}`]
     );
     res.json({ success: true });
   } catch (err) {
@@ -152,6 +160,7 @@ router.post('/management-plans/:sessionId/clear', requireAuth, async (req, res) 
 router.get('/management-plans/history', requireAuth, async (req, res) => {
   try {
     const pool = getPool();
+    const userId = req.user.user_id;
     const result = await pool.query(
       `SELECT
          cq.session_id              AS id,
@@ -174,7 +183,9 @@ router.get('/management-plans/history', requireAuth, async (req, res) => {
        FROM case_queue cq
        JOIN sessions s ON cq.session_id = s.session_id
        WHERE cq.status = 'cleared'
-       ORDER BY cq.cleared_at DESC`
+         AND (s.data->>'nurse_id' = $1 OR s.data->>'nurse_id' = $2)
+       ORDER BY cq.cleared_at DESC`,
+      [String(userId), `N-${userId}`]
     );
 
     const data = result.rows.map(row => ({

@@ -123,8 +123,8 @@ export async function insertLlmResult(client, sessionId, callName, stage, callOr
   try {
     const costUsd = meta.cost_usd ?? calculateCost(meta.model_used, meta.input_tokens || 0, meta.output_tokens || 0);
     await client.query(
-      `INSERT INTO llm_results (session_id, call_name, stage, call_order, model_used, input_tokens, output_tokens, latency_ms, cost_usd, result, error)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)`,
+      `INSERT INTO llm_results (session_id, call_name, stage, call_order, model_used, input_tokens, output_tokens, latency_ms, cost_usd, result, error, reasoning)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12)`,
       [
         sessionId,
         callName,
@@ -137,6 +137,7 @@ export async function insertLlmResult(client, sessionId, callName, stage, callOr
         costUsd || null,
         JSON.stringify(result ?? {}),
         meta.error || null,
+        meta.reasoning || null,
       ]
     );
   } catch (err) {

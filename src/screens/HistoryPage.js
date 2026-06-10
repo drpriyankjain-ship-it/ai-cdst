@@ -206,9 +206,10 @@ const HistoryPage = ({navigation}) => {
   }, [fetchData]);
 
   const filteredGroups = useMemo(() => {
-    if (!searchQuery.trim()) return groups;
+    const arr = Array.isArray(groups) ? groups : [];
+    if (!searchQuery.trim()) return arr;
     const q = searchQuery.toLowerCase();
-    return groups.filter(
+    return arr.filter(
       (g) =>
         g.patientName?.toLowerCase().includes(q) ||
         g.patientId?.toLowerCase().includes(q)
@@ -226,9 +227,10 @@ const HistoryPage = ({navigation}) => {
   }, []);
 
   const filteredMgmtHistory = useMemo(() => {
-    if (!searchQuery.trim()) return mgmtHistory;
+    const arr = Array.isArray(mgmtHistory) ? mgmtHistory : [];
+    if (!searchQuery.trim()) return arr;
     const q = searchQuery.toLowerCase();
-    return mgmtHistory.filter(
+    return arr.filter(
       (p) =>
         p.patient_name?.toLowerCase().includes(q) ||
         p.patient_id?.toLowerCase().includes(q)
@@ -268,35 +270,110 @@ const HistoryPage = ({navigation}) => {
               </View>
               {triage && (
                 <Text style={{fontSize: 13, color: '#475569', lineHeight: 19}} numberOfLines={isExpanded ? undefined : 2}>
-                  {triage.one_liner || triage.action || JSON.stringify(triage).slice(0, 120)}
+                  {triage?.triage?.one_liner || triage?.one_liner || triage?.action || (typeof triage === 'string' ? triage : '')}
                 </Text>
               )}
               {isExpanded && (
                 <View style={styles.mgmtExpandedSection}>
-                  {proforma && (
+                  {/* Problem List / Management Plan */}
+                  {problemList && (() => {
+                    const problems = problemList?.problem_list || (Array.isArray(problemList) ? problemList : []);
+                    return problems.length > 0 ? (
+                      <View style={styles.mgmtSubBlock}>
+                        <Text style={styles.mgmtSubBlockTitle}>Management Plan</Text>
+                        {problems.map((p, i) => (
+                          <View key={i} style={{marginBottom: i < problems.length - 1 ? 10 : 0}}>
+                            <View style={{flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 3}}>
+                              <Text style={{fontSize: 13, fontWeight: '700', color: '#1E293B'}}>
+                                {p.diagnosis || p.disease || `Problem ${i + 1}`}
+                              </Text>
+                              {p.type && (
+                                <View style={{backgroundColor: p.type === 'acute_new' ? '#FEE2E2' : '#E0F2FE', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4}}>
+                                  <Text style={{fontSize: 9, fontWeight: '700', color: p.type === 'acute_new' ? '#DC2626' : '#0369A1'}}>
+                                    {p.type?.replace(/_/g, ' ').toUpperCase()}
+                                  </Text>
+                                </View>
+                              )}
+                            </View>
+                            {p.assessment?.provisional_diagnosis && (
+                              <Text style={{fontSize: 12, color: '#475569', marginBottom: 2}}>
+                                Dx: {p.assessment.provisional_diagnosis}
+                              </Text>
+                            )}
+                            {(p.prescription?.drugs || []).map((drug, di) => (
+                              <Text key={di} style={{fontSize: 12, color: '#475569', marginLeft: 8}}>
+                                💊 {drug.name} {drug.dose || ''} {drug.route || ''} {drug.frequency || ''} {drug.duration ? `× ${drug.duration}` : ''}
+                              </Text>
+                            ))}
+                            {(p.prescription?.non_pharmacological || []).map((np, ni) => (
+                              <Text key={ni} style={{fontSize: 12, color: '#64748B', marginLeft: 8}}>
+                                • {typeof np === 'string' ? np : np.instruction || np.measure || ''}
+                              </Text>
+                            ))}
+                            {p.prescription?.referral && (
+                              <Text style={{fontSize: 12, color: '#B45309', marginLeft: 8, marginTop: 2}}>
+                                ↗ Refer: {typeof p.prescription.referral === 'string' ? p.prescription.referral : p.prescription.referral.to || p.prescription.referral.reason || ''}
+                              </Text>
+                            )}
+                          </View>
+                        ))}
+                      </View>
+                    ) : null;
+                  })()}
+
+                  {/* Triage details */}
+                  {triage && (
                     <View style={styles.mgmtSubBlock}>
-                      <Text style={styles.mgmtSubBlockTitle}>Proforma</Text>
-                      <Text style={styles.mgmtSubBlockContent}>
-                        {typeof proforma === 'string' ? proforma : JSON.stringify(proforma, null, 2)}
-                      </Text>
+                      <Text style={styles.mgmtSubBlockTitle}>Triage & Instructions</Text>
+                      {(triage?.triage?.referral || triage?.referral) && (
+                        <Text style={{fontSize: 12, color: '#B45309', marginBottom: 4}}>
+                          ↗ {typeof (triage?.triage?.referral || triage?.referral) === 'string'
+                              ? (triage?.triage?.referral || triage?.referral)
+                              : (triage?.triage?.referral?.to || triage?.referral?.to || 'Referral advised')}
+                        </Text>
+                      )}
+                      {(() => {
+                        const instr = triage?.triage?.patient_instructions || triage?.patient_instructions;
+                        if (!instr) return null;
+                        const doList = instr.do_list || instr.do || [];
+                        const dontList = instr.dont_list || instr.dont || [];
+                        const returnCriteria = instr.return_criteria || instr.return_if || [];
+                        return (
+                          <View>
+                            {doList.length > 0 && doList.map((item, i) => (
+                              <Text key={`do-${i}`} style={{fontSize: 12, color: '#059669', marginLeft: 4}}>✓ {item}</Text>
+                            ))}
+                            {dontList.length > 0 && dontList.map((item, i) => (
+                              <Text key={`dont-${i}`} style={{fontSize: 12, color: '#DC2626', marginLeft: 4}}>✗ {item}</Text>
+                            ))}
+                            {returnCriteria.length > 0 && (
+                              <View style={{marginTop: 4}}>
+                                <Text style={{fontSize: 11, fontWeight: '600', color: '#92400E'}}>Return if:</Text>
+                                {returnCriteria.map((item, i) => (
+                                  <Text key={`ret-${i}`} style={{fontSize: 12, color: '#92400E', marginLeft: 4}}>⚠ {item}</Text>
+                                ))}
+                              </View>
+                            )}
+                          </View>
+                        );
+                      })()}
                     </View>
                   )}
-                  {clarifying && (
-                    <View style={styles.mgmtSubBlock}>
-                      <Text style={styles.mgmtSubBlockTitle}>Clarifying Questions</Text>
-                      <Text style={styles.mgmtSubBlockContent}>
-                        {typeof clarifying === 'string' ? clarifying : JSON.stringify(clarifying, null, 2)}
-                      </Text>
-                    </View>
-                  )}
-                  {problemList && (
-                    <View style={styles.mgmtSubBlock}>
-                      <Text style={styles.mgmtSubBlockTitle}>Management Plan</Text>
-                      <Text style={styles.mgmtSubBlockContent}>
-                        {typeof problemList === 'string' ? problemList : JSON.stringify(problemList, null, 2)}
-                      </Text>
-                    </View>
-                  )}
+
+                  {/* Clarifying Questions */}
+                  {clarifying && (() => {
+                    const questions = clarifying?.questions || (Array.isArray(clarifying) ? clarifying : []);
+                    return questions.length > 0 ? (
+                      <View style={styles.mgmtSubBlock}>
+                        <Text style={styles.mgmtSubBlockTitle}>Clarifying Questions</Text>
+                        {questions.map((q, i) => (
+                          <Text key={i} style={{fontSize: 12, color: '#475569', marginBottom: 2}}>
+                            {i + 1}. {typeof q === 'string' ? q : q.question || q.text || ''}
+                          </Text>
+                        ))}
+                      </View>
+                    ) : null;
+                  })()}
                 </View>
               )}
               <Text style={{fontSize: 11, color: '#94A3B8', marginTop: 6}}>

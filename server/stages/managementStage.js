@@ -141,7 +141,7 @@ export async function extractClarifyingFindings(audioBuffers, vaultContext) {
 
   const contents = buildAudioContent(prompt, audioBuffers, 'audio/mp4');
   const { response, meta } = await generateWithCascade(MODEL_M1_FINDINGS, contents, {
-    thinkingConfig: { thinkingBudget: 0 },
+    thinkingConfig: { thinkingBudget: 1024 },
     systemInstruction: 'You are a clinical data extraction tool. Extract only what is explicitly stated.',
     responseMimeType: 'application/json', responseSchema: SCHEMA_CLARIFYING_FINDINGS, maxOutputTokens: 2500,
   });
@@ -190,7 +190,7 @@ export async function generateProvisionalDiagnosisAndRx(clarifyingFindings, vaul
   ].join('\n\n');
 
   const { response, meta } = await generateWithCascade(MODEL_M2_PRESCRIPTION, prompt, {
-    thinkingConfig: { thinkingBudget: 0 },
+    thinkingConfig: { thinkingBudget: 1024 },
     systemInstruction: 'You are a clinical decision support system generating provisional diagnoses and prescriptions for nurse-managed consultations in rural India. Patient safety takes precedence.',
     responseMimeType: 'application/json', responseSchema: SCHEMA_PROBLEM_LIST, maxOutputTokens: 10000,
   });
@@ -229,7 +229,7 @@ export async function generateRiskAssessment(problemListOutput, clarifyingFindin
   ].join('\n\n');
 
   const { response, meta } = await generateWithCascade(MODEL_M3_RISK, prompt, {
-    thinkingConfig: { thinkingBudget: 0 },
+    thinkingConfig: { thinkingBudget: 1024 },
     systemInstruction: 'You are a clinical decision support system performing risk assessment for nurse-managed consultations in rural India. LOW means the nurse can safely proceed with the prescribed plan and the doctor reviews asynchronously within 24 hours — no doctor response within 24 hours ratifies the plan. HIGH means the case cannot wait: the patient needs hospital-level care now, or a 24-hour delay in doctor involvement carries genuine risk of serious harm or death. A deterministic rule engine runs after your output and will escalate LOW→HIGH when hard clinical thresholds are crossed — your job is calibrated clinical judgement, not defensive escalation. Common stable presentations manageable with oral medication and nurse monitoring should be LOW.',
     responseMimeType: 'application/json', responseSchema: SCHEMA_RISK_ASSESSMENT, maxOutputTokens: 2500,
   });
@@ -269,7 +269,7 @@ export async function generateTriageAndHandoff(problemListOutput, vaultContext) 
   ].filter(Boolean).join('\n\n');
 
   const { response, meta } = await generateWithCascade(MODEL_M4_TRIAGE, prompt, {
-    thinkingConfig: { thinkingBudget: 0 },
+    thinkingConfig: { thinkingBudget: 1024 },
     systemInstruction: 'You are a clinical decision support system generating triage decisions. Never downgrade a risk tier.',
     responseMimeType: 'application/json', responseSchema: SCHEMA_TRIAGE_HANDOFF, maxOutputTokens: 3000,
   });
