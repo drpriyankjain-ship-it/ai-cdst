@@ -201,7 +201,8 @@ export const apiCall = async (endpoint, options = {}) => {
     if (error.message === 'Session expired. Please login again.') {
       return { success: false, error: error.message };
     }
-    return { success: false, error: 'Something went wrong. Please try again in a moment.' };
+    // Pass through the actual server error message instead of hiding it
+    return { success: false, error: error.message || 'Something went wrong. Please try again in a moment.' };
   }
 };
 

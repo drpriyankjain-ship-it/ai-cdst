@@ -117,7 +117,7 @@ router.post('/reset-password', async (req, res) => {
     if (!result.rows.length) return res.status(404).json({ error: 'User not found' });
     if (result.rows[0].otp_code !== otp) return res.status(400).json({ error: 'Invalid OTP' });
     const hash = await bcrypt.hash(newPassword, 10);
-    await pool.query('UPDATE users SET password_hash = $1, otp_code = NULL WHERE id = $2', [hash, result.rows[0].id]);
+    await pool.query('UPDATE users SET password_hash = $1, otp_code = NULL, verified = true WHERE id = $2', [hash, result.rows[0].id]);
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: 'Reset failed' }); }
 });

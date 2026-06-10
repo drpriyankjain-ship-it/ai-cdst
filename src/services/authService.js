@@ -42,12 +42,15 @@ export const authService = {
       
       return result;
     } catch (error) {
-      // If error occurs, use mock mode
-      console.log('🔧 Mock Mode: Registration (fallback)');
-      return {
-        success: true,
-        message: 'Registration successful. OTP sent to your email.',
-      };
+      // If error occurs, use mock mode only if enabled
+      if (MOCK_MODE) {
+        console.log('🔧 Mock Mode: Registration (fallback)');
+        return {
+          success: true,
+          message: 'Registration successful. OTP sent to your email.',
+        };
+      }
+      return {success: false, error: error.message || 'Registration failed. Please try again.'};
     }
   },
 
@@ -151,12 +154,15 @@ export const authService = {
       
       return result;
     } catch (error) {
-      // If error occurs, use mock mode
-      console.log('🔧 Mock Mode: OTP resent (fallback). Use OTP: ' + TEST_OTP);
-      return {
-        success: true,
-        message: 'OTP has been resent to your email. (Mock Mode: Use ' + TEST_OTP + ')',
-      };
+      // If error occurs, use mock mode only if enabled
+      if (MOCK_MODE) {
+        console.log('🔧 Mock Mode: OTP resent (fallback). Use OTP: ' + TEST_OTP);
+        return {
+          success: true,
+          message: 'OTP has been resent to your email. (Mock Mode: Use ' + TEST_OTP + ')',
+        };
+      }
+      return {success: false, error: error.message || 'Failed to resend OTP. Please try again.'};
     }
   },
 
