@@ -339,7 +339,8 @@ export async function generateQuestionnaire(chiefComplaint, vaultContext, patien
     historyInstruction + '\n\n' +
     'MANDATORY SAFETY QUESTIONS (always include):\n' +
     '- Female patients aged 12–50: current pregnancy status and LMP\n' +
-    '- All patients: confirm current medications and allergies',
+    '- All patients: confirm current medications and allergies\n' +
+    '- All patients: ask the patient to provide their Blood Pressure (BP), Heart Rate (HR), Respiratory Rate (RR), Oxygen Saturation (SpO2), weight, and height',
   ].filter(Boolean).join('\n\n');
 
   const contents = buildMultimodalContent(prompt, photos);

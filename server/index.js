@@ -22,6 +22,7 @@ import audioRoutes from './routes/audio.js';
 import dashboardRoutes from './routes/dashboard.js';
 import transcriptRoutes from './routes/transcripts.js';
 import sessionRoutes from './routes/session.js';
+import adminRoutes from './routes/admin.js';
 
 const app = express();
 expressWs(app);
@@ -54,6 +55,7 @@ app.use('/api/audio', audioRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/transcripts', transcriptRoutes);
 app.use('/api/session', sessionRoutes);
+app.use('/api/admin', adminRoutes);
 
 // WebSocket
 mountWebSocket(app);

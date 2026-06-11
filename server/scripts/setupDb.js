@@ -3,6 +3,7 @@
  */
 import 'dotenv/config';
 import pg from 'pg';
+import bcrypt from 'bcryptjs';
 
 async function run() {
   const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
@@ -185,6 +186,31 @@ async function run() {
   `);
   console.log('  case_queue ✓');
 
+  // 11. Doctors roster
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS doctors (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT UNIQUE NOT NULL,
+      speciality TEXT,
+      phone TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+  console.log('  doctors ✓');
+
+  // 12. Doctor-to-nurse tenant assignments
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS doctor_tenants (
+      id SERIAL PRIMARY KEY,
+      doctor_id INTEGER REFERENCES doctors(id) ON DELETE CASCADE,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      assigned_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(doctor_id, user_id)
+    );
+  `);
+  console.log('  doctor_tenants ✓');
+
   // Create indexes (safe with IF NOT EXISTS)
   await client.query('CREATE INDEX IF NOT EXISTS idx_audio_records_user ON audio_records(user_id);');
   await client.query('CREATE INDEX IF NOT EXISTS idx_audio_records_status ON audio_records(status);');
@@ -204,7 +230,19 @@ async function run() {
   await client.query('CREATE INDEX IF NOT EXISTS idx_session_metrics_risk ON session_metrics(risk_tier);');
   await client.query('CREATE INDEX IF NOT EXISTS idx_case_queue_status ON case_queue(status, created_at);');
   await client.query('CREATE INDEX IF NOT EXISTS idx_case_queue_risk ON case_queue(risk_tier);');
+  await client.query('CREATE INDEX IF NOT EXISTS idx_doctor_tenants_doctor ON doctor_tenants(doctor_id);');
+  await client.query('CREATE INDEX IF NOT EXISTS idx_doctor_tenants_user ON doctor_tenants(user_id);');
   console.log('  indexes ✓');
+
+  // Seed admin user
+  const adminHash = await bcrypt.hash('adminrules123', 10);
+  await client.query(
+    `INSERT INTO users (name, email, password_hash, role, verified)
+     VALUES ('Admin', 'admin@fkp.org', $1, 'admin', true)
+     ON CONFLICT (email) DO UPDATE SET role = 'admin', verified = true`,
+    [adminHash]
+  );
+  console.log('  admin user seeded ✓');
 
   // Updated_at trigger function
   await client.query(`
