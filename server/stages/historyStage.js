@@ -262,7 +262,7 @@ export async function extractChiefComplaint(audioBuffers, vaultContext, photos =
   const { response, meta } = await generateWithCascade(
     MODEL_H1_CHIEF_COMPLAINT,
     contents,
-    { thinkingConfig: { thinkingBudget: 1024 }, responseMimeType: 'application/json', responseSchema: SCHEMA_CHIEF_COMPLAINT, maxOutputTokens: 800 },
+    { thinkingConfig: { thinkingBudget: 1024 }, responseMimeType: 'application/json', responseSchema: SCHEMA_CHIEF_COMPLAINT, maxOutputTokens: 2500 },
   );
   const result = parseJsonResponse(responseText(response));
   return { result, meta };
