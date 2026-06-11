@@ -6,10 +6,11 @@ import {ActivityIndicator, View} from 'react-native';
 import {AuthProvider, AuthContext} from './src/context/AuthContext';
 import AppNavigator from './src/navigation/AppNavigator';
 import AuthNavigator from './src/navigation/AuthNavigator';
+import AdminNavigator from './src/navigation/AdminNavigator';
 import {registerRootComponent} from 'expo';
 
 const RootNavigator = () => {
-  const {isAuthenticated, loading} = useContext(AuthContext);
+  const {isAuthenticated, loading, user} = useContext(AuthContext);
 
   if (loading) {
     return (
@@ -17,6 +18,10 @@ const RootNavigator = () => {
         <ActivityIndicator size="large" color="#0D9488" />
       </View>
     );
+  }
+
+  if (isAuthenticated && user?.role === 'admin') {
+    return <AdminNavigator />;
   }
 
   return isAuthenticated ? <AppNavigator /> : <AuthNavigator />;

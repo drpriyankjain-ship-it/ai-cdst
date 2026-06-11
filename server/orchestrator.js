@@ -596,8 +596,9 @@ export function mountWebSocket(app) {
               wsSend(ws, { type: 'ping', ping_ts: Date.now() });
               console.log(`[${sid}] Session reconnected — state restored from vault`);
             } catch (e) {
-            console.error(`[${sid}] Reconnect failed:`, e.message);
-            wsSend(ws, { type: 'error', code: 'RECONNECT_ERROR', message: e.message });
+              console.error(`[${sid}] Reconnect failed:`, e.message);
+              wsSend(ws, { type: 'error', code: 'RECONNECT_ERROR', message: e.message });
+            }
           }
         } else if (msgType === 'marker' && state) {
           const marker = msg.marker;
