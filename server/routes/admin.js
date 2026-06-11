@@ -171,11 +171,35 @@ router.post('/doctors', async (req, res) => {
     const { name, email, speciality, phone } = req.body;
     if (!name || !email) return res.status(400).json({ error: 'Name and email are required' });
 
-    const result = await pool.query(
-      'INSERT INTO doctors (name, email, speciality, phone) VALUES ($1, $2, $3, $4) RETURNING *',
-      [name, email.toLowerCase(), speciality || null, phone || null]
-    );
-    res.json({ success: true, data: result.rows[0] });
+    // 1. Create the user account for the doctor
+    // Generate a secure random password or a default one (the doctor should reset it later)
+    // For now we use a default password 'doctor123'
+    const defaultPassword = 'doctor123';
+    const hash = await bcrypt.hash(defaultPassword, 10);
+    
+    // We do this in a transaction
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const userResult = await client.query(
+        'INSERT INTO users (name, email, password_hash, phone, role, verified) VALUES ($1, $2, $3, $4, $5, true) RETURNING id',
+        [name, email.toLowerCase(), hash, phone || null, 'doctor']
+      );
+
+      const result = await client.query(
+        'INSERT INTO doctors (name, email, speciality, phone) VALUES ($1, $2, $3, $4) RETURNING *',
+        [name, email.toLowerCase(), speciality || null, phone || null]
+      );
+      
+      await client.query('COMMIT');
+      res.json({ success: true, data: result.rows[0] });
+    } catch (txErr) {
+      await client.query('ROLLBACK');
+      throw txErr;
+    } finally {
+      client.release();
+    }
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'Doctor with this email already exists' });
     console.error('[ADMIN] Create doctor error:', err);
