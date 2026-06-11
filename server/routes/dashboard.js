@@ -230,6 +230,8 @@ router.post('/management-plans/:sessionId/followup', requireAuth, async (req, re
 
     const prompt = contextParts.join('\n');
 
+    console.log(`[DASHBOARD] Followup question for ${sessionId}: "${question.trim().substring(0, 80)}"`);
+
     // Call Gemini
     const response = await gemini.models.generateContent({
       model: 'gemini-2.5-flash',
@@ -237,18 +239,24 @@ router.post('/management-plans/:sessionId/followup', requireAuth, async (req, re
       config: {
         temperature: 0.3,
         maxOutputTokens: 2000,
-        thinkingConfig: { thinkingBudget: 1024 },
-        systemInstruction: 'You are a clinical decision support assistant. Answer follow-up questions about patient cases based on the provided clinical data. Be concise, evidence-based, and reference specific findings from the case data when possible. Format your response in plain text without markdown.',
       },
     });
 
-    // Extract answer (filter out thinking parts)
+    // Extract answer — filter out thinking parts if present
     let answer = '';
     try {
-      const parts = response.candidates[0].content.parts;
-      answer = parts.filter(p => p.text && !p.thought).map(p => p.text).join('');
-    } catch {
-      answer = response.text || 'Unable to generate answer.';
+      const parts = response.candidates?.[0]?.content?.parts || [];
+      const textParts = parts.filter(p => p.text && !p.thought);
+      answer = textParts.map(p => p.text).join('');
+    } catch (e) {
+      console.error('[DASHBOARD] Followup response parse error:', e);
+    }
+    if (!answer) {
+      // Fallback: try the simple text accessor
+      try { answer = response.text || ''; } catch { /* ignore */ }
+    }
+    if (!answer) {
+      answer = 'Unable to generate answer. Please try again.';
     }
 
     // Build the followup entry
@@ -259,23 +267,23 @@ router.post('/management-plans/:sessionId/followup', requireAuth, async (req, re
       asked_by: `N-${userId}`,
     };
 
-    // Append to vault JSON
+    // Append to vault JSON — first ensure followups array exists, then append
     await pool.query(
       `UPDATE sessions
-       SET data = jsonb_set(
-         data,
-         '{followups}',
-         COALESCE(data->'followups', '[]'::jsonb) || $1::jsonb
-       )
+       SET data = CASE
+         WHEN data ? 'followups'
+         THEN jsonb_set(data, '{followups}', (data->'followups') || $1::jsonb)
+         ELSE jsonb_set(data, '{followups}', ('[]'::jsonb) || $1::jsonb)
+       END
        WHERE session_id = $2`,
       [JSON.stringify(followupEntry), sessionId]
     );
 
-    console.log(`[DASHBOARD] Followup answered for ${sessionId}: ${question.trim().substring(0, 50)}...`);
+    console.log(`[DASHBOARD] Followup answered for ${sessionId} (${answer.length} chars)`);
 
     res.json({ success: true, followup: followupEntry });
   } catch (err) {
-    console.error('[DASHBOARD] Followup error:', err);
+    console.error('[DASHBOARD] Followup error:', err.message || err);
     res.status(500).json({ error: 'Failed to process follow-up question' });
   }
 });

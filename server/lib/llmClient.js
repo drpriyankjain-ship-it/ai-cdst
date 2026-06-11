@@ -81,6 +81,7 @@ export function responseThinking(response) {
 
 /**
  * Parse JSON from a Gemini response, tolerating markdown code fences.
+ * If the JSON is truncated (common when maxOutputTokens is hit), attempt repair.
  */
 export function parseJsonResponse(text) {
   let t = text.trim();
@@ -107,8 +108,65 @@ export function parseJsonResponse(text) {
     }
   }
 
+  // Attempt to repair truncated JSON — close open brackets/braces
+  const repaired = repairTruncatedJson(t);
+  if (repaired) {
+    console.log(`[JSON REPAIR] Salvaged truncated JSON (${text.length} chars)`);
+    return repaired;
+  }
+
   console.log(`\nDEBUG raw response.text (${text.length} chars):\n${text.slice(0, 1000)}\n`);
   throw new Error('Cannot parse JSON from Gemini response — see DEBUG above');
+}
+
+/**
+ * Attempt to repair truncated JSON by closing open structures.
+ * Returns parsed object on success, null on failure.
+ */
+function repairTruncatedJson(text) {
+  // Find the JSON start
+  let start = -1;
+  for (const ch of ['{', '[']) {
+    const idx = text.indexOf(ch);
+    if (idx !== -1 && (start === -1 || idx < start)) start = idx;
+  }
+  if (start === -1) return null;
+
+  let json = text.slice(start);
+
+  // Remove trailing comma, incomplete key-value pairs
+  json = json.replace(/,\s*$/, '');
+  // Remove incomplete string at the end (unmatched quote)
+  const quoteCount = (json.match(/(?<!\\)"/g) || []).length;
+  if (quoteCount % 2 !== 0) {
+    // Truncated mid-string — close it
+    json += '"';
+  }
+  // Remove trailing partial key: "something  (no colon/value yet)
+  json = json.replace(/,?\s*"[^"]*"\s*$/, '');
+
+  // Close open brackets/braces
+  const stack = [];
+  let inString = false;
+  let escaped = false;
+  for (const c of json) {
+    if (escaped) { escaped = false; continue; }
+    if (c === '\\') { escaped = true; continue; }
+    if (c === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (c === '{') stack.push('}');
+    else if (c === '[') stack.push(']');
+    else if (c === '}' || c === ']') stack.pop();
+  }
+
+  // Close all open structures
+  json += stack.reverse().join('');
+
+  try {
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -186,6 +244,13 @@ export async function generateWithCascade(models, contents, config = {}) {
         contents,
         config: modelConfig,
       });
+
+      // Warn if response was truncated
+      const finishReason = response.candidates?.[0]?.finishReason;
+      if (finishReason && finishReason !== 'STOP') {
+        console.warn(`[LLM] ${model} finishReason=${finishReason} — response may be truncated`);
+      }
+
       const u = response.usageMetadata;
       const inputTokens = u?.promptTokenCount || 0;
       const outputTokens = u?.candidatesTokenCount || 0;
