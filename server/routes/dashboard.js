@@ -88,6 +88,7 @@ router.get('/management-plans', requireAuth, async (req, res) => {
          s.data->'triage_output'                        AS triage_output,
          s.data->'risk_assessment'                      AS risk_assessment,
          s.data->'transcript_segments'                  AS transcript_segments,
+         s.data->'followups'                          AS followups,
          'live'                                         AS source
        FROM case_queue cq
        JOIN sessions s ON cq.session_id = s.session_id
@@ -156,6 +157,129 @@ router.post('/management-plans/:sessionId/clear', requireAuth, async (req, res) 
   }
 });
 
+// POST /api/dashboard/management-plans/:sessionId/followup — ask AI about a case
+router.post('/management-plans/:sessionId/followup', requireAuth, async (req, res) => {
+  try {
+    const pool = getPool();
+    const { sessionId } = req.params;
+    const { question } = req.body;
+    const userId = req.user.user_id;
+
+    if (!question || !question.trim()) {
+      return res.status(400).json({ error: 'Question is required' });
+    }
+
+    // Load full session context from vault
+    const sessRes = await pool.query(
+      `SELECT data FROM sessions WHERE session_id = $1
+       AND (data->>'nurse_id' = $2 OR data->>'nurse_id' = $3)`,
+      [sessionId, String(userId), `N-${userId}`]
+    );
+    if (!sessRes.rows.length) return res.status(404).json({ error: 'Session not found' });
+
+    const vault = sessRes.rows[0].data;
+
+    // Build context summary for Gemini
+    const contextParts = [
+      'You are a clinical decision support AI. A nurse/doctor is asking a follow-up question about a patient case. Answer based ONLY on the case data provided below. Be concise, clinical, and actionable.',
+      '',
+      '=== PATIENT ===',
+      `Patient ID: ${vault.patient_id || 'Unknown'}`,
+      `Demographics: ${JSON.stringify(vault.demographics || {}, null, 2)}`,
+      '',
+      '=== CHIEF COMPLAINT ===',
+      JSON.stringify(vault.chief_complaint || {}, null, 2),
+      '',
+      '=== QUESTIONNAIRE ===',
+      JSON.stringify(vault.questionnaire || {}, null, 2),
+      '',
+      '=== EXTRACTED MEDICAL CONCEPTS ===',
+      JSON.stringify(vault.extracted_concepts || {}, null, 2),
+      '',
+      '=== DIFFERENTIAL DIAGNOSIS ===',
+      JSON.stringify(vault.differential_table || [], null, 2),
+      '',
+      '=== CLARIFYING QUESTIONS ===',
+      JSON.stringify(vault.clarifying_questions || {}, null, 2),
+      '',
+      '=== CLARIFYING FINDINGS ===',
+      JSON.stringify(vault.clarifying_findings || {}, null, 2),
+      '',
+      '=== PROBLEM LIST ===',
+      JSON.stringify(vault.problem_list || {}, null, 2),
+      '',
+      '=== RISK ASSESSMENT ===',
+      JSON.stringify(vault.risk_assessment || {}, null, 2),
+      '',
+      '=== TRIAGE OUTPUT ===',
+      JSON.stringify(vault.triage_output || {}, null, 2),
+    ];
+
+    // Include previous followups for conversation continuity
+    const existingFollowups = vault.followups || [];
+    if (existingFollowups.length > 0) {
+      contextParts.push('', '=== PREVIOUS FOLLOW-UP Q&A ===');
+      for (const fu of existingFollowups) {
+        contextParts.push(`Q: ${fu.question}`);
+        contextParts.push(`A: ${fu.answer}`);
+        contextParts.push('');
+      }
+    }
+
+    contextParts.push('', '=== NEW QUESTION ===', question.trim());
+
+    const prompt = contextParts.join('\n');
+
+    // Call Gemini
+    const response = await gemini.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+      config: {
+        temperature: 0.3,
+        maxOutputTokens: 2000,
+        thinkingConfig: { thinkingBudget: 1024 },
+        systemInstruction: 'You are a clinical decision support assistant. Answer follow-up questions about patient cases based on the provided clinical data. Be concise, evidence-based, and reference specific findings from the case data when possible. Format your response in plain text without markdown.',
+      },
+    });
+
+    // Extract answer (filter out thinking parts)
+    let answer = '';
+    try {
+      const parts = response.candidates[0].content.parts;
+      answer = parts.filter(p => p.text && !p.thought).map(p => p.text).join('');
+    } catch {
+      answer = response.text || 'Unable to generate answer.';
+    }
+
+    // Build the followup entry
+    const followupEntry = {
+      question: question.trim(),
+      answer: answer,
+      asked_at: new Date().toISOString(),
+      asked_by: `N-${userId}`,
+    };
+
+    // Append to vault JSON
+    await pool.query(
+      `UPDATE sessions
+       SET data = jsonb_set(
+         data,
+         '{followups}',
+         COALESCE(data->'followups', '[]'::jsonb) || $1::jsonb
+       )
+       WHERE session_id = $2`,
+      [JSON.stringify(followupEntry), sessionId]
+    );
+
+    console.log(`[DASHBOARD] Followup answered for ${sessionId}: ${question.trim().substring(0, 50)}...`);
+
+    res.json({ success: true, followup: followupEntry });
+  } catch (err) {
+    console.error('[DASHBOARD] Followup error:', err);
+    res.status(500).json({ error: 'Failed to process follow-up question' });
+  }
+});
+
 // GET /api/dashboard/management-plans/history — cleared cases
 router.get('/management-plans/history', requireAuth, async (req, res) => {
   try {
@@ -179,6 +303,7 @@ router.get('/management-plans/history', requireAuth, async (req, res) => {
          s.data->'triage_output'                        AS triage_output,
          s.data->'problem_list'                         AS problem_list,
          s.data->'clarifying_questions'                 AS clarifying_questions,
+         s.data->'followups'                          AS followups,
          'live'                                         AS source
        FROM case_queue cq
        JOIN sessions s ON cq.session_id = s.session_id

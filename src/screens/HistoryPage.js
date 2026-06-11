@@ -374,6 +374,28 @@ const HistoryPage = ({navigation}) => {
                       </View>
                     ) : null;
                   })()}
+
+                  {/* Follow-up Q&A */}
+                  {(plan.followups || []).length > 0 && (
+                    <View style={styles.mgmtSubBlock}>
+                      <Text style={styles.mgmtSubBlockTitle}>Follow-up Q&A</Text>
+                      {plan.followups.map((fu, fi) => (
+                        <View key={fi} style={{backgroundColor: '#F8FAFC', borderRadius: 8, padding: 8, marginBottom: 6}}>
+                          <View style={{flexDirection: 'row', alignItems: 'flex-start', gap: 5, marginBottom: 4}}>
+                            <Ionicons name="help-circle" size={13} color="#6366F1" />
+                            <Text style={{flex: 1, fontSize: 12, fontWeight: '600', color: '#4F46E5'}}>{fu.question}</Text>
+                          </View>
+                          <View style={{flexDirection: 'row', alignItems: 'flex-start', gap: 5, marginLeft: 3}}>
+                            <Ionicons name="medical" size={13} color="#059669" />
+                            <Text style={{flex: 1, fontSize: 12, color: '#1E293B', lineHeight: 18}}>{fu.answer}</Text>
+                          </View>
+                          <Text style={{fontSize: 9, color: '#94A3B8', textAlign: 'right', marginTop: 3}}>
+                            {fu.asked_at ? new Date(fu.asked_at).toLocaleString() : ''}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  )}
                 </View>
               )}
               <Text style={{fontSize: 11, color: '#94A3B8', marginTop: 6}}>

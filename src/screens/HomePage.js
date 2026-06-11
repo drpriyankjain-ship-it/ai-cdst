@@ -43,6 +43,8 @@ const HomePage = ({navigation}) => {
   const [managementPlans, setManagementPlans] = useState([]);
   const [managementPlansError, setManagementPlansError] = useState(null);
   const [expandedPlanId, setExpandedPlanId] = useState(null);
+  const [followupInputs, setFollowupInputs] = useState({});
+  const [followupLoading, setFollowupLoading] = useState({});
   const scrollViewRef = useRef(null);
   const {onScroll, handleFocus, keyboardHeight} = useKeyboardCentering(scrollViewRef);
 
@@ -752,6 +754,71 @@ const HomePage = ({navigation}) => {
                       </View>
                     )}
 
+                    {isExpanded && (
+                      <View style={styles.followupSection}>
+                        <Text style={styles.followupTitle}>Ask AI About This Case</Text>
+
+                        {/* Existing followups */}
+                        {(plan.followups || []).map((fu, fi) => (
+                          <View key={fi} style={styles.followupThread}>
+                            <View style={styles.followupQ}>
+                              <Ionicons name="help-circle" size={14} color="#6366F1" />
+                              <Text style={styles.followupQText}>{fu.question}</Text>
+                            </View>
+                            <View style={styles.followupA}>
+                              <Ionicons name="medical" size={14} color="#059669" />
+                              <Text style={styles.followupAText}>{fu.answer}</Text>
+                            </View>
+                            <Text style={styles.followupTime}>
+                              {fu.asked_at ? new Date(fu.asked_at).toLocaleString() : ''}
+                            </Text>
+                          </View>
+                        ))}
+
+                        {/* Input for new question */}
+                        <View style={styles.followupInputRow}>
+                          <TextInput
+                            style={styles.followupInput}
+                            placeholder="Ask a question about this case..."
+                            placeholderTextColor="#94A3B8"
+                            value={followupInputs[plan.session_id] || ''}
+                            onChangeText={(t) => setFollowupInputs(prev => ({...prev, [plan.session_id]: t}))}
+                            onFocus={handleFocus}
+                            multiline
+                            editable={!followupLoading[plan.session_id]}
+                          />
+                          <Pressable
+                            style={[styles.followupSend, followupLoading[plan.session_id] && {opacity: 0.5}]}
+                            disabled={followupLoading[plan.session_id] || !(followupInputs[plan.session_id] || '').trim()}
+                            onPress={async () => {
+                              const q = (followupInputs[plan.session_id] || '').trim();
+                              if (!q) return;
+                              setFollowupLoading(prev => ({...prev, [plan.session_id]: true}));
+                              try {
+                                const res = await apiService.askCaseFollowup(plan.session_id, q);
+                                if (res.success && res.data?.followup) {
+                                  // Append locally so user sees it immediately
+                                  plan.followups = [...(plan.followups || []), res.data.followup];
+                                  setManagementPlans([...managementPlans]);
+                                  setFollowupInputs(prev => ({...prev, [plan.session_id]: ''}));
+                                } else {
+                                  Alert.alert('Error', res.data?.error || res.error || 'Failed to get answer');
+                                }
+                              } catch (e) {
+                                Alert.alert('Error', e.message || 'Failed to get answer');
+                              }
+                              setFollowupLoading(prev => ({...prev, [plan.session_id]: false}));
+                            }}
+                          >
+                            {followupLoading[plan.session_id]
+                              ? <ActivityIndicator size="small" color="#FFFFFF" />
+                              : <Ionicons name="send" size={18} color="#FFFFFF" />
+                            }
+                          </Pressable>
+                        </View>
+                      </View>
+                    )}
+
                     <Text style={styles.geminiHint}>
                       {isExpanded ? 'Tap to collapse · Swipe to clear' : 'Tap to expand · Swipe to clear'}
                     </Text>
@@ -936,6 +1003,80 @@ const styles = StyleSheet.create({
     marginLeft: 6,
     flex: 1,
     lineHeight: 18,
+  },
+  followupSection: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#E2E8F0',
+  },
+  followupTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#1E293B',
+    marginBottom: 8,
+  },
+  followupThread: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 8,
+  },
+  followupQ: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+    marginBottom: 6,
+  },
+  followupQText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#4F46E5',
+  },
+  followupA: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+    marginLeft: 4,
+  },
+  followupAText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#1E293B',
+    lineHeight: 19,
+  },
+  followupTime: {
+    fontSize: 10,
+    color: '#94A3B8',
+    textAlign: 'right',
+    marginTop: 4,
+  },
+  followupInputRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 8,
+    marginTop: 4,
+  },
+  followupInput: {
+    flex: 1,
+    backgroundColor: '#F1F5F9',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 13,
+    color: '#1E293B',
+    maxHeight: 80,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  followupSend: {
+    backgroundColor: '#0D9488',
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   geminiHint: {
     marginTop: 8,

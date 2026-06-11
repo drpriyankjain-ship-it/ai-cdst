@@ -836,6 +836,18 @@ export const apiService = {
     return result;
   },
 
+  // Ask a follow-up question about a case
+  askCaseFollowup: async (sessionId, question) => {
+    const result = await apiCall(`/dashboard/management-plans/${sessionId}/followup`, {
+      method: 'POST',
+      body: JSON.stringify({ question }),
+    });
+    // Invalidate management plans cache so followups show on refresh
+    cache.delete('management-plans');
+    cache.delete('management-plan-history');
+    return result;
+  },
+
   // Clear cache
   clearCache: () => {
     cache.clear();
