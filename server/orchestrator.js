@@ -564,25 +564,38 @@ export function mountWebSocket(app) {
           wsSend(ws, { type: 'session_ready', session_id: sessionId, is_new_patient: Object.keys(patientRecord).length === 0 });
           wsSend(ws, { type: 'ping', ping_ts: Date.now() });
           console.log(`[${sessionId}] Session started — patient=${msg.patient_id}`);
-        } else if (msgType === 'reconnect' && !state && msg.session_id) {
-          // Restore session state from vault after WS reconnection
+        } else if (msgType === 'reconnect' && msg.session_id) {
+          // Restore session state or bind to existing in-memory state after WS reconnection
           const sid = msg.session_id;
           console.log(`[${sid}] Reconnect request from user ${claims.user_id}`);
-          try {
-            const vault = await vaultRead(pool, sid);
-            if (!vault) {
-              wsSend(ws, { type: 'error', code: 'SESSION_NOT_FOUND', message: `Session ${sid} not found` });
-              return;
+          
+          let existingState = _active.get(sid);
+          if (existingState) {
+            // Cancel pending cleanup
+            if (existingState.cleanupTimeout) {
+              clearTimeout(existingState.cleanupTimeout);
+              existingState.cleanupTimeout = null;
             }
-            state = new SessionState(sid, pool);
-            state.nurseId = claims.nurse_id || claims.user_id;
-            state.userId = claims.user_id;
-            _active.set(sid, state);
+            state = existingState;
             wsSend(ws, { type: 'session_reconnected', session_id: sid });
-            // Re-measure network RTT
             wsSend(ws, { type: 'ping', ping_ts: Date.now() });
-            console.log(`[${sid}] Session reconnected — state restored from vault`);
-          } catch (e) {
+            console.log(`[${sid}] Session reconnected — bound to existing in-memory state`);
+          } else {
+            try {
+              const vault = await vaultRead(pool, sid);
+              if (!vault) {
+                wsSend(ws, { type: 'error', code: 'SESSION_NOT_FOUND', message: `Session ${sid} not found` });
+                return;
+              }
+              state = new SessionState(sid, pool);
+              state.nurseId = claims.nurse_id || claims.user_id;
+              state.userId = claims.user_id;
+              _active.set(sid, state);
+              wsSend(ws, { type: 'session_reconnected', session_id: sid });
+              // Re-measure network RTT
+              wsSend(ws, { type: 'ping', ping_ts: Date.now() });
+              console.log(`[${sid}] Session reconnected — state restored from vault`);
+            } catch (e) {
             console.error(`[${sid}] Reconnect failed:`, e.message);
             wsSend(ws, { type: 'error', code: 'RECONNECT_ERROR', message: e.message });
           }
@@ -627,12 +640,16 @@ export function mountWebSocket(app) {
       const reasonStr = reason ? reason.toString() : '';
       console.log(`[WS] Connection closed — code=${code} reason="${reasonStr}" had_session=${!!state}`);
       if (state) {
-        _active.delete(state.sessionId);
-        // Clean up Deepgram
-        if (state.dg) {
-          try { state.dg.close(); } catch {}
-          state.dg = null;
-        }
+        // Wait 10 minutes before destroying state to allow for HTTP uploads and WS reconnects
+        state.cleanupTimeout = setTimeout(() => {
+          _active.delete(state.sessionId);
+          // Clean up Deepgram
+          if (state.dg) {
+            try { state.dg.close(); } catch {}
+            state.dg = null;
+          }
+          console.log(`[${state.sessionId}] Session state cleaned up after 10m idle`);
+        }, 10 * 60 * 1000);
       }
     });
   });
