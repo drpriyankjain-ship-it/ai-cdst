@@ -852,6 +852,62 @@ export const apiService = {
   clearCache: () => {
     cache.clear();
   },
+  // ==========================================
+  // Admin Endpoints
+  // ==========================================
+  
+  getAdminCases: async (query = '') => {
+    return await apiCall(`/admin/cases?q=${encodeURIComponent(query)}`);
+  },
+  
+  getAdminCaseDetail: async (sessionId) => {
+    return await apiCall(`/admin/cases/${sessionId}`);
+  },
+  
+  getAdminDoctors: async () => {
+    return await apiCall('/admin/doctors');
+  },
+  
+  createAdminDoctor: async (data) => {
+    return await apiCall('/admin/doctors', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+  
+  updateAdminDoctor: async (id, data) => {
+    return await apiCall(`/admin/doctors/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  },
+  
+  deleteAdminDoctor: async (id) => {
+    return await apiCall(`/admin/doctors/${id}`, {
+      method: 'DELETE',
+    });
+  },
+  
+  assignDoctorTenant: async (doctorId, userId) => {
+    return await apiCall(`/admin/doctors/${doctorId}/tenants`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id: userId }),
+    });
+  },
+  
+  removeDoctorTenant: async (doctorId, userId) => {
+    return await apiCall(`/admin/doctors/${doctorId}/tenants/${userId}`, {
+      method: 'DELETE',
+    });
+  },
+  
+  getAdminNurses: async () => {
+    return await apiCall('/admin/nurses');
+  },
+  
+  getAdminMetrics: async () => {
+    return await apiCall('/admin/metrics');
+  },
 };
 
 export default apiService;
