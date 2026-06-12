@@ -201,6 +201,7 @@ export async function extractMedicalConcepts(audioBuffers, vaultContext, photos 
     photos.length > 0 ? 'CLINICAL PHOTOS: The nurse has attached clinical photos. Extract any visible clinical findings (skin lesions, swelling, wounds, deformities, etc.) into the symptoms and red_flags arrays as appropriate.' : '',
     'INSTRUCTIONS:\n' +
     '- transcript: verbatim transcription of everything spoken in the audio\n' +
+    '- Do NOT include timestamps (e.g. 00:01, 00:02) in the transcript. Only output the spoken words. If there is no speech, leave it blank.\n' +
     '- Extract only what is explicitly stated or clearly implied in the audio\n' +
     '- Negatives are as important as positives — list all denied symptoms\n' +
     '- Do not infer or assume anything not present in the audio\n' +
@@ -227,7 +228,7 @@ export async function extractMedicalConcepts(audioBuffers, vaultContext, photos 
   const contents = buildAudioContent(prompt, audioBuffers, 'audio/mp4', photos);
   const { response, meta } = await generateWithCascade(
     MODEL_D1_CONCEPTS, contents,
-    { responseMimeType: 'application/json', responseSchema: SCHEMA_MEDICAL_CONCEPTS, maxOutputTokens: 4500 },
+    { responseMimeType: 'application/json', responseSchema: SCHEMA_MEDICAL_CONCEPTS, maxOutputTokens: 8192 },
   );
   return { result: parseJsonResponse(responseText(response)), meta };
 }
@@ -327,6 +328,7 @@ export async function generateClarifyingQuestions(ddx, concepts, vaultContext) {
   const instructions = [
     'INSTRUCTIONS:\n- Generate 3-5 clarifying questions ranked by discriminating power\n' +
     '- Generate 2-4 bedside observations ranked by discriminating power\n' +
+    '- Do NOT suggest measuring basic vital signs (BP, HR, RR, SpO2, Temperature, Weight) as observations. They are already collected in the previous step.\n' +
     '- Priority 1 = the single finding that would most change the ranking\n' +
     '- Must-not-miss diagnoses must be screened for even if probability is low\n' +
     '- Questions must be phrased simply enough for any patient to understand\n' +

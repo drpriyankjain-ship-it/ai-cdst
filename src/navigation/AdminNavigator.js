@@ -5,7 +5,7 @@ import {Ionicons} from '@expo/vector-icons';
 import AdminCasesScreen from '../screens/AdminCasesScreen';
 import AdminDoctorsScreen from '../screens/AdminDoctorsScreen';
 import AdminMetricsScreen from '../screens/AdminMetricsScreen';
-import HelpSupportScreen from '../screens/HelpSupportScreen'; // Assuming there's a generic Help screen or we can reuse it. Or we can just use the same one from AppNavigator
+import AboutPage from '../screens/AboutPage';
 
 const Tab = createBottomTabNavigator();
 
@@ -44,7 +44,7 @@ export default function AdminNavigator() {
       <Tab.Screen name="Cases" component={AdminCasesScreen} />
       <Tab.Screen name="Doctors" component={AdminDoctorsScreen} />
       <Tab.Screen name="Metrics" component={AdminMetricsScreen} />
-      <Tab.Screen name="Settings" component={HelpSupportScreen} />
+      <Tab.Screen name="Settings" component={AboutPage} />
     </Tab.Navigator>
   );
 }
