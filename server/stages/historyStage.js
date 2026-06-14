@@ -163,23 +163,15 @@ const SCHEMA_QUESTIONNAIRE = {
               properties: {
                 question:      { type: 'string' },
                 follow_up:     { type: 'string' },
-                discriminates: { type: 'string' },
               },
-              required: ['question', 'follow_up', 'discriminates'],
+              required: ['question', 'follow_up'],
             },
           },
         },
         required: ['section_title', 'rationale', 'questions'],
       },
     },
-    mandatory_safety_questions: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: { question: { type: 'string' }, reason: { type: 'string' } },
-        required: ['question', 'reason'],
-      },
-    },
+
     prior_encounter_flags: { type: 'array', items: { type: 'string' } },
     patient_record_fields: {
       type: 'object',
@@ -207,7 +199,7 @@ const SCHEMA_QUESTIONNAIRE = {
   },
   required: [
     'opening_context', 'known_and_verified', 'sections',
-    'mandatory_safety_questions', 'prior_encounter_flags', 'patient_record_fields',
+    'prior_encounter_flags', 'patient_record_fields',
   ],
 };
 
@@ -219,13 +211,13 @@ const FIRST_VISIT_HISTORY_QUESTIONS = {
   section_title: 'Background History',
   rationale: 'Standard first-visit intake — collected once per patient, seeds the permanent record. Fixed question set for consistent coverage.',
   questions: [
-    { question: 'Do you have any long-term illness — like diabetes, high blood pressure, TB, asthma, epilepsy, or heart disease?', follow_up: 'How long have you had it? Are you on treatment for it?', discriminates: 'Past medical history — chronic conditions' },
-    { question: 'Have you ever been admitted to hospital or had an operation?', follow_up: 'When was this, and what was it for?', discriminates: 'Past medical history — hospitalisations and surgery' },
-    { question: 'Do any illnesses run in your family — your parents or brothers and sisters — like diabetes, TB, high blood pressure, or cancer?', follow_up: 'Which family member, and which illness?', discriminates: 'Family history' },
-    { question: 'What work do you do?', follow_up: 'Any exposure to chemicals, dust, pesticides, or heavy lifting at work?', discriminates: 'Social history — occupation and occupational exposures' },
-    { question: 'Do you use tobacco in any form — smoking, chewing, or gutka? Do you drink alcohol?', follow_up: 'How much, and for how long?', discriminates: 'Social history — tobacco and alcohol use' },
-    { question: 'Are you taking any medicines at the moment — tablets, injections, syrups, or any traditional or herbal remedies?', follow_up: 'What is the name? What dose? How long have you been taking it?', discriminates: 'Current medications — including OTC and traditional' },
-    { question: 'Have you ever had a bad reaction or allergy to any medicine or food?', follow_up: 'What happened — rash, swelling, breathing difficulty?', discriminates: 'Allergies and adverse drug reactions' },
+    { question: 'Do you have any long-term illness — like diabetes, high blood pressure, TB, asthma, epilepsy, or heart disease?', follow_up: 'How long have you had it? Are you on treatment for it?' },
+    { question: 'Have you ever been admitted to hospital or had an operation?', follow_up: 'When was this, and what was it for?' },
+    { question: 'Do any illnesses run in your family — your parents or brothers and sisters — like diabetes, TB, high blood pressure, or cancer?', follow_up: 'Which family member, and which illness?' },
+    { question: 'What work do you do?', follow_up: 'Any exposure to chemicals, dust, pesticides, or heavy lifting at work?' },
+    { question: 'Do you use tobacco in any form — smoking, chewing, or gutka? Do you drink alcohol?', follow_up: 'How much, and for how long?' },
+    { question: 'Are you taking any medicines at the moment — tablets, injections, syrups, or any traditional or herbal remedies?', follow_up: 'What is the name? What dose? How long have you been taking it?' },
+    { question: 'Have you ever had a bad reaction or allergy to any medicine or food?', follow_up: 'What happened — rash, swelling, breathing difficulty?' },
   ],
 };
 
@@ -262,7 +254,7 @@ export async function extractChiefComplaint(audioBuffers, vaultContext, photos =
   const { response, meta } = await generateWithCascade(
     MODEL_H1_CHIEF_COMPLAINT,
     contents,
-    { responseMimeType: 'application/json', responseSchema: SCHEMA_CHIEF_COMPLAINT, maxOutputTokens: 2500 },
+    { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json', responseSchema: SCHEMA_CHIEF_COMPLAINT, maxOutputTokens: 800 },
   );
   const result = parseJsonResponse(responseText(response));
   return { result, meta };
@@ -278,9 +270,10 @@ export async function generateQuestionnaire(chiefComplaint, vaultContext, patien
   const stateName = stateFromDistrictCode(districtCode);
   const lang = chiefComplaint.language_of_consultation || 'English';
   const languageInstruction = lang === 'English' ? '' :
-    `LANGUAGE: The consultation is in ${lang}. After each question, add a romanised ${lang} translation in brackets — ` +
-    `for example: 'Do you have fever? (jwor hochhe?)' for Bengali, 'Do you have fever? (bukhaar hai?)' for Hindi. ` +
-    `Use plain everyday words in the translation — not medical terminology.`;
+    `LANGUAGE: The consultation is in ${lang}. For each question, write it in English first, ` +
+    `then provide the full sentence translation in romanised ${lang} in parentheses. ` +
+    `Example: 'Do you have fever? (Kya aapko bukhaar hai?)'. ` +
+    `Translate the entire question, not just individual words.`;
 
   const { knownContext, missingFields } = buildPatientRecordContext(patientRecord);
   const spontaneous = chiefComplaint.spontaneous_history || [];
@@ -333,14 +326,12 @@ export async function generateQuestionnaire(chiefComplaint, vaultContext, patien
     '  Relevant systems review — urinary symptoms for fever, neuro for headache, etc.\n' +
     '  Obstetric/menstrual history — if gynaecological causes are in the differential.\n\n' +
     '- Plain language — questions are read directly to the patient\n' +
-    '- follow_up: what to ask if the answer is yes or abnormal\n' +
+    '- follow_up: only include when there is a meaningful conditional question (e.g. "if yes, how long?"). Omit for questions where any answer is self-explanatory or no follow-up adds clinical value.\n' +
     '- Do not generate questions about medications, allergies, PMH, or family/social history — covered separately\n' +
-    '- Maximum 25 questions across all LLM-generated sections — only ask what is clinically relevant\n\n' +
-    historyInstruction + '\n\n' +
-    'MANDATORY SAFETY QUESTIONS (always include):\n' +
-    '- Female patients aged 12–50: current pregnancy status and LMP\n' +
-    '- All patients: confirm current medications and allergies\n' +
-    '- All patients: ask the patient to provide their Blood Pressure (BP), Heart Rate (HR), Respiratory Rate (RR), Oxygen Saturation (SpO2), weight, and height',
+    '- Maximum 5 LLM-generated sections total\n' +
+    '- Maximum 25 questions across all LLM-generated sections — only ask what is clinically relevant\n' +
+    '- Do not include any explanation or rationale per question — question and follow_up only\n\n' +
+    historyInstruction,
   ].filter(Boolean).join('\n\n');
 
   const contents = buildMultimodalContent(prompt, photos);
@@ -348,6 +339,7 @@ export async function generateQuestionnaire(chiefComplaint, vaultContext, patien
     MODEL_H2_QUESTIONNAIRE,
     contents,
     {
+      thinkingConfig: { thinkingBudget: 0 },
       responseMimeType: 'application/json',
       responseSchema: SCHEMA_QUESTIONNAIRE,
       maxOutputTokens: 4000,
@@ -377,7 +369,7 @@ export function validateQuestionnaire(q) {
     visit_type: 'first_visit',
     opening_context: 'Conduct the structured interview below.',
     sections: [],
-    mandatory_safety_questions: [],
+
     patient_record_fields: {
       past_medical_history: [], family_history: [], social_history: {},
       current_medications: [], allergies: [], immunisation_flags: [],

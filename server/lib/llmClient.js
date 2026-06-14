@@ -55,7 +55,7 @@ export function responseText(response) {
   try {
     const parts = response.candidates[0].content.parts;
     return parts
-      .filter(p => p.text && !p.thought)
+      .filter(p => p.text)
       .map(p => p.text)
       .join('');
   } catch {
@@ -245,10 +245,13 @@ export async function generateWithCascade(models, contents, config = {}) {
         config: modelConfig,
       });
 
-      // Warn if response was truncated
+      // Check finishReason — cascade on anything other than STOP
       const finishReason = response.candidates?.[0]?.finishReason;
       if (finishReason && finishReason !== 'STOP') {
-        console.warn(`[LLM] ${model} finishReason=${finishReason} — response may be truncated`);
+        const err = new Error(`Gemini finishReason=${finishReason} on ${model} — response incomplete`);
+        console.warn(`[LLM] ${err.message}`);
+        lastErr = err;
+        continue;
       }
 
       const u = response.usageMetadata;

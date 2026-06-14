@@ -142,7 +142,7 @@ export async function extractClarifyingFindings(audioBuffers, vaultContext) {
   const contents = buildAudioContent(prompt, audioBuffers, 'audio/mp4');
   const { response, meta } = await generateWithCascade(MODEL_M1_FINDINGS, contents, {
     systemInstruction: 'You are a clinical data extraction tool. Extract only what is explicitly stated.',
-    responseMimeType: 'application/json', responseSchema: SCHEMA_CLARIFYING_FINDINGS, maxOutputTokens: 2500,
+    responseMimeType: 'application/json', responseSchema: SCHEMA_CLARIFYING_FINDINGS, maxOutputTokens: 2500, thinkingConfig: { thinkingBudget: 0 },
   });
   return { result: parseJsonResponse(responseText(response)), meta };
 }
@@ -190,7 +190,7 @@ export async function generateProvisionalDiagnosisAndRx(clarifyingFindings, vaul
 
   const { response, meta } = await generateWithCascade(MODEL_M2_PRESCRIPTION, prompt, {
     systemInstruction: 'You are a clinical decision support system generating provisional diagnoses and prescriptions for nurse-managed consultations in rural India. Patient safety takes precedence.',
-    responseMimeType: 'application/json', responseSchema: SCHEMA_PROBLEM_LIST, maxOutputTokens: 10000,
+    responseMimeType: 'application/json', responseSchema: SCHEMA_PROBLEM_LIST, maxOutputTokens: 10000, thinkingConfig: { thinkingBudget: 0 },
   });
   return { result: validateProblemList(parseJsonResponse(responseText(response))), meta };
 }
@@ -228,7 +228,7 @@ export async function generateRiskAssessment(problemListOutput, clarifyingFindin
 
   const { response, meta } = await generateWithCascade(MODEL_M3_RISK, prompt, {
     systemInstruction: 'You are a clinical decision support system performing risk assessment for nurse-managed consultations in rural India. LOW means the nurse can safely proceed with the prescribed plan and the doctor reviews asynchronously within 24 hours — no doctor response within 24 hours ratifies the plan. HIGH means the case cannot wait: the patient needs hospital-level care now, or a 24-hour delay in doctor involvement carries genuine risk of serious harm or death. A deterministic rule engine runs after your output and will escalate LOW→HIGH when hard clinical thresholds are crossed — your job is calibrated clinical judgement, not defensive escalation. Common stable presentations manageable with oral medication and nurse monitoring should be LOW.',
-    responseMimeType: 'application/json', responseSchema: SCHEMA_RISK_ASSESSMENT, maxOutputTokens: 2500,
+    responseMimeType: 'application/json', responseSchema: SCHEMA_RISK_ASSESSMENT, maxOutputTokens: 2500, thinkingConfig: { thinkingBudget: 0 },
   });
   return { result: parseJsonResponse(responseText(response)), meta };
 }
@@ -249,7 +249,7 @@ export async function generateTriageAndHandoff(problemListOutput, vaultContext) 
   const prescriptionIssued = buildPrescriptionIssued(allDrugs);
   const lang = (vaultContext.chief_complaint || {}).language_of_consultation || 'English';
   const langInst = lang === 'English' ? '' :
-    `LANGUAGE: patient_instructions must include romanised ${lang} translations in brackets.`;
+    `LANGUAGE: Write patient_instructions entirely in ${lang} (romanised script). Do not write English and ${lang} side by side — choose ${lang} only for patient-facing text.`;
 
   const prompt = [
     'Generate the triage referral assessment, patient instructions, and doctor handoff package.',
@@ -257,17 +257,22 @@ export async function generateTriageAndHandoff(problemListOutput, vaultContext) 
     `PROBLEM LIST:\n${JSON.stringify(problemListOutput, null, 2)}`,
     `ALL PRESCRIBED DRUGS:\n${JSON.stringify(allDrugs, null, 2)}`,
     `PRESCRIPTION RECORD:\n${prescriptionIssued}`,
-    `FULL DIFFERENTIAL:\n${JSON.stringify(ddx.slice(0, 3), null, 2)}`,
+    `FULL DIFFERENTIAL (context only — do not reproduce this table in output):\n${JSON.stringify(ddx.slice(0, 3), null, 2)}`,
     langInst,
     'INSTRUCTIONS:\n' +
-    'TRIAGE REFERRAL: assess if patient needs referral to higher facility.\n' +
-    'PATIENT INSTRUCTIONS: plain language, include every drug with dose.\n' +
-    'DOCTOR HANDOFF: one_liner, clinical_summary, key_risks, questions — English only.',
+    'TRIAGE REFERRAL: assess if patient needs referral to a higher facility.\n\n' +
+    'PATIENT INSTRUCTIONS: plain language, include every drug with dose and duration. ' +
+    'do_list and dont_list items must be specific to this patient — no generic health advice.\n\n' +
+    'DOCTOR HANDOFF — English only, no duplication across fields:\n' +
+    '- one_liner: one sentence, chief complaint + key finding + working diagnosis\n' +
+    '- clinical_summary: 3 sentences max — presentation, key examination/investigation findings, working plan. Do not repeat the one_liner.\n' +
+    '- key_risks_flagged: max 4 items — only risks not already obvious from the clinical_summary\n' +
+    '- questions_for_doctor: max 4 targeted clinical questions the doctor must answer to progress the case. Do not ask questions already answered by the problem list.',
   ].filter(Boolean).join('\n\n');
 
   const { response, meta } = await generateWithCascade(MODEL_M4_TRIAGE, prompt, {
     systemInstruction: 'You are a clinical decision support system generating triage decisions. Never downgrade a risk tier.',
-    responseMimeType: 'application/json', responseSchema: SCHEMA_TRIAGE_HANDOFF, maxOutputTokens: 3000,
+    responseMimeType: 'application/json', responseSchema: SCHEMA_TRIAGE_HANDOFF, maxOutputTokens: 2000, thinkingConfig: { thinkingBudget: 0 },
   });
   const result = parseJsonResponse(responseText(response));
   if (!result.doctor_handoff) result.doctor_handoff = {};

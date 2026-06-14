@@ -494,7 +494,7 @@ async function handleMarkerC(ws, state, t) {
       }
     } catch (exc) {
       console.error(`[${sessionId}] Management stage error:`, exc);
-      insertPipelineFailure(dbClient, sessionId, state.nurseId || null, 'management', null, exc.message).catch(() => {});
+      insertPipelineFailure(dbClient, sessionId, state.userId || null, 'management', null, exc.message).catch(() => {});
       wsSend(ws, { type: 'error', code: 'MANAGEMENT_STAGE_ERROR', message: exc.message });
     }
   })();
